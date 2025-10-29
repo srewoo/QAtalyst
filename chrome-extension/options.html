@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QAtalyst - Advanced Settings</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #f8fafc 0%, #e0f2fe 100%);
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 32px;
+      color: #1e293b;
+      margin-bottom: 10px;
+      background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .subtitle {
+      color: #64748b;
+      margin-bottom: 30px;
+      font-size: 16px;
+    }
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      border-bottom: 2px solid #e2e8f0;
+    }
+    .tab {
+      padding: 12px 24px;
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      color: #64748b;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab:hover {
+      color: #0ea5e9;
+    }
+    .tab.active {
+      color: #0ea5e9;
+      border-bottom-color: #0ea5e9;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    .section {
+      background: white;
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 20px;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    }
+    .section h2 {
+      font-size: 18px;
+      color: #1e293b;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section p {
+      color: #64748b;
+      font-size: 14px;
+      margin-bottom: 16px;
+      line-height: 1.6;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-group.full {
+      grid-column: 1 / -1;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #334155;
+    }
+    input, select, textarea {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #0ea5e9;
+      box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+    }
+    textarea {
+      resize: vertical;
+      min-height: 100px;
+    }
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .checkbox-group input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+    }
+    .checkbox-group label {
+      margin: 0;
+      cursor: pointer;
+    }
+    .btn {
+      background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      background: linear-gradient(135deg, #0284c7 0%, #0891b2 100%);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(14, 165, 233, 0.3);
+    }
+    .btn.secondary {
+      background: #f1f5f9;
+      color: #1e293b;
+    }
+    .btn.secondary:hover {
+      background: #e2e8f0;
+    }
+    .save-section {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      margin-top: 24px;
+    }
+    .status {
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      margin-top: 16px;
+    }
+    .status.success {
+      background: #f0fdf4;
+      color: #16a34a;
+      border: 1px solid #bbf7d0;
+    }
+    .help-link {
+      color: #0ea5e9;
+      text-decoration: none;
+      font-size: 13px;
+      display: inline-block;
+      margin-top: 4px;
+    }
+    .help-link:hover {
+      text-decoration: underline;
+    }
+    .info-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: #1e40af;
+    }
+    .slider-container {
+      margin: 16px 0;
+    }
+    .slider {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: #e2e8f0;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #0ea5e9;
+      cursor: pointer;
+    }
+    .slider::-moz-range-thumb {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #0ea5e9;
+      cursor: pointer;
+      border: none;
+    }
+    .distribution-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .distribution-item {
+      background: #f8fafc;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #e2e8f0;
+    }
+    .distribution-item label {
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .distribution-item input {
+      font-size: 13px;
+      padding: 6px 10px;
+    }
+    
+    /* Help & Docs Styling */
+    .help-card {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    .help-card h3 {
+      color: #0ea5e9;
+      font-size: 18px;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid #e0f2fe;
+    }
+    
+    .help-card h4 {
+      color: #1e293b;
+      font-size: 15px;
+      margin-top: 12px;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    
+    .help-card ul, .help-card ol {
+      color: #475569;
+    }
+    
+    .help-card a {
+      color: #0ea5e9;
+      text-decoration: none;
+    }
+    
+    .help-card a:hover {
+      text-decoration: underline;
+    }
+    
+    .feature-section {
+      background: #f8fafc;
+      padding: 16px;
+      border-radius: 6px;
+      margin: 12px 0;
+      border-left: 4px solid #0ea5e9;
+    }
+    
+    .feature-section h4 {
+      color: #0ea5e9;
+      font-size: 16px;
+      margin-top: 0;
+    }
+    
+    .feature-section ul {
+      margin-top: 8px;
+    }
+    
+    .feature-section p {
+      color: #475569;
+      margin: 8px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🚀 QAtalyst</h1>
+    <p class="subtitle">Advanced Settings & Configuration</p>
+    
+    <div class="tabs">
+      <button class="tab active" data-tab="api" data-testid="api-tab">API Settings</button>
+      <button class="tab" data-tab="agents" data-testid="agents-tab">Agent Configuration</button>
+      <button class="tab" data-tab="testcases" data-testid="testcases-tab">Test Case Settings</button>
+      <button class="tab" data-tab="integrations" data-testid="integrations-tab">Integrations</button>
+      <button class="tab" data-tab="help" data-testid="help-tab">Help & Docs</button>
+    </div>
+    
+    <!-- API Settings Tab -->
+    <div class="tab-content active" id="api-tab">
+      <div class="section">
+        <h2>🤖 AI Provider Configuration</h2>
+        <p>Configure your preferred AI provider and model for test case generation.</p>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="llmProvider">LLM Provider:</label>
+            <select id="llmProvider" data-testid="llm-provider-select">
+              <option value="openai">OpenAI (GPT-4o)</option>
+              <option value="claude">Anthropic Claude</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="llmModel">Model:</label>
+            <select id="llmModel" data-testid="llm-model-select">
+              <!-- Populated dynamically -->
+            </select>
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label for="apiKey">API Key:</label>
+          <input type="password" id="apiKey" placeholder="Enter your API key" data-testid="api-key-input">
+          <a href="#" class="help-link" id="getKeyLink" target="_blank">How to get API key?</a>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="temperature">Temperature (0-1):</label>
+            <input type="number" id="temperature" min="0" max="1" step="0.1" value="0.7" data-testid="temperature-input">
+          </div>
+          <div class="form-group">
+            <label for="maxTokens">Max Tokens:</label>
+            <input type="number" id="maxTokens" value="4000" data-testid="max-tokens-input">
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="enableStreaming" checked data-testid="enable-streaming">
+            <span>Enable Response Streaming (Real-time output)</span>
+          </label>
+          <p class="help-text">When enabled, you'll see AI responses being generated in real-time with a stop button.</p>
+        </div>
+        
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="enableMultiAgent" data-testid="enable-multi-agent">
+            <span>🧬 Enable Multi-Agent System (Advanced)</span>
+          </label>
+          <p class="help-text">Use specialized AI agents for different test types. Generates more comprehensive test coverage but takes longer. Configure agents in the "Agent Configuration" tab.</p>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Agent Configuration Tab -->
+    <div class="tab-content" id="agents-tab">
+      <div class="section">
+        <h2>🧬 Multi-Agent System Configuration</h2>
+        <p>Configure the specialized agents for comprehensive test generation.</p>
+        
+        <div class="info-box">
+          ℹ️ QAtalyst uses multiple specialized agents: Positive Test Agent, Negative Test Agent, Edge Case Agent, Regression Agent, Integration Agent, and Review Agent.
+        </div>
+        
+        <div class="checkbox-group">
+          <input type="checkbox" id="enablePositiveAgent" checked data-testid="enable-positive-agent">
+          <label for="enablePositiveAgent">Enable Positive Test Agent (Happy Path Scenarios)</label>
+        </div>
+        
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableNegativeAgent" checked data-testid="enable-negative-agent">
+          <label for="enableNegativeAgent">Enable Negative Test Agent (Error Handling)</label>
+        </div>
+        
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableEdgeAgent" checked data-testid="enable-edge-agent">
+          <label for="enableEdgeAgent">Enable Edge Case Agent (Boundary Conditions)</label>
+        </div>
+        
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableRegressionAgent" checked data-testid="enable-regression-agent">
+          <label for="enableRegressionAgent">Enable Regression Test Agent</label>
+        </div>
+        
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableIntegrationAgent" checked data-testid="enable-integration-agent">
+          <label for="enableIntegrationAgent">Enable Integration Test Agent</label>
+        </div>
+        
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableReviewAgent" checked data-testid="enable-review-agent">
+          <label for="enableReviewAgent">Enable Review Agent (Quality Check & Gap Analysis)</label>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Test Case Settings Tab -->
+    <div class="tab-content" id="testcases-tab">
+      <div class="section">
+        <h2>✅ Test Case Generation Settings</h2>
+        <p>Configure test case generation behavior and distribution.</p>
+        
+        <div class="form-group">
+          <label for="testCount">Number of Test Cases: <span id="testCountValue" style="color: #0ea5e9; font-weight: 600;">30</span></label>
+          <input type="range" id="testCount" class="slider" min="20" max="100" value="30" step="5" data-testid="test-count-slider">
+          <div style="display: flex; justify-content: space-between; font-size: 12px; color: #64748b; margin-top: 4px;">
+            <span>20 (Quick)</span>
+            <span>50 (Balanced)</span>
+            <span>100 (Comprehensive)</span>
+          </div>
+          <p class="help-text">Adjust the number of test cases to generate. More tests = better coverage but slower generation.</p>
+        </div>
+        
+        <div class="checkbox-group" style="margin-top: 16px;">
+          <input type="checkbox" id="enableEnhanced" checked data-testid="enable-enhanced">
+          <label for="enableEnhanced">Enable Enhanced Test Generation (Gap Analysis, Smart Complexity Scaling)</label>
+        </div>
+        
+        <div class="form-group">
+          <label>Test Distribution (%):</label>
+          <div class="distribution-grid">
+            <div class="distribution-item">
+              <label>Positive Tests:</label>
+              <input type="number" id="positivePercent" value="40" min="0" max="100" data-testid="positive-percent">
+            </div>
+            <div class="distribution-item">
+              <label>Negative Tests:</label>
+              <input type="number" id="negativePercent" value="25" min="0" max="100" data-testid="negative-percent">
+            </div>
+            <div class="distribution-item">
+              <label>Edge Cases:</label>
+              <input type="number" id="edgePercent" value="10" min="0" max="100" data-testid="edge-percent">
+            </div>
+            <div class="distribution-item">
+              <label>Integration:</label>
+              <input type="number" id="integrationPercent" value="5" min="0" max="100" data-testid="integration-percent">
+            </div>
+            <div class="distribution-item">
+              <label>Performance:</label>
+              <input type="number" id="performancePercent" value="3" min="0" max="100" data-testid="performance-percent">
+            </div>
+            <div class="distribution-item">
+              <label>Security:</label>
+              <input type="number" id="securityPercent" value="3" min="0" max="100" data-testid="security-percent">
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="section">
+        <h2>🧬 Evolutionary Optimization (Hybrid System)</h2>
+        <p>Enable genetic algorithm-based optimization for 50-150% more test coverage.</p>
+        
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableEvolution" data-testid="enable-evolution">
+          <label for="enableEvolution">Enable Evolutionary Optimization</label>
+        </div>
+        
+        <div class="form-group">
+          <label for="evolutionIntensity">Evolution Intensity:</label>
+          <select id="evolutionIntensity" data-testid="evolution-intensity">
+            <option value="light">Light (~3 generations, +30-50% tests)</option>
+            <option value="balanced" selected>Balanced (~5 generations, +50-70% tests) - Recommended</option>
+            <option value="intensive">Intensive (~8 generations, +70-100% tests)</option>
+            <option value="exhaustive">Exhaustive (~10 generations, +100-150% tests)</option>
+          </select>
+        </div>
+        
+        <div class="info-box">
+          ℹ️ The Hybrid (CoT + Evolution) system combines Chain of Thought reasoning with genetic algorithm optimization using 5 mutation strategies: Data Variation, Scenario Expansion, Boundary Testing, Error Injection, and Context Shifting.
+        </div>
+      </div>
+    </div>
+    
+    <!-- Integrations Tab -->
+    <div class="tab-content" id="integrations-tab">
+      <div class="section">
+        <h2>🔗 TestRail Integration</h2>
+        <p>Configure TestRail connection for test case export.</p>
+        
+        <div class="form-group">
+          <label for="testrailUrl">TestRail URL:</label>
+          <input type="text" id="testrailUrl" placeholder="https://your-instance.testrail.io" data-testid="testrail-url">
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="testrailUsername">Username/Email:</label>
+            <input type="text" id="testrailUsername" placeholder="your-email@example.com" data-testid="testrail-username">
+          </div>
+          <div class="form-group">
+            <label for="testrailApiKey">API Key:</label>
+            <input type="password" id="testrailApiKey" placeholder="Enter TestRail API key" data-testid="testrail-api-key">
+          </div>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="testrailProjectId">Project ID:</label>
+            <input type="text" id="testrailProjectId" placeholder="171" data-testid="testrail-project-id">
+          </div>
+          <div class="form-group">
+            <label for="testrailSection">Default Section:</label>
+            <input type="text" id="testrailSection" placeholder="QAtalyst_Automation" data-testid="testrail-section">
+          </div>
+        </div>
+        
+        <a href="https://www.gurock.com/testrail/docs/api" target="_blank" class="help-link">📖 TestRail API Documentation</a>
+      </div>
+      
+      <div class="section">
+        <h2>📄 Confluence Integration</h2>
+        <p>Configure Confluence for requirement extraction.</p>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="confluenceUrl">Confluence URL:</label>
+            <input type="text" id="confluenceUrl" placeholder="https://your-domain.atlassian.net" data-testid="confluence-url">
+          </div>
+          <div class="form-group">
+            <label for="confluenceToken">API Token:</label>
+            <input type="password" id="confluenceToken" placeholder="Enter Confluence API token" data-testid="confluence-token">
+          </div>
+        </div>
+        
+        <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" class="help-link">📖 Get Confluence API Token</a>
+      </div>
+      
+      <div class="section">
+        <h2>🎨 Figma Integration</h2>
+        <p>Configure Figma for design analysis.</p>
+        
+        <div class="form-group">
+          <label for="figmaToken">Figma Personal Access Token:</label>
+          <input type="password" id="figmaToken" placeholder="Enter Figma token" data-testid="figma-token">
+        </div>
+        
+        <a href="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens" target="_blank" class="help-link">📖 Get Figma Token</a>
+      </div>
+      
+      <div class="section">
+        <h2>📝 Google Docs Integration</h2>
+        <p>Configure Google API for document access.</p>
+        
+        <div class="form-group">
+          <label for="googleApiKey">Google API Key:</label>
+          <input type="password" id="googleApiKey" placeholder="Enter Google API key" data-testid="google-api-key">
+        </div>
+        
+        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="help-link">📖 Get Google API Key</a>
+      </div>
+    </div>
+    
+    <!-- Help Tab -->
+    <div class="tab-content" id="help-tab">
+      <div class="section">
+        <h2>❓ Help & Documentation</h2>
+        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v9.0 - AI-powered test case generation with advanced features.</p>
+        
+        <!-- Quick Start -->
+        <div class="help-card">
+          <h3>🚀 Quick Start Guide</h3>
+          <ol style="margin-left: 20px; color: #475569; line-height: 1.8;">
+            <li><strong>Configure AI Provider</strong> (API Settings tab)
+              <ul style="margin-left: 20px; margin-top: 8px;">
+                <li>Select provider: OpenAI (GPT-4o) / Anthropic Claude / Google Gemini</li>
+                <li>Enter your API key (<a href="#" id="openai-key-link">Get OpenAI</a> | <a href="#" id="claude-key-link">Get Claude</a> | <a href="#" id="gemini-key-link">Get Gemini</a>)</li>
+                <li>Set temperature (0.7 recommended) and max tokens (4000)</li>
+              </ul>
+            </li>
+            <li><strong>Open a Jira Ticket</strong>
+              <ul style="margin-left: 20px; margin-top: 8px;">
+                <li>Navigate to any Jira ticket page (e.g., PROJECT-123)</li>
+                <li>QAtalyst panel appears on the right side</li>
+              </ul>
+            </li>
+            <li><strong>Generate Tests</strong>
+              <ul style="margin-left: 20px; margin-top: 8px;">
+                <li>Click <strong>"Analyse Requirements"</strong> - AI extracts structured requirements</li>
+                <li>Click <strong>"Generate Test Scope"</strong> - Creates comprehensive test plan</li>
+                <li>Click <strong>"Generate Test Cases"</strong> - Generates 20-100 executable tests</li>
+              </ul>
+            </li>
+            <li><strong>Review & Export</strong>
+              <ul style="margin-left: 20px; margin-top: 8px;">
+                <li>Review generated test cases</li>
+                <li>Click "Add to Jira" to copy tests to clipboard</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+        
+        <!-- Features Overview -->
+        <div class="help-card">
+          <h3>✨ Core Features</h3>
+          
+          <div class="feature-section">
+            <h4>🎯 Phase 1: Foundation</h4>
+            <ul>
+              <li><strong>3 AI Providers:</strong> OpenAI (GPT-4o, GPT-4 Turbo), Claude (3.5 Sonnet, 3 Opus), Gemini (2.0 Flash, 1.5 Pro)</li>
+              <li><strong>Response Streaming:</strong> See AI responses in real-time with stop button</li>
+              <li><strong>Configurable Test Count:</strong> Slider to generate 20-100 test cases</li>
+            </ul>
+          </div>
+          
+          <div class="feature-section">
+            <h4>🧬 Phase 2: Multi-Agent System</h4>
+            <p><strong>7 Specialized AI Agents:</strong></p>
+            <ul>
+              <li><strong>Requirement Analysis Agent:</strong> Extracts and structures requirements</li>
+              <li><strong>Positive Test Agent (40%):</strong> Happy path and valid input scenarios</li>
+              <li><strong>Negative Test Agent (30%):</strong> Error handling and validation tests</li>
+              <li><strong>Edge Case Agent (20%):</strong> Boundary conditions and corner cases</li>
+              <li><strong>Regression Test Agent (5%):</strong> Ensures existing functionality works</li>
+              <li><strong>Integration Test Agent (5%):</strong> API and system integration tests</li>
+              <li><strong>Review Agent:</strong> Quality check and coverage gap analysis</li>
+            </ul>
+            <p style="margin-top: 12px;"><em>Enable in API Settings: "🧬 Enable Multi-Agent System"</em></p>
+          </div>
+          
+          <div class="feature-section">
+            <h4>🧬 Phase 3: Evolutionary Optimization</h4>
+            <p><strong>Genetic Algorithm for Enhanced Coverage (+50-150% tests):</strong></p>
+            <ul>
+              <li><strong>Population:</strong> 15 test suite variations</li>
+              <li><strong>Fitness Evaluation:</strong> Coverage diversity (30%) + Quality (40%) + Completeness (30%)</li>
+              <li><strong>5 Mutation Strategies:</strong>
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Data Variation - Explore input combinations</li>
+                  <li>Scenario Expansion - Add alternative paths</li>
+                  <li>Boundary Testing - Min/max/null conditions</li>
+                  <li>Error Injection - Invalid inputs, timeouts</li>
+                  <li>Context Shifting - Different users/environments</li>
+                </ul>
+              </li>
+              <li><strong>Intensity Levels:</strong> Light (3 gen) | Balanced (5 gen) | Intensive (8 gen) | Exhaustive (10 gen)</li>
+            </ul>
+            <p style="margin-top: 12px;"><em>Configure in Test Case Settings tab</em></p>
+          </div>
+          
+          <div class="feature-section">
+            <h4>🔗 Phase 4: External Integrations</h4>
+            <p><strong>Automatic Content Enrichment:</strong></p>
+            <ul>
+              <li><strong>Confluence:</strong> Fetches linked requirement pages
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Setup: Confluence URL + API Token</li>
+                  <li>Get token: <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">Atlassian API Tokens</a></li>
+                </ul>
+              </li>
+              <li><strong>Figma:</strong> Extracts design specifications
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Setup: Personal Access Token</li>
+                  <li>Get token: Figma Settings → Account → Personal Access Tokens</li>
+                </ul>
+              </li>
+              <li><strong>Google Docs:</strong> Fetches documentation content
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Setup: Google Cloud API Key</li>
+                  <li>Enable: Google Docs API in Google Cloud Console</li>
+                </ul>
+              </li>
+            </ul>
+            <p style="margin-top: 12px;"><em>Configure in Integrations tab</em></p>
+          </div>
+          
+          <div class="feature-section">
+            <h4>🎯 Phase 5: Enhanced Features</h4>
+            <ul>
+              <li><strong>Gap Analysis:</strong> AI identifies missing coverage and auto-generates gap-filling tests</li>
+              <li><strong>Smart Complexity Scaling:</strong> Automatically adjusts test count based on:
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Description length</li>
+                  <li>Number of requirements</li>
+                  <li>Integration complexity</li>
+                  <li>Technical complexity</li>
+                  <li>Story complexity</li>
+                </ul>
+              </li>
+              <li><strong>Context-Aware Generation:</strong> Tests use correct terminology and domain knowledge</li>
+            </ul>
+            <p style="margin-top: 12px;"><em>Enable in Test Case Settings: "Enable Enhanced Test Generation"</em></p>
+          </div>
+        </div>
+        
+        <!-- Advanced Usage -->
+        <div class="help-card">
+          <h3>🎓 Advanced Usage</h3>
+          
+          <h4 style="margin-top: 16px;">Recommended Workflow for Maximum Coverage:</h4>
+          <ol style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Enable all advanced features:</strong>
+              <ul style="margin-left: 20px; margin-top: 6px;">
+                <li>✅ Enable Response Streaming</li>
+                <li>✅ Enable Multi-Agent System</li>
+                <li>✅ Enable Enhanced Test Generation</li>
+                <li>✅ Enable Evolutionary Optimization (Balanced intensity)</li>
+              </ul>
+            </li>
+            <li><strong>Set test count:</strong> 30-50 for balanced coverage</li>
+            <li><strong>Add external links:</strong> Link Confluence/Figma/Docs in Jira ticket description</li>
+            <li><strong>Generate:</strong> Watch agents work → Enhancement → Evolution → Complete!</li>
+          </ol>
+          
+          <h4 style="margin-top: 16px;">Tips & Tricks:</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Better Requirements = Better Tests:</strong> Add detailed acceptance criteria in Jira</li>
+            <li><strong>Use Streaming:</strong> See progress in real-time, stop if needed</li>
+            <li><strong>Start Small:</strong> Test with 20 tests first, then scale up</li>
+            <li><strong>Review Gaps:</strong> Check gap analysis badges for missing coverage</li>
+            <li><strong>Complexity Badge:</strong> If complexity score is high, let the system auto-scale</li>
+          </ul>
+        </div>
+        
+        <!-- Troubleshooting -->
+        <div class="help-card">
+          <h3>🔧 Troubleshooting</h3>
+          
+          <h4>Panel Issues:</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Panel doesn't appear:</strong> Refresh Jira page, ensure you're on a ticket page (not board)</li>
+            <li><strong>Settings button error:</strong> Update to v9.0.1+</li>
+            <li><strong>Panel position wrong:</strong> Resize browser window</li>
+          </ul>
+          
+          <h4>API Issues:</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>"API Key required":</strong> Configure in API Settings tab and save</li>
+            <li><strong>"Rate limit exceeded":</strong> Wait 1 minute or switch to different provider</li>
+            <li><strong>Slow responses:</strong> Reduce max tokens or test count</li>
+            <li><strong>Figma rate limits:</strong> System automatically retries with backoff</li>
+          </ul>
+          
+          <h4>Generation Issues:</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>No tests generated:</strong> Check browser console (F12) for errors</li>
+            <li><strong>Poor test quality:</strong> Increase temperature (0.8-0.9) or try Claude</li>
+            <li><strong>Too many tests:</strong> Disable evolution or reduce slider</li>
+            <li><strong>Missing test types:</strong> Enable more agents in Agent Configuration</li>
+          </ul>
+          
+          <h4>Performance:</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Taking too long:</strong> Disable evolution or use Light intensity</li>
+            <li><strong>Memory issues:</strong> Reduce test count, close other tabs</li>
+            <li><strong>Streaming stops:</strong> Check network, reload extension</li>
+          </ul>
+        </div>
+        
+        <!-- Support -->
+        <div class="help-card">
+          <h3>📞 Support & Resources</h3>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Version:</strong> v9.0.1</li>
+            <li><strong>API Key Setup:</strong>
+              <ul style="margin-left: 20px; margin-top: 6px;">
+                <li><a href="https://platform.openai.com/api-keys" target="_blank">OpenAI API Keys</a></li>
+                <li><a href="https://console.anthropic.com/settings/keys" target="_blank">Claude API Keys</a></li>
+                <li><a href="https://aistudio.google.com/app/apikey" target="_blank">Gemini API Keys</a></li>
+              </ul>
+            </li>
+            <li><strong>External Integrations:</strong>
+              <ul style="margin-left: 20px; margin-top: 6px;">
+                <li><a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">Confluence API Token</a></li>
+                <li><a href="https://help.figma.com/hc/en-us/articles/8085703771159" target="_blank">Figma Access Token</a></li>
+                <li><a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud API Key</a></li>
+              </ul>
+            </li>
+            <li><strong>Browser:</strong> Chrome DevTools (F12) for debugging</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    
+    <div class="save-section">
+      <button class="btn secondary" id="resetBtn" data-testid="reset-btn">Reset to Defaults</button>
+      <button class="btn" id="saveBtn" data-testid="save-settings-btn">Save All Settings</button>
+    </div>
+    
+    <div id="status"></div>
+  </div>
+  
+  <script src="options.js"></script>
+</body>
+</html>
