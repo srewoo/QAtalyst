@@ -28,35 +28,69 @@ class IntegrationManager {
     for (const url of confluenceUrls) {
       try {
         const content = await this.confluence.fetchPage(url);
-        results.confluence.push(content);
+        if (content && !content.content.startsWith('Error:')) {
+          results.confluence.push(content);
+        } else {
+          console.warn(`Skipped Confluence page (fetch failed): ${url}`);
+        }
       } catch (error) {
-        console.error('Confluence fetch failed:', error);
+        console.error('Confluence fetch failed:', error.message);
+        // Add a placeholder with error message for user visibility
+        results.confluence.push({
+          url: url,
+          title: 'Confluence page (unavailable)',
+          content: `Could not fetch Confluence content. Reason: ${error.message}`,
+          version: 0
+        });
       }
     }
-    
+
     // Detect and fetch Figma files (with delay to avoid rate limits)
     const figmaUrls = this.figma.extractUrls(allText);
     for (let i = 0; i < figmaUrls.length; i++) {
       try {
-        // Add small delay between requests to respect rate limits
+        // Add delay between requests to respect rate limits (use config constant)
         if (i > 0) {
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise(resolve => setTimeout(resolve, typeof CONFIG !== 'undefined' ? CONFIG.FIGMA_RATE_LIMIT_DELAY : 1000));
         }
         const content = await this.figma.fetchFile(figmaUrls[i]);
-        results.figma.push(content);
+        if (content && !content.specifications.startsWith('Error:')) {
+          results.figma.push(content);
+        } else {
+          console.warn(`Skipped Figma file (fetch failed): ${figmaUrls[i]}`);
+        }
       } catch (error) {
-        console.error('Figma fetch failed:', error);
+        console.error('Figma fetch failed:', error.message);
+        // Add a placeholder with error message for user visibility
+        results.figma.push({
+          url: figmaUrls[i],
+          name: 'Figma design (unavailable)',
+          specifications: `Could not fetch Figma content. Reason: ${error.message}`,
+          lastModified: null,
+          version: null
+        });
       }
     }
-    
+
     // Detect and fetch Google Docs
     const googleDocsUrls = this.googleDocs.extractUrls(allText);
     for (const url of googleDocsUrls) {
       try {
         const content = await this.googleDocs.fetchDocument(url);
-        results.googleDocs.push(content);
+        if (content && !content.content.startsWith('Error:')) {
+          results.googleDocs.push(content);
+        } else {
+          console.warn(`Skipped Google Doc (fetch failed): ${url}`);
+        }
       } catch (error) {
-        console.error('Google Docs fetch failed:', error);
+        console.error('Google Docs fetch failed:', error.message);
+        // Add a placeholder with error message for user visibility
+        results.googleDocs.push({
+          url: url,
+          title: 'Google Doc (unavailable)',
+          content: `Could not fetch Google Docs content. Reason: ${error.message}`,
+          revisionId: null
+        });
       }
     }
     
@@ -105,32 +139,40 @@ class ConfluenceIntegration {
   
   async fetchPage(url) {
     if (!this.baseUrl || !this.token) {
-      throw new Error('Confluence not configured');
+      throw new Error('Confluence integration is not configured. Please add Confluence URL and API token in extension settings.');
     }
-    
+
     try {
       // Extract page ID from URL
       const pageId = this.extractPageId(url);
       if (!pageId) {
-        throw new Error('Could not extract page ID from URL');
+        throw new Error('Invalid Confluence URL format. Could not extract page ID.');
       }
-      
+
       // Fetch page content
       const apiUrl = `${this.baseUrl}/rest/api/content/${pageId}?expand=body.storage,version`;
-      
+
       const response = await fetch(apiUrl, {
         headers: {
           'Authorization': `Bearer ${this.token}`,
           'Accept': 'application/json'
         }
       });
-      
+
       if (!response.ok) {
-        throw new Error(`Confluence API error: ${response.status}`);
+        if (response.status === 401) {
+          throw new Error('Confluence authentication failed. Please check your API token.');
+        } else if (response.status === 403) {
+          throw new Error('Access denied. You do not have permission to view this Confluence page.');
+        } else if (response.status === 404) {
+          throw new Error('Confluence page not found. It may have been deleted or moved.');
+        } else {
+          throw new Error(`Confluence API returned error ${response.status}.`);
+        }
       }
-      
+
       const data = await response.json();
-      
+
       return {
         url: url,
         title: data.title,
@@ -139,12 +181,7 @@ class ConfluenceIntegration {
       };
     } catch (error) {
       console.error('Confluence fetch error:', error);
-      return {
-        url: url,
-        title: 'Failed to fetch',
-        content: `Error: ${error.message}`,
-        version: 0
-      };
+      throw error; // Re-throw to be handled by IntegrationManager
     }
   }
   
@@ -205,56 +242,62 @@ class FigmaIntegration {
   
   async fetchFile(url, retries = 3) {
     if (!this.token) {
-      throw new Error('Figma not configured');
+      throw new Error('Figma integration is not configured. Please add your Figma Personal Access Token in extension settings.');
     }
-    
+
     try {
       const fileKey = this.extractFileKey(url);
       if (!fileKey) {
-        throw new Error('Could not extract file key from URL');
+        throw new Error('Invalid Figma URL format. Could not extract file key.');
       }
-      
+
       // Fetch file metadata
       const apiUrl = `https://api.figma.com/v1/files/${fileKey}`;
-      
+
       const response = await fetch(apiUrl, {
         headers: {
           'X-Figma-Token': this.token
         }
       });
-      
+
       // Handle rate limiting (429 Too Many Requests)
       if (response.status === 429) {
         if (retries > 0) {
           // Check for Retry-After header (in seconds)
           const retryAfter = response.headers.get('Retry-After');
           const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : 2000; // Default 2s
-          
+
           console.warn(`Figma rate limit hit, retrying after ${waitTime}ms...`);
-          
+
           // Wait and retry with exponential backoff
           await new Promise(resolve => setTimeout(resolve, waitTime));
           return await this.fetchFile(url, retries - 1);
         } else {
-          throw new Error('Figma API rate limit exceeded. Please try again later.');
+          throw new Error('Figma API rate limit exceeded (1000 requests/minute). Please wait a moment and try again.');
         }
       }
-      
+
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || `Figma API error: ${response.status}`);
+        if (response.status === 401 || response.status === 403) {
+          throw new Error('Figma authentication failed. Please check your Personal Access Token.');
+        } else if (response.status === 404) {
+          throw new Error('Figma file not found. Please check the URL and your access permissions.');
+        } else {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.message || `Figma API returned error ${response.status}.`);
+        }
       }
-      
+
       const data = await response.json();
-      
+
       // Check for API error in response
       if (data.status && data.status >= 400) {
         throw new Error(data.err || `Figma API returned error status ${data.status}`);
       }
-      
+
       // Extract specifications
       const specifications = this.extractSpecifications(data);
-      
+
       return {
         url: url,
         name: data.name,
@@ -264,13 +307,7 @@ class FigmaIntegration {
       };
     } catch (error) {
       console.error('Figma fetch error:', error);
-      return {
-        url: url,
-        name: 'Failed to fetch',
-        specifications: `Error: ${error.message}`,
-        lastModified: null,
-        version: null
-      };
+      throw error; // Re-throw to be handled by IntegrationManager
     }
   }
   
@@ -337,29 +374,36 @@ class GoogleDocsIntegration {
   
   async fetchDocument(url) {
     if (!this.apiKey) {
-      throw new Error('Google Docs not configured');
+      throw new Error('Google Docs integration is not configured. Please add your Google API Key in extension settings.');
     }
-    
+
     try {
       const docId = this.extractDocId(url);
       if (!docId) {
-        throw new Error('Could not extract document ID from URL');
+        throw new Error('Invalid Google Docs URL format. Could not extract document ID.');
       }
-      
+
       // Fetch document content
       const apiUrl = `https://docs.googleapis.com/v1/documents/${docId}?key=${this.apiKey}`;
-      
+
       const response = await fetch(apiUrl);
-      
+
       if (!response.ok) {
-        throw new Error(`Google Docs API error: ${response.status}`);
+        if (response.status === 401 || response.status === 403) {
+          throw new Error('Google Docs authentication failed. Please check your API key or document sharing permissions.');
+        } else if (response.status === 404) {
+          throw new Error('Google Doc not found. The document may have been deleted or you may not have access.');
+        } else {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error?.message || `Google Docs API returned error ${response.status}.`);
+        }
       }
-      
+
       const data = await response.json();
-      
+
       // Extract text content
       const content = this.extractContent(data);
-      
+
       return {
         url: url,
         title: data.title,
@@ -368,12 +412,7 @@ class GoogleDocsIntegration {
       };
     } catch (error) {
       console.error('Google Docs fetch error:', error);
-      return {
-        url: url,
-        title: 'Failed to fetch',
-        content: `Error: ${error.message}`,
-        revisionId: null
-      };
+      throw error; // Re-throw to be handled by IntegrationManager
     }
   }
   

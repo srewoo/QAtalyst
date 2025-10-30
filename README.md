@@ -2,7 +2,7 @@
 
 **Advanced Chrome Extension with Multi-Agent System & Evolutionary Optimization**
 
-[![Version](https://img.shields.io/badge/version-9.1.2-blue.svg)](https://github.com/your-repo)
+[![Version](https://img.shields.io/badge/version-9.2.2-blue.svg)](https://github.com/your-repo)
 [![Chrome Extension](https://img.shields.io/badge/chrome-extension-green.svg)](https://chrome.google.com/webstore)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
@@ -186,7 +186,7 @@ Configure in **Options → Agent Configuration**
 ```
 QAtalyst/
 ├── chrome-extension/              # Complete Extension
-│   ├── manifest.json             # Extension config (v9.1.2)
+│   ├── manifest.json             # Extension config (v9.2.2)
 │   ├── background.js             # Service worker + API calls
 │   ├── content.js                # Jira panel injection
 │   ├── agents.js                 # 7-agent system
@@ -200,7 +200,7 @@ QAtalyst/
 │
 ├── README.md                      # This file
 ├── QUICK_START.md                # Quick start guide
-└── qatalyst-v9.1.2-stable.zip   # Packaged extension
+└── qatalyst-v9.2.2-webstore.zip   # Packaged extension
 ```
 
 ## 🔧 Technical Stack
@@ -322,6 +322,7 @@ Acceptance Criteria:
 
 | Version | Date | Features |
 |---------|------|----------|
+| **v9.2.2** | 2025-10-30 | 🔒 Security fixes, user review feature, bug fixes |
 | **v9.1.2** | 2025-10-29 | 🐛 Bug fixes (settings save, DOM loading) |
 | **v9.1.0** | 2025-10-29 | 📚 Enhanced Help & Docs tab |
 | **v9.0.0** | 2025-10-29 | 🎯 Phase 5: Enhanced Features |
@@ -343,7 +344,7 @@ Built with OpenAI API, Anthropic Claude API, Google Gemini API, Chrome Extension
 
 ---
 
-**Version**: 9.1.2  
-**Status**: ✅ Production Ready  
-**Built for**: Smarter, faster QA workflows  
+**Version**: 9.2.2
+**Status**: ✅ Production Ready
+**Built for**: Smarter, faster QA workflows
 **Maintained by**: QA Engineering Team

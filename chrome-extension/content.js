@@ -22,6 +22,12 @@
     if (request.action === 'enhancementProgress') {
       handleEnhancementProgress(request.status);
     }
+    if (request.action === 'evolutionComplete') {
+      handleEvolutionComplete(request.data);
+    }
+    if (request.action === 'evolutionError') {
+      handleEvolutionError(request.error);
+    }
   });
   
   function handleStreamChunk(requestId, chunk) {
@@ -599,6 +605,16 @@
   async function handleTestScope(ticketKey, ticketData) {
     const resultsContainer = document.getElementById('results-container');
     const btn = document.getElementById('test-scope-btn');
+    
+    if (!ticketData) {
+      resultsContainer.innerHTML = `
+        <div class="qatalyst-error">
+          ❌ Could not extract ticket data. Please try refreshing the page or analyzing requirements first.
+        </div>
+      `;
+      return;
+    }
+    
     btn.disabled = true;
     
     try {
@@ -804,15 +820,21 @@
     }
   }
   
+  // Store current results for review feature
+  let currentAnalysisData = null;
+  let currentTestScopeData = null;
+  let currentTestCasesData = null;
+
   // Display functions
   function displayAnalysisResults(data) {
     const container = document.getElementById('results-container');
-    
+    currentAnalysisData = data; // Store for review
+
     // Show external sources badge if any were fetched
     let externalSourcesBadge = '';
     if (data.externalSources) {
-      const total = (data.externalSources.confluence || 0) + 
-                    (data.externalSources.figma || 0) + 
+      const total = (data.externalSources.confluence || 0) +
+                    (data.externalSources.figma || 0) +
                     (data.externalSources.googleDocs || 0);
       if (total > 0) {
         externalSourcesBadge = `
@@ -825,7 +847,7 @@
         `;
       }
     }
-    
+
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>📊 Requirements Analysis</h4>
@@ -834,25 +856,104 @@
           ${formatAnalysis(data.analysis)}
         </div>
         <button class="qatalyst-btn small" onclick="this.parentElement.querySelector('.result-content').classList.toggle('expanded')">View Full Analysis</button>
+
+        <!-- User Review Section -->
+        <div class="qatalyst-review-section">
+          <h5>💬 Provide Feedback (Optional)</h5>
+          <p style="font-size: 12px; color: #666; margin-bottom: 8px;">
+            Add your feedback below and click "Regenerate" to get an improved version based on your input.
+          </p>
+          <textarea
+            id="analysis-review-input"
+            class="qatalyst-review-textarea"
+            placeholder="Example: Add more details about security requirements, focus on API integration points, etc."
+            rows="3"
+          ></textarea>
+          <button class="qatalyst-btn primary" id="regenerate-analysis-btn" style="margin-top: 8px;">
+            <span class="btn-icon">🔄</span>
+            <span>Regenerate with Feedback</span>
+          </button>
+        </div>
+
+        <button class="qatalyst-btn primary" id="add-analysis-to-jira-btn" style="margin-top: 12px;">
+          <span class="btn-icon">📝</span>
+          <span>Add to Jira</span>
+        </button>
       </div>
     `;
+
+    // Add event listeners
+    document.getElementById('regenerate-analysis-btn')?.addEventListener('click', async () => {
+      const review = document.getElementById('analysis-review-input').value.trim();
+      if (!review) {
+        alert('⚠️ Please provide some feedback before regenerating.');
+        return;
+      }
+      await handleRegenerateAnalysis(review);
+    });
+
+    document.getElementById('add-analysis-to-jira-btn')?.addEventListener('click', () => {
+      addAnalysisToJira(data.analysis);
+    });
   }
   
   function displayTestScopeResults(data) {
     const container = document.getElementById('results-container');
+    currentTestScopeData = data; // Store for review
+
+    // Handle both 'scope' and 'testScope' properties for backward compatibility
+    const scopeContent = data.scope || data.testScope || 'No scope generated';
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>📋 Test Scope</h4>
         <div class="result-content">
-          ${formatTestScope(data.scope)}
+          ${formatTestScope(scopeContent)}
         </div>
+
+        <!-- User Review Section -->
+        <div class="qatalyst-review-section">
+          <h5>💬 Provide Feedback (Optional)</h5>
+          <p style="font-size: 12px; color: #666; margin-bottom: 8px;">
+            Add your feedback below and click "Regenerate" to get an improved test scope based on your input.
+          </p>
+          <textarea
+            id="scope-review-input"
+            class="qatalyst-review-textarea"
+            placeholder="Example: Add more focus on performance testing, include mobile test scenarios, etc."
+            rows="3"
+          ></textarea>
+          <button class="qatalyst-btn primary" id="regenerate-scope-btn" style="margin-top: 8px;">
+            <span class="btn-icon">🔄</span>
+            <span>Regenerate with Feedback</span>
+          </button>
+        </div>
+
+        <button class="qatalyst-btn primary" id="add-scope-to-jira-btn" style="margin-top: 12px;">
+          <span class="btn-icon">📝</span>
+          <span>Add to Jira</span>
+        </button>
       </div>
     `;
+
+    // Add event listeners
+    document.getElementById('regenerate-scope-btn')?.addEventListener('click', async () => {
+      const review = document.getElementById('scope-review-input').value.trim();
+      if (!review) {
+        alert('⚠️ Please provide some feedback before regenerating.');
+        return;
+      }
+      await handleRegenerateTestScope(review);
+    });
+
+    document.getElementById('add-scope-to-jira-btn')?.addEventListener('click', () => {
+      addTestScopeToJira(scopeContent);
+    });
   }
   
   function displayTestCasesResults(data) {
     const container = document.getElementById('results-container');
-    
+    currentTestCasesData = data; // Store for review
+
     // Calculate statistics from test cases
     const stats = {
       total: data.total || data.testCases?.length || 0,
@@ -862,18 +963,18 @@
       regression: data.byCategory?.Regression || data.testCases?.filter(tc => tc.category === 'Regression').length || 0,
       integration: data.byCategory?.Integration || data.testCases?.filter(tc => tc.category === 'Integration').length || 0
     };
-    
+
     // Enhancement badges
     let enhancementBadges = '';
     if (data.enhancements) {
       const badges = [];
-      
+
       if (data.enhancements.gaps && data.enhancements.gaps.length > 0) {
         badges.push(`<div class="enhancement-badge gap">
           🔍 ${data.enhancements.gaps.length} gaps identified
         </div>`);
       }
-      
+
       if (data.enhancements.scalingApplied) {
         const diff = data.enhancements.scaledCount - data.enhancements.originalCount;
         const sign = diff > 0 ? '+' : '';
@@ -881,21 +982,38 @@
           📊 Complexity scaled: ${sign}${diff} tests (Score: ${data.enhancements.complexityScore}/100)
         </div>`);
       }
-      
+
       if (data.enhancements.additionalTests && data.enhancements.additionalTests.length > 0) {
         badges.push(`<div class="enhancement-badge additional">
           ✨ ${data.enhancements.additionalTests.length} gap-filling tests added
         </div>`);
       }
-      
+
       if (badges.length > 0) {
         enhancementBadges = `<div class="enhancement-badges">${badges.join('')}</div>`;
       }
     }
-    
+
+    // Evolution status badge
+    let evolutionBadge = '';
+    if (data.evolutionPending && !data.finalEvolution) {
+      evolutionBadge = `
+        <div class="evolution-pending-badge">
+          ⏳ Evolutionary optimization in progress... Base test cases shown below.
+        </div>
+      `;
+    } else if (data.finalEvolution) {
+      evolutionBadge = `
+        <div class="evolution-complete-badge">
+          ✨ Enhanced with evolutionary optimization ${data.improvement ? `(+${data.improvement} tests)` : ''}
+        </div>
+      `;
+    }
+
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>✅ Generated Test Cases</h4>
+        ${evolutionBadge}
         ${enhancementBadges}
         <div class="test-stats">
           <span class="stat">Total: ${stats.total}</span>
@@ -908,13 +1026,44 @@
         <div class="result-content test-cases">
           ${formatTestCases(data.testCases)}
         </div>
-        <button class="qatalyst-btn primary" id="add-to-jira-btn">Add to Jira</button>
+
+        <!-- User Review Section -->
+        <div class="qatalyst-review-section">
+          <h5>💬 Provide Feedback (Optional)</h5>
+          <p style="font-size: 12px; color: #666; margin-bottom: 8px;">
+            Add your feedback below and click "Regenerate" to get improved test cases based on your input.
+          </p>
+          <textarea
+            id="testcases-review-input"
+            class="qatalyst-review-textarea"
+            placeholder="Example: Add more security tests, include performance test cases, focus more on edge cases, etc."
+            rows="3"
+          ></textarea>
+          <button class="qatalyst-btn primary" id="regenerate-testcases-btn" style="margin-top: 8px;">
+            <span class="btn-icon">🔄</span>
+            <span>Regenerate with Feedback</span>
+          </button>
+        </div>
+
+        <button class="qatalyst-btn primary" id="add-to-jira-btn" style="margin-top: 12px;">
+          <span class="btn-icon">📝</span>
+          <span>Add to Jira</span>
+        </button>
       </div>
     `;
-    
-    // Add to Jira button handler
+
+    // Add event listeners
     document.getElementById('add-to-jira-btn')?.addEventListener('click', () => {
       addTestCasesToJira(data.testCases);
+    });
+
+    document.getElementById('regenerate-testcases-btn')?.addEventListener('click', async () => {
+      const review = document.getElementById('testcases-review-input').value.trim();
+      if (!review) {
+        alert('⚠️ Please provide some feedback before regenerating.');
+        return;
+      }
+      await handleRegenerateTestCases(review);
     });
   }
   
@@ -924,6 +1073,9 @@
   }
   
   function formatTestScope(scope) {
+    if (!scope || scope === 'undefined' || scope === 'null') {
+      return '<p class="qatalyst-warning">⚠️ No test scope was generated. Please try again.</p>';
+    }
     return `<pre>${scope}</pre>`;
   }
   
@@ -948,27 +1100,521 @@
     }).join('');
   }
   
-  function addTestCasesToJira(testCases) {
-    const formatted = testCases.map(tc => {
+  async function addAnalysisToJira(analysis) {
+    const btn = document.getElementById('add-analysis-to-jira-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="btn-icon">⏳</span><span>Posting to Jira...</span>';
+    }
+
+    try {
+      const baseUrl = window.location.origin;
+      const ticketKey = extractTicketKey();
+
+      // Format analysis for Jira comment
+      const formattedComment = formatAnalysisForJiraComment(analysis);
+
+      const response = await fetch(`${baseUrl}/rest/api/2/issue/${ticketKey}/comment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          body: formattedComment
+        })
+      });
+
+      if (response.ok) {
+        if (btn) {
+          btn.innerHTML = '<span class="btn-icon">✅</span><span>Posted to Jira!</span>';
+          setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<span class="btn-icon">📝</span><span>Add to Jira</span>';
+          }, 3000);
+        }
+
+        showNotification('✅ Requirements analysis successfully posted to Jira comments!', 'success');
+
+        setTimeout(() => {
+          window.location.reload();
+        }, 2000);
+      } else {
+        throw new Error(`Failed to post comment: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error('Failed to post to Jira:', error);
+
+      try {
+        await navigator.clipboard.writeText(analysis);
+        showNotification('⚠️ Could not post directly to Jira. Requirements analysis copied to clipboard - please paste manually.', 'warning');
+      } catch (clipboardError) {
+        showNotification('❌ Failed to post to Jira and copy to clipboard. Please try again.', 'error');
+      }
+
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">📝</span><span>Add to Jira</span>';
+      }
+    }
+  }
+
+  async function addTestScopeToJira(testScope) {
+    const btn = document.getElementById('add-scope-to-jira-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="btn-icon">⏳</span><span>Posting to Jira...</span>';
+    }
+
+    try {
+      const baseUrl = window.location.origin;
+      const ticketKey = extractTicketKey();
+
+      // Format test scope for Jira comment
+      const formattedComment = formatTestScopeForJiraComment(testScope);
+
+      const response = await fetch(`${baseUrl}/rest/api/2/issue/${ticketKey}/comment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          body: formattedComment
+        })
+      });
+
+      if (response.ok) {
+        if (btn) {
+          btn.innerHTML = '<span class="btn-icon">✅</span><span>Posted to Jira!</span>';
+          setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<span class="btn-icon">📝</span><span>Add to Jira</span>';
+          }, 3000);
+        }
+
+        showNotification('✅ Test scope successfully posted to Jira comments!', 'success');
+
+        setTimeout(() => {
+          window.location.reload();
+        }, 2000);
+      } else {
+        throw new Error(`Failed to post comment: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error('Failed to post to Jira:', error);
+
+      try {
+        await navigator.clipboard.writeText(testScope);
+        showNotification('⚠️ Could not post directly to Jira. Test scope copied to clipboard - please paste manually.', 'warning');
+      } catch (clipboardError) {
+        showNotification('❌ Failed to post to Jira and copy to clipboard. Please try again.', 'error');
+      }
+
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">📝</span><span>Add to Jira</span>';
+      }
+    }
+  }
+
+  async function addTestCasesToJira(testCases) {
+    const btn = document.getElementById('add-to-jira-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="btn-icon">⏳</span><span>Posting to Jira...</span>';
+    }
+
+    try {
+      // Get Jira site URL from current page
+      const baseUrl = window.location.origin;
+      const ticketKey = extractTicketKey();
+
+      // Format test cases for Jira comment (using Jira markdown)
+      const formattedComment = formatTestCasesForJiraComment(testCases);
+
+      // Try to post comment using Jira REST API
+      const response = await fetch(`${baseUrl}/rest/api/2/issue/${ticketKey}/comment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        credentials: 'include', // Include cookies for authentication
+        body: JSON.stringify({
+          body: formattedComment
+        })
+      });
+
+      if (response.ok) {
+        if (btn) {
+          btn.innerHTML = '<span class="btn-icon">✅</span><span>Posted to Jira!</span>';
+          setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<span class="btn-icon">📝</span><span>Add to Jira</span>';
+          }, 3000);
+        }
+
+        // Show success notification
+        showNotification('✅ Test cases successfully posted to Jira comments!', 'success');
+
+        // Reload comments section to show new comment
+        setTimeout(() => {
+          window.location.reload();
+        }, 2000);
+      } else {
+        throw new Error(`Failed to post comment: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error('Failed to post to Jira:', error);
+
+      // Fallback to copy to clipboard
+      const formatted = formatTestCasesForClipboard(testCases);
+      try {
+        await navigator.clipboard.writeText(formatted);
+        showNotification('⚠️ Could not post directly to Jira. Test cases copied to clipboard - please paste manually.', 'warning');
+      } catch (clipboardError) {
+        showNotification('❌ Failed to post to Jira and copy to clipboard. Please try again.', 'error');
+      }
+
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">📝</span><span>Add to Jira</span>';
+      }
+    }
+  }
+
+  function formatAnalysisForJiraComment(analysis) {
+    const header = `h2. 📊 QAtalyst Requirements Analysis
+_Generated on ${new Date().toLocaleString()}_
+
+----
+
+`;
+
+    // Convert markdown-style formatting to Jira wiki markup
+    let jiraFormatted = analysis
+      .replace(/^### (.*$)/gm, 'h3. $1') // h3 headers
+      .replace(/^## (.*$)/gm, 'h2. $1')  // h2 headers
+      .replace(/^# (.*$)/gm, 'h1. $1')   // h1 headers
+      .replace(/\*\*(.*?)\*\*/g, '*$1*') // bold
+      .replace(/^\* /gm, '* ')           // bullet lists
+      .replace(/^- /gm, '* ');           // convert - to *
+
+    return header + jiraFormatted;
+  }
+
+  function formatTestScopeForJiraComment(testScope) {
+    const header = `h2. 📋 QAtalyst Test Scope Document
+_Generated on ${new Date().toLocaleString()}_
+
+----
+
+`;
+
+    // Convert markdown-style formatting to Jira wiki markup
+    let jiraFormatted = testScope
+      .replace(/^### (.*$)/gm, 'h3. $1') // h3 headers
+      .replace(/^## (.*$)/gm, 'h2. $1')  // h2 headers
+      .replace(/^# (.*$)/gm, 'h1. $1')   // h1 headers
+      .replace(/\*\*(.*?)\*\*/g, '*$1*') // bold
+      .replace(/^\* /gm, '* ')           // bullet lists
+      .replace(/^- /gm, '* ');           // convert - to *
+
+    return header + jiraFormatted;
+  }
+
+  function formatTestCasesForJiraComment(testCases) {
+    const header = `h2. 🤖 QAtalyst Generated Test Cases (${testCases.length} tests)
+_Generated on ${new Date().toLocaleString()}_
+
+----
+
+`;
+
+    const testCaseBlocks = testCases.map((tc, idx) => {
       const expectedResult = tc.expected_result || tc.expectedResult || 'Not specified';
-      
-      return `
-**${tc.id}: ${tc.title}**
+      const steps = tc.steps || [];
+      const preconditions = tc.preconditions || tc.precondition || 'None';
+      const testData = tc.testData || tc.test_data || 'Not specified';
+
+      const stepsFormatted = steps.length > 0
+        ? steps.map((step, i) => `# ${step}`).join('\n')
+        : 'Not specified';
+
+      return `h3. ${tc.id}: ${tc.title}
+*Priority:* {color:${getPriorityColor(tc.priority)}}${tc.priority}{color} | *Category:* {color:${getCategoryColor(tc.category)}}${tc.category}{color}
+
+*Preconditions:*
+${preconditions}
+
+*Test Steps:*
+${stepsFormatted}
+
+*Expected Result:*
+${expectedResult}
+
+*Test Data:*
+${testData}
+
+----
+`;
+    }).join('\n');
+
+    return header + testCaseBlocks;
+  }
+
+  function formatTestCasesForClipboard(testCases) {
+    return testCases.map(tc => {
+      const expectedResult = tc.expected_result || tc.expectedResult || 'Not specified';
+      return `**${tc.id}: ${tc.title}**
 Priority: ${tc.priority} | Type: ${tc.category}
-Expected Result: ${expectedResult}
-      `;
+Expected Result: ${expectedResult}`;
     }).join('\n---\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(formatted).then(() => {
-      alert('✅ Test cases copied to clipboard! Paste them into Jira comments.');
-    });
+  }
+
+  function getPriorityColor(priority) {
+    const colors = {
+      'P0': '#d32f2f',
+      'P1': '#f57c00',
+      'P2': '#fbc02d',
+      'P3': '#1976d2'
+    };
+    return colors[priority] || '#666';
+  }
+
+  function getCategoryColor(category) {
+    const colors = {
+      'Positive': '#388e3c',
+      'Negative': '#d32f2f',
+      'Edge': '#f57c00',
+      'Regression': '#7b1fa2',
+      'Integration': '#1976d2'
+    };
+    return colors[category] || '#666';
+  }
+
+  function showNotification(message, type = 'success') {
+    const container = document.getElementById('results-container');
+    if (!container) return;
+
+    const notification = document.createElement('div');
+    notification.className = type === 'success' ? 'qatalyst-success' :
+                           type === 'warning' ? 'qatalyst-warning' :
+                           'qatalyst-error';
+    notification.style.position = 'fixed';
+    notification.style.top = '20px';
+    notification.style.right = '460px';
+    notification.style.zIndex = '1000000';
+    notification.style.maxWidth = '400px';
+    notification.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    notification.innerHTML = message;
+
+    document.body.appendChild(notification);
+
+    setTimeout(() => {
+      notification.remove();
+    }, 5000);
   }
   
+  // Regeneration handlers for user review feature
+  async function handleRegenerateAnalysis(userReview) {
+    const resultsContainer = document.getElementById('results-container');
+    const btn = document.getElementById('regenerate-analysis-btn');
+    if (btn) btn.disabled = true;
+
+    try {
+      const settings = await chrome.storage.sync.get(['llmProvider', 'llmModel', 'apiKey']);
+
+      resultsContainer.innerHTML = '<div class="qatalyst-loading">🔄 Regenerating analysis based on your feedback...</div>';
+
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          action: 'regenerateWithReview',
+          data: {
+            type: 'analysis',
+            originalContent: currentAnalysisData.analysis,
+            userReview: userReview,
+            settings
+          }
+        }, response => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (!response) {
+            reject(new Error('No response received from extension'));
+          } else if (response.error) {
+            reject(new Error(response.error));
+          } else {
+            resolve(response);
+          }
+        });
+      });
+
+      // Update current data and display
+      currentAnalysisData.analysis = response.improvedContent;
+      displayAnalysisResults(currentAnalysisData);
+
+    } catch (error) {
+      resultsContainer.innerHTML = `<div class="qatalyst-error">❌ ${error.message.replace(/\\n/g, '<br>')}</div>`;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function handleRegenerateTestScope(userReview) {
+    const resultsContainer = document.getElementById('results-container');
+    const btn = document.getElementById('regenerate-scope-btn');
+    if (btn) btn.disabled = true;
+
+    try {
+      const settings = await chrome.storage.sync.get(['llmProvider', 'llmModel', 'apiKey']);
+
+      resultsContainer.innerHTML = '<div class="qatalyst-loading">🔄 Regenerating test scope based on your feedback...</div>';
+
+      const scopeContent = currentTestScopeData.scope || currentTestScopeData.testScope;
+
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          action: 'regenerateWithReview',
+          data: {
+            type: 'testScope',
+            originalContent: scopeContent,
+            userReview: userReview,
+            settings
+          }
+        }, response => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (!response) {
+            reject(new Error('No response received from extension'));
+          } else if (response.error) {
+            reject(new Error(response.error));
+          } else {
+            resolve(response);
+          }
+        });
+      });
+
+      // Update current data and display
+      currentTestScopeData.scope = response.improvedContent;
+      displayTestScopeResults(currentTestScopeData);
+
+    } catch (error) {
+      resultsContainer.innerHTML = `<div class="qatalyst-error">❌ ${error.message.replace(/\\n/g, '<br>')}</div>`;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function handleRegenerateTestCases(userReview) {
+    const resultsContainer = document.getElementById('results-container');
+    const btn = document.getElementById('regenerate-testcases-btn');
+    if (btn) btn.disabled = true;
+
+    try {
+      const settings = await chrome.storage.sync.get(['llmProvider', 'llmModel', 'apiKey', 'testCount']);
+
+      resultsContainer.innerHTML = '<div class="qatalyst-loading">🔄 Regenerating test cases based on your feedback...</div>';
+
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          action: 'regenerateWithReview',
+          data: {
+            type: 'testCases',
+            originalContent: JSON.stringify(currentTestCasesData.testCases),
+            userReview: userReview,
+            settings
+          }
+        }, response => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (!response) {
+            reject(new Error('No response received from extension'));
+          } else if (response.error) {
+            reject(new Error(response.error));
+          } else {
+            resolve(response);
+          }
+        });
+      });
+
+      // Update current data and display
+      currentTestCasesData.testCases = response.improvedTestCases;
+      displayTestCasesResults(currentTestCasesData);
+
+    } catch (error) {
+      resultsContainer.innerHTML = `<div class="qatalyst-error">❌ ${error.message.replace(/\\n/g, '<br>')}</div>`;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function showHelp() {
-    alert('QAtalyst Help\n\n1. Click "Analyse Requirements" to extract requirements\n2. Generate Test Scope for comprehensive planning\n3. Generate Test Cases with multi-agent AI\n4. Export to TestRail\n\nFor full documentation, visit Settings.');
+    alert('QAtalyst Help\n\n1. Click "Analyse Requirements" to extract requirements\n2. Generate Test Scope for comprehensive planning\n3. Generate Test Cases with multi-agent AI\n4. Use the review feature to provide feedback and regenerate\n5. Export to Jira\n\nFor full documentation, visit Settings.');
   }
-  
+
+  // Handle evolution completion
+  function handleEvolutionComplete(data) {
+    console.log('Evolution complete, updating UI with evolved tests');
+
+    if (!currentTestCasesData) {
+      console.warn('No current test cases data to update');
+      return;
+    }
+
+    // Update current data with evolved results
+    currentTestCasesData.testCases = data.testCases;
+    currentTestCasesData.total = data.statistics.total;
+    currentTestCasesData.byCategory = data.statistics.byCategory;
+    currentTestCasesData.byPriority = data.statistics.byPriority;
+    currentTestCasesData.evolved = true;
+    currentTestCasesData.finalEvolution = true;
+    currentTestCasesData.improvement = data.improvement;
+
+    // Re-display results with evolved tests
+    displayTestCasesResults(currentTestCasesData);
+
+    // Show success notification
+    const container = document.getElementById('results-container');
+    if (container) {
+      const notification = document.createElement('div');
+      notification.className = 'qatalyst-success';
+      notification.style.marginBottom = '16px';
+      notification.innerHTML = `
+        ✅ <strong>Evolutionary Optimization Complete!</strong><br>
+        ${data.improvement > 0 ? `Added ${data.improvement} optimized tests through genetic algorithm.` : 'Test suite optimized for better coverage.'}
+      `;
+
+      container.insertBefore(notification, container.firstChild);
+
+      // Auto-remove after 5 seconds
+      setTimeout(() => notification.remove(), 5000);
+    }
+  }
+
+  // Handle evolution error
+  function handleEvolutionError(error) {
+    console.error('Evolution error:', error);
+
+    const container = document.getElementById('results-container');
+    if (!container) return;
+
+    // Replace evolution progress with error message
+    const existing = container.querySelector('.evolution-progress-container');
+    if (existing) {
+      const notification = document.createElement('div');
+      notification.className = 'qatalyst-warning';
+      notification.innerHTML = `
+        ⚠️ <strong>Evolution Optimization Failed</strong><br>
+        ${error}<br>
+        <small>Base test cases are still available and valid.</small>
+      `;
+      existing.replaceWith(notification);
+    }
+  }
+
   // Initialize
   if (window.location.pathname.includes('/browse/')) {
     injectPanel();

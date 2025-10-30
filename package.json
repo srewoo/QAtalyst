@@ -1,0 +1,40 @@
+{
+  "name": "qatalyst",
+  "version": "9.2.2",
+  "description": "AI-Powered Test Case Generation for Jira - Advanced Chrome Extension with Multi-Agent System & Evolutionary Optimization",
+  "main": "chrome-extension/background.js",
+  "scripts": {
+    "build": "./build.sh",
+    "test": "echo \"No tests configured yet\" && exit 0",
+    "lint": "eslint chrome-extension/**/*.js",
+    "format": "prettier --write chrome-extension/**/*.{js,html,css,json}",
+    "zip": "cd chrome-extension && zip -r ../qatalyst-v9.2.2-webstore.zip * -x '*.DS_Store'"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/qatalyst.git"
+  },
+  "keywords": [
+    "chrome-extension",
+    "jira",
+    "qa",
+    "testing",
+    "test-automation",
+    "ai",
+    "openai",
+    "claude",
+    "gemini",
+    "multi-agent",
+    "genetic-algorithm"
+  ],
+  "author": "QA Engineering Team",
+  "license": "PROPRIETARY",
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "private": true
+}

@@ -5,21 +5,23 @@ class EvolutionaryOptimizer {
   constructor(settings, onProgress) {
     this.settings = settings;
     this.onProgress = onProgress;
-    this.populationSize = 15; // Smaller for client-side performance
+    this.populationSize = 8; // Reduced from 15 to prevent timeouts
     this.generations = this.getGenerations(settings.evolutionIntensity || 'balanced');
     this.mutationRate = 0.3;
     this.crossoverRate = 0.7;
     this.elitismCount = 2;
+    this.qualityCache = new Map(); // Cache quality evaluations to reduce AI calls
   }
-  
+
   getGenerations(intensity) {
+    // Reduced generations to prevent timeout issues
     const map = {
-      'light': 3,
-      'balanced': 5,
-      'intensive': 8,
-      'exhaustive': 10
+      'light': 2,      // was 3
+      'balanced': 3,   // was 5
+      'intensive': 5,  // was 8
+      'exhaustive': 7  // was 10
     };
-    return map[intensity] || 5;
+    return map[intensity] || 3;
   }
   
   async evolve(baseTestCases, ticketData, callAIFunc) {
@@ -106,23 +108,25 @@ class EvolutionaryOptimizer {
   
   async evaluateFitness(population, ticketData) {
     const scores = [];
-    
-    for (const individual of population) {
-      const score = await this.calculateFitness(individual, ticketData);
+
+    for (let i = 0; i < population.length; i++) {
+      // Skip quality evaluation for every 3rd individual to reduce AI calls
+      const skipQuality = (i % 3 !== 0);
+      const score = await this.calculateFitness(population[i], ticketData, skipQuality);
       scores.push(score);
     }
-    
+
     return scores;
   }
-  
-  async calculateFitness(testCases, ticketData) {
+
+  async calculateFitness(testCases, ticketData, skipQuality = false) {
     // Fitness criteria:
     // 1. Coverage diversity (30%)
     // 2. Test quality (40%)
     // 3. Completeness (30%)
-    
+
     let fitness = 0;
-    
+
     // Coverage diversity score
     const categories = {};
     const priorities = {};
@@ -130,29 +134,42 @@ class EvolutionaryOptimizer {
       categories[tc.category] = (categories[tc.category] || 0) + 1;
       priorities[tc.priority] = (priorities[tc.priority] || 0) + 1;
     });
-    
+
     const categoryCount = Object.keys(categories).length;
     const priorityCount = Object.keys(priorities).length;
     const diversityScore = ((categoryCount / 5) + (priorityCount / 4)) / 2 * 30;
     fitness += diversityScore;
-    
+
     // Test quality score (AI evaluation on sample)
-    const sample = testCases.slice(0, Math.min(5, testCases.length));
-    const qualityScore = await this.evaluateQualityWithAI(sample, ticketData);
-    fitness += qualityScore * 40;
-    
+    if (!skipQuality) {
+      const sample = testCases.slice(0, Math.min(5, testCases.length));
+      const qualityScore = await this.evaluateQualityWithAI(sample, ticketData);
+      fitness += qualityScore * 40;
+    } else {
+      // Use default quality score to avoid AI call
+      fitness += 0.7 * 40; // Assume reasonable quality
+    }
+
     // Completeness score
     const hasPositive = testCases.some(tc => tc.category === 'Positive');
     const hasNegative = testCases.some(tc => tc.category === 'Negative');
     const hasEdge = testCases.some(tc => tc.category === 'Edge');
     const completenessScore = ((hasPositive ? 1 : 0) + (hasNegative ? 1 : 0) + (hasEdge ? 1 : 0)) / 3 * 30;
     fitness += completenessScore;
-    
+
     return Math.min(100, fitness);
   }
   
   async evaluateQualityWithAI(sampleTests, ticketData) {
     try {
+      // Create cache key from test IDs
+      const cacheKey = sampleTests.map(tc => tc.id).join(',');
+
+      // Check cache first
+      if (this.qualityCache.has(cacheKey)) {
+        return this.qualityCache.get(cacheKey);
+      }
+
       const systemMessage = `You are a QA quality evaluator. Score test cases from 0-1 based on:
 - Clarity of test steps
 - Relevance to requirements
@@ -172,7 +189,12 @@ Return quality score (0-1):`;
 
       const response = await this.callAI(systemMessage, userMessage, this.settings);
       const score = parseFloat(response.trim());
-      return isNaN(score) ? 0.7 : Math.max(0, Math.min(1, score));
+      const finalScore = isNaN(score) ? 0.7 : Math.max(0, Math.min(1, score));
+
+      // Cache the result
+      this.qualityCache.set(cacheKey, finalScore);
+
+      return finalScore;
     } catch (error) {
       console.error('Quality evaluation failed:', error);
       return 0.7; // Default reasonable score

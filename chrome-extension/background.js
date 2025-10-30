@@ -2,18 +2,21 @@
 // Direct API calls to OpenAI, Claude, and Gemini with streaming support
 // Multi-agent test generation system
 
-const REQUEST_TIMEOUT = 90000; // 90 seconds for AI responses
-const MAX_RETRIES = 2;
-const RETRY_DELAY = 2000; // 2 seconds
-
-// Active streaming controllers for cancellation
-const activeStreams = new Map();
-
-// Import agent system, evolution, integrations, and enhancements
+// Import configuration and utilities
+importScripts('config.js');
+importScripts('security.js');
 importScripts('agents.js');
 importScripts('evolution.js');
 importScripts('integrations.js');
 importScripts('enhancements.js');
+
+// Use constants from config
+const REQUEST_TIMEOUT = CONFIG.REQUEST_TIMEOUT;
+const MAX_RETRIES = CONFIG.MAX_RETRIES;
+const RETRY_DELAY = CONFIG.RETRY_DELAY;
+
+// Active streaming controllers for cancellation
+const activeStreams = new Map();
 
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -80,7 +83,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ success: true });
     return true;
   }
-  
+
+  // Regenerate with user review
+  if (request.action === 'regenerateWithReview') {
+    handleRegenerateWithReview(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
   return false;
 });
 
@@ -128,10 +139,19 @@ async function callOpenAI(messages, settings, retries = MAX_RETRIES) {
       await sleep(RETRY_DELAY);
       return callOpenAI(messages, settings, retries - 1);
     }
-    
+
     if (error.name === 'AbortError') {
-      throw new Error('Request timeout - AI is taking too long. Please try again.');
+      throw new Error(CONFIG.ERRORS.TIMEOUT);
     }
+
+    // Better error messages
+    if (error.message.includes('Rate limit')) {
+      throw new Error(CONFIG.ERRORS.RATE_LIMIT);
+    }
+    if (error.message.includes('network') || error.message.includes('fetch')) {
+      throw new Error(CONFIG.ERRORS.NETWORK_ERROR);
+    }
+
     throw error;
   }
 }
@@ -174,16 +194,25 @@ async function callGemini(prompt, settings, retries = MAX_RETRIES) {
     
   } catch (error) {
     clearTimeout(timeoutId);
-    
+
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Gemini request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
       return callGemini(prompt, settings, retries - 1);
     }
-    
+
     if (error.name === 'AbortError') {
-      throw new Error('Request timeout - AI is taking too long. Please try again.');
+      throw new Error(CONFIG.ERRORS.TIMEOUT);
     }
+
+    // Better error messages
+    if (error.message.includes('Rate limit')) {
+      throw new Error(CONFIG.ERRORS.RATE_LIMIT);
+    }
+    if (error.message.includes('network') || error.message.includes('fetch')) {
+      throw new Error(CONFIG.ERRORS.NETWORK_ERROR);
+    }
+
     throw error;
   }
 }
@@ -226,16 +255,25 @@ async function callClaude(messages, settings, retries = MAX_RETRIES) {
     
   } catch (error) {
     clearTimeout(timeoutId);
-    
+
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Claude request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
       return callClaude(messages, settings, retries - 1);
     }
-    
+
     if (error.name === 'AbortError') {
-      throw new Error('Request timeout - AI is taking too long. Please try again.');
+      throw new Error(CONFIG.ERRORS.TIMEOUT);
     }
+
+    // Better error messages
+    if (error.message.includes('Rate limit')) {
+      throw new Error(CONFIG.ERRORS.RATE_LIMIT);
+    }
+    if (error.message.includes('network') || error.message.includes('fetch')) {
+      throw new Error(CONFIG.ERRORS.NETWORK_ERROR);
+    }
+
     throw error;
   }
 }
@@ -244,47 +282,49 @@ async function callClaude(messages, settings, retries = MAX_RETRIES) {
 async function callOpenAIStream(messages, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
-  
+
+  let reader = null;
+
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetch(CONFIG.ENDPOINTS.openai, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${settings.apiKey}`
       },
       body: JSON.stringify({
-        model: settings.llmModel || 'gpt-4o',
+        model: settings.llmModel || CONFIG.DEFAULT_MODELS.openai,
         messages: messages,
         stream: true,
-        temperature: settings.temperature || 0.7,
-        max_tokens: settings.maxTokens || 4000
+        temperature: settings.temperature || CONFIG.DEFAULT_TEMPERATURE,
+        max_tokens: settings.maxTokens || CONFIG.DEFAULT_MAX_TOKENS
       }),
       signal: controller.signal
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.error?.message || `OpenAI API error: ${response.status}`);
     }
-    
-    const reader = response.body.getReader();
+
+    reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let fullResponse = '';
-    
+
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
-      
+
       buffer += decoder.decode(value, {stream: true});
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-      
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') continue;
-          
+
           try {
             const parsed = JSON.parse(data);
             const chunk = parsed.choices[0]?.delta?.content;
@@ -298,16 +338,24 @@ async function callOpenAIStream(messages, settings, onChunk, requestId) {
         }
       }
     }
-    
-    activeStreams.delete(requestId);
+
     return fullResponse;
-    
+
   } catch (error) {
-    activeStreams.delete(requestId);
     if (error.name === 'AbortError') {
       throw new Error('Generation cancelled by user');
     }
     throw error;
+  } finally {
+    // CRITICAL: Always cleanup resources
+    if (reader) {
+      try {
+        await reader.cancel();
+      } catch (e) {
+        // Ignore cancel errors
+      }
+    }
+    activeStreams.delete(requestId);
   }
 }
 
@@ -315,9 +363,11 @@ async function callOpenAIStream(messages, settings, onChunk, requestId) {
 async function callClaudeStream(messages, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
-  
+
+  let reader = null;
+
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(CONFIG.ENDPOINTS.claude, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -325,41 +375,41 @@ async function callClaudeStream(messages, settings, onChunk, requestId) {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: settings.llmModel || 'claude-3-5-sonnet-20241022',
-        max_tokens: settings.maxTokens || 4000,
+        model: settings.llmModel || CONFIG.DEFAULT_MODELS.claude,
+        max_tokens: settings.maxTokens || CONFIG.DEFAULT_MAX_TOKENS,
         system: messages[0].role === 'system' ? messages[0].content : undefined,
         messages: messages.filter(m => m.role !== 'system').map(m => ({
           role: m.role === 'user' ? 'user' : 'assistant',
           content: m.content
         })),
-        temperature: settings.temperature || 0.7,
+        temperature: settings.temperature || CONFIG.DEFAULT_TEMPERATURE,
         stream: true
       }),
       signal: controller.signal
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.error?.message || `Claude API error: ${response.status}`);
     }
-    
-    const reader = response.body.getReader();
+
+    reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let fullResponse = '';
-    
+
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
-      
+
       buffer += decoder.decode(value, {stream: true});
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-      
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
-          
+
           try {
             const parsed = JSON.parse(data);
             if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
@@ -373,16 +423,24 @@ async function callClaudeStream(messages, settings, onChunk, requestId) {
         }
       }
     }
-    
-    activeStreams.delete(requestId);
+
     return fullResponse;
-    
+
   } catch (error) {
-    activeStreams.delete(requestId);
     if (error.name === 'AbortError') {
       throw new Error('Generation cancelled by user');
     }
     throw error;
+  } finally {
+    // CRITICAL: Always cleanup resources
+    if (reader) {
+      try {
+        await reader.cancel();
+      } catch (e) {
+        // Ignore cancel errors
+      }
+    }
+    activeStreams.delete(requestId);
   }
 }
 
@@ -390,11 +448,13 @@ async function callClaudeStream(messages, settings, onChunk, requestId) {
 async function callGeminiStream(prompt, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
-  
+
+  let reader = null;
+
   try {
-    const model = settings.llmModel || 'gemini-2.0-flash-exp';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${settings.apiKey}&alt=sse`;
-    
+    const model = settings.llmModel || CONFIG.DEFAULT_MODELS.gemini;
+    const url = `${CONFIG.ENDPOINTS.gemini}/${model}:streamGenerateContent?key=${settings.apiKey}&alt=sse`;
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -405,35 +465,35 @@ async function callGeminiStream(prompt, settings, onChunk, requestId) {
           parts: [{ text: prompt }]
         }],
         generationConfig: {
-          temperature: settings.temperature || 0.7,
-          maxOutputTokens: settings.maxTokens || 4000
+          temperature: settings.temperature || CONFIG.DEFAULT_TEMPERATURE,
+          maxOutputTokens: settings.maxTokens || CONFIG.DEFAULT_MAX_TOKENS
         }
       }),
       signal: controller.signal
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.error?.message || `Gemini API error: ${response.status}`);
     }
-    
-    const reader = response.body.getReader();
+
+    reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let fullResponse = '';
-    
+
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
-      
+
       buffer += decoder.decode(value, {stream: true});
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-      
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
-          
+
           try {
             const parsed = JSON.parse(data);
             const chunk = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -447,16 +507,24 @@ async function callGeminiStream(prompt, settings, onChunk, requestId) {
         }
       }
     }
-    
-    activeStreams.delete(requestId);
+
     return fullResponse;
-    
+
   } catch (error) {
-    activeStreams.delete(requestId);
     if (error.name === 'AbortError') {
       throw new Error('Generation cancelled by user');
     }
     throw error;
+  } finally {
+    // CRITICAL: Always cleanup resources
+    if (reader) {
+      try {
+        await reader.cancel();
+      } catch (e) {
+        // Ignore cancel errors
+      }
+    }
+    activeStreams.delete(requestId);
   }
 }
 
@@ -514,19 +582,24 @@ async function callAI(systemMessage, userMessage, settings) {
 // Validate settings before API calls
 function validateSettings(settings) {
   const errors = [];
-  
+
   if (!settings.apiKey || settings.apiKey.trim() === '') {
-    errors.push('API Key is required. Please configure it in extension settings.');
+    errors.push(CONFIG.ERRORS.NO_API_KEY);
+  } else {
+    // Validate API key format
+    if (!securityManager.validateApiKey(settings.apiKey, settings.llmProvider)) {
+      errors.push(`Invalid API key format for ${settings.llmProvider}. Please check your API key.`);
+    }
   }
-  
+
   if (!settings.llmProvider) {
-    errors.push('LLM Provider is required. Please select one in settings.');
+    errors.push(CONFIG.ERRORS.NO_PROVIDER);
   }
-  
+
   if (!settings.llmModel) {
-    errors.push('LLM Model is required. Please select one in settings.');
+    errors.push(CONFIG.ERRORS.NO_MODEL);
   }
-  
+
   if (errors.length > 0) {
     throw new Error(errors.join('\n'));
   }
@@ -890,9 +963,35 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     });
   }
   
-  // Apply evolutionary optimization if enabled
-  let finalTestCases = results.testCases;
+  // Store original test count for comparison
+  const originalTestCount = results.testCases.length;
+
+  // Return base results immediately (don't wait for evolution)
+  const baseResponse = {
+    testCases: results.testCases,
+    ...results.statistics,
+    analysis: results.analysis,
+    review: results.review,
+    agentResults: results.agentResults,
+    evolved: false,
+    evolutionPending: settings.enableEvolution && results.testCases.length > 0,
+    originalCount: originalTestCount,
+    enhancements: enhancementResults
+  };
+
+  // Start evolution in background (non-blocking)
   if (settings.enableEvolution && results.testCases.length > 0) {
+    runEvolutionInBackground(results.testCases, ticketData, settings, tabId, originalTestCount);
+  }
+
+  return baseResponse;
+}
+
+// Run evolutionary optimization in background without blocking
+async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, originalCount) {
+  try {
+    console.log('Starting background evolution with', settings.evolutionIntensity, 'intensity');
+
     const evolution = new EvolutionaryOptimizer(settings, (progress) => {
       // Send evolution progress to content script
       chrome.tabs.sendMessage(tabId, {
@@ -900,36 +999,146 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
         progress: progress
       });
     });
-    
-    finalTestCases = await evolution.evolve(
-      results.testCases,
-      ticketData,
-      callAI.bind(null)
-    );
-    
-    // Recalculate statistics
-    results.statistics = {
-      total: finalTestCases.length,
-      byCategory: finalTestCases.reduce((acc, tc) => {
+
+    const evolvedTests = await evolution.evolve(baseTests, ticketData, callAI.bind(null));
+
+    // Calculate new statistics
+    const statistics = {
+      total: evolvedTests.length,
+      byCategory: evolvedTests.reduce((acc, tc) => {
         acc[tc.category] = (acc[tc.category] || 0) + 1;
         return acc;
       }, {}),
-      byPriority: finalTestCases.reduce((acc, tc) => {
+      byPriority: evolvedTests.reduce((acc, tc) => {
         acc[tc.priority] = (acc[tc.priority] || 0) + 1;
         return acc;
       }, {})
     };
+
+    console.log('Evolution complete:', evolvedTests.length, 'tests (was', originalCount, ')');
+
+    // Send completion message to update UI
+    chrome.tabs.sendMessage(tabId, {
+      action: 'evolutionComplete',
+      data: {
+        testCases: evolvedTests,
+        statistics: statistics,
+        originalCount: originalCount,
+        improvement: evolvedTests.length - originalCount
+      }
+    });
+  } catch (error) {
+    console.error('Evolution background error:', error);
+
+    // Send error message to UI
+    chrome.tabs.sendMessage(tabId, {
+      action: 'evolutionError',
+      error: error.message
+    });
   }
-  
-  return {
-    testCases: finalTestCases,
-    ...results.statistics,
-    analysis: results.analysis,
-    review: results.review,
-    agentResults: results.agentResults,
-    evolved: settings.enableEvolution,
-    enhancements: enhancementResults
-  };
+}
+
+// Handle regeneration with user review
+async function handleRegenerateWithReview(data) {
+  validateSettings(data.settings);
+
+  const { type, originalContent, userReview, settings } = data;
+
+  // Construct prompts based on type
+  let systemMessage = '';
+  let userMessage = '';
+
+  if (type === 'analysis') {
+    systemMessage = `You are a senior business analyst. You previously generated a requirement analysis, and the user has provided feedback to improve it.
+Your task is to incorporate the user's feedback and generate an improved, more comprehensive version.`;
+
+    userMessage = `Here is the original requirement analysis you generated:
+
+---
+${originalContent}
+---
+
+The user provided this feedback:
+"${userReview}"
+
+Please regenerate the requirement analysis incorporating the user's feedback. Maintain the same structured markdown format but enhance it based on the feedback provided.`;
+
+  } else if (type === 'testScope') {
+    systemMessage = `You are a test planning expert. You previously generated a test scope document, and the user has provided feedback to improve it.
+Your task is to incorporate the user's feedback and generate an improved, more comprehensive version.`;
+
+    userMessage = `Here is the original test scope you generated:
+
+---
+${originalContent}
+---
+
+The user provided this feedback:
+"${userReview}"
+
+Please regenerate the test scope incorporating the user's feedback. Maintain the same structured markdown format but enhance it based on the feedback provided.`;
+
+  } else if (type === 'testCases') {
+    systemMessage = `You are an expert QA engineer. You previously generated test cases, and the user has provided feedback to improve them.
+Your task is to incorporate the user's feedback and generate improved test cases.
+
+Generate test cases in this EXACT JSON format:
+{
+  "testCases": [
+    {
+      "id": "TC-XXX-001",
+      "title": "Clear test case title",
+      "category": "Positive|Negative|Edge|Integration",
+      "priority": "P0|P1|P2|P3",
+      "description": "What this test validates",
+      "preconditions": "Setup required",
+      "steps": ["Step 1", "Step 2", "Step 3"],
+      "expected_result": "Expected outcome",
+      "test_data": "Required test data"
+    }
+  ]
+}`;
+
+    userMessage = `Here are the original test cases you generated:
+
+---
+${originalContent}
+---
+
+The user provided this feedback:
+"${userReview}"
+
+Please regenerate the test cases incorporating the user's feedback. Return the result as a JSON object with a "testCases" array. You can add new test cases, modify existing ones, or remove inadequate ones based on the feedback.`;
+  } else {
+    throw new Error(`Unknown regeneration type: ${type}`);
+  }
+
+  // Call AI with the combined prompt
+  const improvedResponse = await callAI(systemMessage, userMessage, settings);
+
+  // Handle test cases specially (need JSON parsing)
+  if (type === 'testCases') {
+    try {
+      const jsonMatch = improvedResponse.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('No valid JSON found in improved response');
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      const improvedTestCases = parsed.testCases;
+
+      if (!Array.isArray(improvedTestCases)) {
+        throw new Error('testCases is not an array');
+      }
+
+      return { improvedTestCases };
+    } catch (error) {
+      throw new Error(`Failed to parse improved test cases: ${error.message}`);
+    }
+  } else {
+    // For analysis and test scope, return the improved content directly
+    return { improvedContent: improvedResponse };
+  }
 }
 
 // Installation handler
