@@ -322,6 +322,7 @@ Acceptance Criteria:
 
 | Version | Date | Features |
 |---------|------|----------|
+| **v10.0.1** | 2025-10-30 | 🐛 Bug fixes (settings save, DOM loading) |
 | **v9.2.2** | 2025-10-30 | 🔒 Security fixes, user review feature, bug fixes |
 | **v9.1.2** | 2025-10-29 | 🐛 Bug fixes (settings save, DOM loading) |
 | **v9.1.0** | 2025-10-29 | 📚 Enhanced Help & Docs tab |

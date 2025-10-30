@@ -1652,7 +1652,7 @@ Expected Result: ${expectedResult}`;
   function showHelp() {
     const helpContent = `
 ╔══════════════════════════════════════════╗
-║        🚀 QAtalyst v9.2.2 - Help        ║
+║        🚀 QAtalyst v10.0.1 - Help        ║
 ╚══════════════════════════════════════════╝
 
 📋 CORE FEATURES:
@@ -1746,7 +1746,6 @@ Agent Selection:
    • Use clipboard fallback if direct posting fails
    • See browser console for detailed errors
 
-📖 For full documentation: https://github.com/anthropics/qatalyst
     `.trim();
 
     // Create modal for better formatting
