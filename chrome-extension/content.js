@@ -8,7 +8,7 @@
   let streamingContent = '';
   let isStreaming = false;
   
-  // Listen for streaming chunks, agent progress, evolution progress, and enhancement progress
+  // Listen for streaming chunks, agent progress, evolution progress, enhancement progress, and historical mining progress
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'streamChunk') {
       handleStreamChunk(request.requestId, request.chunk);
@@ -21,6 +21,9 @@
     }
     if (request.action === 'enhancementProgress') {
       handleEnhancementProgress(request.status);
+    }
+    if (request.action === 'historicalMiningProgress') {
+      handleHistoricalMiningProgress(request.status);
     }
     if (request.action === 'evolutionComplete') {
       handleEvolutionComplete(request.data);
@@ -158,7 +161,7 @@
   function handleEnhancementProgress(status) {
     const resultsContainer = document.getElementById('results-container');
     if (!resultsContainer) return;
-    
+
     const enhancementHTML = `
       <div class="enhancement-progress-container">
         <div class="enhancement-header">
@@ -183,10 +186,46 @@
         </div>
       </div>
     `;
-    
+
     resultsContainer.innerHTML = enhancementHTML;
   }
-  
+
+  function handleHistoricalMiningProgress(status) {
+    const resultsContainer = document.getElementById('results-container');
+    if (!resultsContainer) return;
+
+    const historicalHTML = `
+      <div class="historical-mining-progress-container">
+        <div class="historical-mining-header">
+          <h3>🧠 Historical Test Case Mining</h3>
+          <div class="historical-mining-status ${status}">
+            ${status === 'analyzing' ? '⚡ Mining historical bugs...' : '✅ Mining complete'}
+          </div>
+        </div>
+        <div class="historical-mining-info">
+          <div class="historical-mining-item">
+            <span class="historical-mining-icon">🔍</span>
+            <span>Extracting Features</span>
+          </div>
+          <div class="historical-mining-item">
+            <span class="historical-mining-icon">🐛</span>
+            <span>Searching Historical Bugs</span>
+          </div>
+          <div class="historical-mining-item">
+            <span class="historical-mining-icon">📊</span>
+            <span>Analyzing Patterns</span>
+          </div>
+          <div class="historical-mining-item">
+            <span class="historical-mining-icon">🛡️</span>
+            <span>Generating Prevention Tests</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    resultsContainer.innerHTML = historicalHTML;
+  }
+
   // Wait for Jira page to load
   function waitForJiraLoad() {
     return new Promise((resolve) => {
@@ -224,8 +263,11 @@
     // Create panel HTML
     panel.innerHTML = `
       <div class="qatalyst-header">
-        <h3>🚀 QAtalyst</h3>
-        <button class="qatalyst-close" id="qatalyst-close">×</button>
+        <h3>QAtalyst</h3>
+        <div class="qatalyst-header-buttons">
+          <button class="qatalyst-expand" id="qatalyst-expand" title="Expand/Collapse">⇔</button>
+          <button class="qatalyst-close" id="qatalyst-close">×</button>
+        </div>
       </div>
       <div class="qatalyst-content">
         <div class="qatalyst-ticket-info">
@@ -466,7 +508,13 @@
     document.getElementById('qatalyst-close')?.addEventListener('click', () => {
       document.getElementById('qatalyst-panel').style.display = 'none';
     });
-    
+
+    // Expand button
+    document.getElementById('qatalyst-expand')?.addEventListener('click', () => {
+      const panel = document.getElementById('qatalyst-panel');
+      panel.classList.toggle('expanded');
+    });
+
     // Analyze button
     document.getElementById('analyze-btn')?.addEventListener('click', async () => {
       await handleAnalyze(ticketKey, ticketData);
@@ -711,7 +759,9 @@
         'enableEvolution', 'evolutionIntensity',
         'enableRegression', 'testDistribution', 'testCount',
         'enablePositiveAgent', 'enableNegativeAgent', 'enableEdgeAgent',
-        'enableRegressionAgent', 'enableIntegrationAgent', 'enableReviewAgent'
+        'enableRegressionAgent', 'enableIntegrationAgent', 'enableReviewAgent',
+        'enableHistoricalMining', 'historicalMaxResults', 'historicalJqlFilters',
+        'jiraEmail', 'jiraApiToken'
       ]);
       
       // Validate settings
@@ -726,14 +776,15 @@
       // Use multi-agent if enabled
       if (settings.enableMultiAgent) {
         resultsContainer.innerHTML = '<div class="qatalyst-loading">🧬 Initializing multi-agent system...</div>';
-        
+
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: 'generateTestCasesMultiAgent',
             data: {
               ticketKey,
               ticketData,
-              settings
+              settings,
+              baseUrl: window.location.origin
             }
           }, response => {
             if (chrome.runtime.lastError) {
@@ -994,6 +1045,40 @@
       }
     }
 
+    // Historical insights badge
+    let historicalBadge = '';
+    if (data.historicalInsights) {
+      const insights = data.historicalInsights;
+      const historicalTestCount = data.testCases.filter(tc => tc.source === 'historical').length;
+
+      if (historicalTestCount > 0 || insights.bugPatterns.length > 0) {
+        historicalBadge = `
+          <div class="historical-insights-section">
+            <h5>🧠 Historical Insights (from ${insights.totalBugsAnalyzed} past bugs)</h5>
+            <div class="historical-stats">
+              ${historicalTestCount > 0 ? `<span class="hist-stat">🛡️ ${historicalTestCount} bug-prevention tests added</span>` : ''}
+              ${insights.bugPatterns.length > 0 ? `<span class="hist-stat">📊 ${insights.bugPatterns.length} bug patterns identified</span>` : ''}
+              ${insights.riskAreas.length > 0 ? `<span class="hist-stat">⚠️ ${insights.riskAreas.length} risk areas detected</span>` : ''}
+            </div>
+
+            ${data.historicalBugs && data.historicalBugs.length > 0 ? `
+              <details class="historical-details">
+                <summary>View ${data.historicalBugs.length} analyzed bugs</summary>
+                <ul class="historical-bugs-list">
+                  ${data.historicalBugs.slice(0, 10).map(bug => `
+                    <li>
+                      <a href="${bug.url}" target="_blank">${bug.key}</a>: ${bug.summary}
+                      <span class="bug-date">(${new Date(bug.created).toLocaleDateString()})</span>
+                    </li>
+                  `).join('')}
+                </ul>
+              </details>
+            ` : ''}
+          </div>
+        `;
+      }
+    }
+
     // Evolution status badge
     let evolutionBadge = '';
     if (data.evolutionPending && !data.finalEvolution) {
@@ -1015,6 +1100,7 @@
         <h4>✅ Generated Test Cases</h4>
         ${evolutionBadge}
         ${enhancementBadges}
+        ${historicalBadge}
         <div class="test-stats">
           <span class="stat">Total: ${stats.total}</span>
           <span class="stat">Positive: ${stats.positive}</span>
@@ -1083,15 +1169,27 @@
     return testCases.map((tc, idx) => {
       // Handle both camelCase and snake_case property names
       const expectedResult = tc.expected_result || tc.expectedResult || 'Not specified';
-      
+
+      // Add historical badge
+      const sourceBadge = tc.source === 'historical'
+        ? `<span class="source-badge historical">🛡️ Bug Prevention</span>`
+        : '';
+
+      const historicalInfo = tc.historicalReference
+        ? `<div class="historical-ref">📚 Based on: <a href="${window.location.origin}/browse/${tc.historicalReference}" target="_blank">${tc.historicalReference}</a></div>`
+        : '';
+
       return `
-      <div class="test-case" data-testid="test-case-${idx}">
+      <div class="test-case ${tc.source === 'historical' ? 'historical-test' : ''}" data-testid="test-case-${idx}">
         <div class="tc-header">
           <span class="tc-id">${tc.id}</span>
           <span class="tc-priority ${tc.priority}">${tc.priority}</span>
           <span class="tc-category">${tc.category}</span>
+          ${sourceBadge}
         </div>
         <div class="tc-title">${tc.title}</div>
+        ${tc.preventionReason ? `<div class="prevention-reason">🛡️ ${tc.preventionReason}</div>` : ''}
+        ${historicalInfo}
         <div class="tc-expected">
           <strong>Expected Result:</strong> ${expectedResult}
         </div>
@@ -1552,7 +1650,169 @@ Expected Result: ${expectedResult}`;
   }
 
   function showHelp() {
-    alert('QAtalyst Help\n\n1. Click "Analyse Requirements" to extract requirements\n2. Generate Test Scope for comprehensive planning\n3. Generate Test Cases with multi-agent AI\n4. Use the review feature to provide feedback and regenerate\n5. Export to Jira\n\nFor full documentation, visit Settings.');
+    const helpContent = `
+╔══════════════════════════════════════════╗
+║        🚀 QAtalyst v9.2.2 - Help        ║
+╚══════════════════════════════════════════╝
+
+📋 CORE FEATURES:
+
+1️⃣  Analyse Requirements
+   • AI-powered extraction of requirements from Jira tickets
+   • Enriched with Confluence, Figma, and Google Docs
+   • Structured analysis ready for test planning
+
+2️⃣  Generate Test Scope
+   • Comprehensive test planning document
+   • Test objectives, in-scope/out-scope items
+   • Risk assessment and success criteria
+
+3️⃣  Generate Test Cases
+   • Multi-agent AI system generates 20-30 test cases
+   • Distributed across categories: Positive, Negative, Edge, Regression, Integration
+   • Includes preconditions, steps, expected results, test data
+
+🎯 ADVANCED FEATURES:
+
+🧬 Multi-Agent System (Settings → Enable Multi-Agent)
+   • Specialized AI agents for each test category
+   • Review agent validates test quality
+   • Parallel generation for faster results
+
+🔬 Evolutionary Optimization (Settings → Enable Evolution)
+   • Genetic algorithm improves test coverage
+   • Intensity levels: Light, Balanced, Intensive, Exhaustive
+   • Adds optimized tests through mutation & crossover
+
+🎯 Enhanced Features (Settings → Enable Enhanced)
+   • Gap Analysis: Identifies missing test scenarios
+   • Complexity Scaling: Adjusts test count based on ticket complexity
+   • Context-Aware Generation: Uses ticket patterns
+
+💬 USER REVIEW & FEEDBACK:
+   • Provide feedback after generation
+   • Click "Regenerate with Feedback" to improve results
+   • AI incorporates your suggestions
+
+📝 ADD TO JIRA:
+   • Direct posting to Jira comments via REST API
+   • Rich formatting with color-coded priorities
+   • Automatic fallback to clipboard if needed
+   • Works for Requirements, Test Scope, and Test Cases
+
+⚙️ SETTINGS:
+
+LLM Provider Options:
+   • OpenAI (GPT-4o, GPT-4o-mini)
+   • Google Gemini (2.0 Flash, 1.5 Pro)
+   • Anthropic Claude (Sonnet, Opus)
+
+External Integrations:
+   • Confluence API for linked pages
+   • Figma API for design specs
+   • Google Docs API for requirement docs
+
+🎨 CUSTOMIZATION:
+
+Test Distribution:
+   • Adjust percentage for each category
+   • Set total test count (10-100)
+
+Evolution Intensity:
+   • Light: 2 generations, quick results
+   • Balanced: 3 generations, good quality
+   • Intensive: 5 generations, thorough
+   • Exhaustive: 7 generations, maximum coverage
+
+Agent Selection:
+   • Enable/disable individual agents
+   • Customize test generation strategy
+
+📊 PROGRESS TRACKING:
+   • Real-time agent progress indicators
+   • Evolution generation tracking
+   • Enhancement analysis status
+   • Visual progress bars
+
+✨ TIPS:
+   • Start with "Analyse Requirements" for best results
+   • Use feedback feature to refine outputs
+   • Enable evolution for comprehensive coverage
+   • Configure external integrations for enriched context
+
+🔧 TROUBLESHOOTING:
+   • Ensure API key is configured in Settings
+   • Check Jira permissions for posting comments
+   • Use clipboard fallback if direct posting fails
+   • See browser console for detailed errors
+
+📖 For full documentation: https://github.com/anthropics/qatalyst
+    `.trim();
+
+    // Create modal for better formatting
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      z-index: 10000000;
+      max-width: 700px;
+      max-height: 80vh;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    `;
+
+    modal.innerHTML = `
+      <div style="position: relative;">
+        <button id="close-help-modal" style="
+          position: absolute;
+          top: -10px;
+          right: -10px;
+          background: #ef4444;
+          color: white;
+          border: none;
+          width: 30px;
+          height: 30px;
+          border-radius: 50%;
+          cursor: pointer;
+          font-size: 18px;
+          font-weight: bold;
+        ">×</button>
+        <pre style="margin: 0; font-family: 'Courier New', monospace; font-size: 12px;">${helpContent}</pre>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Add backdrop
+    const backdrop = document.createElement('div');
+    backdrop.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      z-index: 9999999;
+    `;
+    document.body.appendChild(backdrop);
+
+    // Close handlers
+    const closeModal = () => {
+      modal.remove();
+      backdrop.remove();
+    };
+
+    document.getElementById('close-help-modal').addEventListener('click', closeModal);
+    backdrop.addEventListener('click', closeModal);
   }
 
   // Handle evolution completion

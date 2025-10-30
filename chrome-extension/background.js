@@ -9,6 +9,7 @@ importScripts('agents.js');
 importScripts('evolution.js');
 importScripts('integrations.js');
 importScripts('enhancements.js');
+importScripts('historical-mining.js');
 
 // Use constants from config
 const REQUEST_TIMEOUT = CONFIG.REQUEST_TIMEOUT;
@@ -608,15 +609,15 @@ function validateSettings(settings) {
 // API call handlers
 async function handleAnalyzeRequirements(data) {
   validateSettings(data.settings);
-  
+
   const { ticketKey, ticketData, settings } = data;
-  
+
   // Fetch external content if integrations are configured
   let enrichedTicketData = ticketData;
   if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
     const integrationManager = new IntegrationManager(settings);
     const externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
-    
+
     // Use enriched description if external content was found
     if (externalContent.enrichedDescription !== ticketData.description) {
       enrichedTicketData = {
@@ -630,19 +631,75 @@ async function handleAnalyzeRequirements(data) {
       };
     }
   }
-  
-  const systemMessage = `You are a senior business analyst specializing in requirement analysis.
+
+  const systemMessage = `You are a senior business analyst and requirements quality expert specializing in requirement analysis.
 Analyze Jira tickets and extract structured requirements for test case generation.
 
-Focus on:
+Your analysis must be CRITICAL and identify quality issues:
+
+**Primary Focus:**
 1. Feature overview and objectives
 2. Functional requirements (what the system should do)
 3. UI/UX specifications
-4. Integration points and dependencies  
+4. Integration points and dependencies
 5. Acceptance criteria
 6. Edge cases and constraints
 
-Provide a well-structured analysis in markdown format.`;
+**Critical Analysis (VERY IMPORTANT):**
+7. **REQUIREMENT GAPS:** Identify missing information, undefined behaviors, unstated assumptions, missing error handling, incomplete workflows
+8. **AMBIGUITIES:** Flag vague terms (e.g., "fast", "user-friendly"), unclear pronouns, multiple interpretations, subjective criteria
+9. **UNTESTABLE REQUIREMENTS:** Identify requirements without measurable criteria, vague quality attributes, unverifiable claims
+10. **CONFLICTING REQUIREMENTS:** Highlight contradictions or inconsistencies
+11. **TESTABILITY SCORE:** Rate each requirement's testability (High/Medium/Low) with justification
+
+**Output Format (Markdown):**
+
+## 📋 Requirements Overview
+[Summary of what this feature does]
+
+## ✅ Functional Requirements
+[List clear, testable functional requirements]
+
+## 🎨 UI/UX Specifications
+[User interface and experience requirements]
+
+## 🔗 Integration Points
+[External systems, APIs, dependencies]
+
+## ✓ Acceptance Criteria
+[Clear, measurable success criteria]
+
+## 🚨 **CRITICAL: Quality Analysis**
+
+### ⚠️ Requirement Gaps (Missing Information)
+- [ ] **Gap:** [What's missing]
+  - **Impact:** [How this affects testing]
+  - **Recommended Action:** [What needs clarification]
+
+### ❓ Ambiguities (Unclear/Vague Requirements)
+- [ ] **Ambiguity:** [Vague statement]
+  - **Issue:** [Why it's ambiguous]
+  - **Needs Clarification:** [Specific questions to ask]
+
+### 🚫 Untestable Requirements
+- [ ] **Untestable:** [Requirement that can't be verified]
+  - **Reason:** [Why it's untestable]
+  - **Suggested Revision:** [How to make it testable]
+
+### ⚡ Conflicting Requirements
+- [ ] **Conflict:** [Contradictory statements]
+
+### 📊 Testability Summary
+| Requirement | Testability | Reason |
+|-------------|-------------|--------|
+| [Req 1] | High/Medium/Low | [Justification] |
+
+## 🎯 Recommendations
+1. Questions to ask stakeholders
+2. Required clarifications before testing
+3. Assumptions that need validation
+
+Provide comprehensive, critical analysis. Be honest about gaps and ambiguities - they're better found now than during testing!`;
 
   const userMessage = `Analyze this Jira ticket:
 
@@ -756,22 +813,78 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
 // Streaming handlers - send chunks back to content script in real-time
 async function handleAnalyzeRequirementsStream(data, tabId) {
   validateSettings(data.settings);
-  
+
   const { ticketKey, ticketData, settings } = data;
   const requestId = `analyze-${Date.now()}`;
-  
-  const systemMessage = `You are a senior business analyst specializing in requirement analysis.
+
+  const systemMessage = `You are a senior business analyst and requirements quality expert specializing in requirement analysis.
 Analyze Jira tickets and extract structured requirements for test case generation.
 
-Focus on:
+Your analysis must be CRITICAL and identify quality issues:
+
+**Primary Focus:**
 1. Feature overview and objectives
 2. Functional requirements (what the system should do)
 3. UI/UX specifications
-4. Integration points and dependencies  
+4. Integration points and dependencies
 5. Acceptance criteria
 6. Edge cases and constraints
 
-Provide a well-structured analysis in markdown format.`;
+**Critical Analysis (VERY IMPORTANT):**
+7. **REQUIREMENT GAPS:** Identify missing information, undefined behaviors, unstated assumptions, missing error handling, incomplete workflows
+8. **AMBIGUITIES:** Flag vague terms (e.g., "fast", "user-friendly"), unclear pronouns, multiple interpretations, subjective criteria
+9. **UNTESTABLE REQUIREMENTS:** Identify requirements without measurable criteria, vague quality attributes, unverifiable claims
+10. **CONFLICTING REQUIREMENTS:** Highlight contradictions or inconsistencies
+11. **TESTABILITY SCORE:** Rate each requirement's testability (High/Medium/Low) with justification
+
+**Output Format (Markdown):**
+
+## 📋 Requirements Overview
+[Summary of what this feature does]
+
+## ✅ Functional Requirements
+[List clear, testable functional requirements]
+
+## 🎨 UI/UX Specifications
+[User interface and experience requirements]
+
+## 🔗 Integration Points
+[External systems, APIs, dependencies]
+
+## ✓ Acceptance Criteria
+[Clear, measurable success criteria]
+
+## 🚨 **CRITICAL: Quality Analysis**
+
+### ⚠️ Requirement Gaps (Missing Information)
+- [ ] **Gap:** [What's missing]
+  - **Impact:** [How this affects testing]
+  - **Recommended Action:** [What needs clarification]
+
+### ❓ Ambiguities (Unclear/Vague Requirements)
+- [ ] **Ambiguity:** [Vague statement]
+  - **Issue:** [Why it's ambiguous]
+  - **Needs Clarification:** [Specific questions to ask]
+
+### 🚫 Untestable Requirements
+- [ ] **Untestable:** [Requirement that can't be verified]
+  - **Reason:** [Why it's untestable]
+  - **Suggested Revision:** [How to make it testable]
+
+### ⚡ Conflicting Requirements
+- [ ] **Conflict:** [Contradictory statements]
+
+### 📊 Testability Summary
+| Requirement | Testability | Reason |
+|-------------|-------------|--------|
+| [Req 1] | High/Medium/Low | [Justification] |
+
+## 🎯 Recommendations
+1. Questions to ask stakeholders
+2. Required clarifications before testing
+3. Assumptions that need validation
+
+Provide comprehensive, critical analysis. Be honest about gaps and ambiguities - they're better found now than during testing!`;
 
   const userMessage = `Analyze this Jira ticket:
 
@@ -948,21 +1061,46 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       action: 'enhancementProgress',
       status: 'analyzing'
     });
-    
+
     const enhancer = new EnhancementEngine(settings, callAI.bind(null));
     enhancementResults = await enhancer.enhance(results.testCases, ticketData, results.analysis);
-    
+
     // Add gap-filling tests if any
     if (enhancementResults.additionalTests && enhancementResults.additionalTests.length > 0) {
       results.testCases.push(...enhancementResults.additionalTests);
     }
-    
+
     chrome.tabs.sendMessage(tabId, {
       action: 'enhancementProgress',
       status: 'completed'
     });
   }
-  
+
+  // Apply historical mining if enabled
+  let historicalResults = null;
+  if (settings.enableHistoricalMining) {
+    console.log('Starting historical mining...');
+
+    chrome.tabs.sendMessage(tabId, {
+      action: 'historicalMiningProgress',
+      status: 'analyzing'
+    });
+
+    const historicalMiner = new HistoricalMiningEngine(settings, callAI.bind(null), data.baseUrl);
+    historicalResults = await historicalMiner.mineAndEnhance(ticketData, results.testCases);
+
+    // Replace testCases with enhanced version
+    if (historicalResults && historicalResults.enhancedTests) {
+      results.testCases = historicalResults.enhancedTests;
+      console.log(`Historical mining complete: ${historicalResults.enhancedTests.length} tests`);
+    }
+
+    chrome.tabs.sendMessage(tabId, {
+      action: 'historicalMiningProgress',
+      status: 'completed'
+    });
+  }
+
   // Store original test count for comparison
   const originalTestCount = results.testCases.length;
 
@@ -976,7 +1114,9 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     evolved: false,
     evolutionPending: settings.enableEvolution && results.testCases.length > 0,
     originalCount: originalTestCount,
-    enhancements: enhancementResults
+    enhancements: enhancementResults,
+    historicalInsights: historicalResults?.insights || null,
+    historicalBugs: historicalResults?.historicalBugs || []
   };
 
   // Start evolution in background (non-blocking)

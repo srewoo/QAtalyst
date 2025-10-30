@@ -5,8 +5,8 @@ class EvolutionaryOptimizer {
   constructor(settings, onProgress) {
     this.settings = settings;
     this.onProgress = onProgress;
-    this.populationSize = 8; // Reduced from 15 to prevent timeouts
-    this.generations = this.getGenerations(settings.evolutionIntensity || 'balanced');
+    this.populationSize = 6; // OPTIMIZED: Reduced from 8 for faster evolution with parallel processing
+    this.generations = this.getGenerations(settings.evolutionIntensity || 'light');
     this.mutationRate = 0.3;
     this.crossoverRate = 0.7;
     this.elitismCount = 2;
@@ -14,14 +14,14 @@ class EvolutionaryOptimizer {
   }
 
   getGenerations(intensity) {
-    // Reduced generations to prevent timeout issues
+    // OPTIMIZED: Further reduced with parallel processing for much faster results
     const map = {
-      'light': 2,      // was 3
-      'balanced': 3,   // was 5
-      'intensive': 5,  // was 8
-      'exhaustive': 7  // was 10
+      'light': 1,      // was 2 - now 1 generation with parallel AI calls
+      'balanced': 2,   // was 3 - now 2 generations
+      'intensive': 3,  // was 5 - now 3 generations
+      'exhaustive': 5  // was 7 - now 5 generations
     };
-    return map[intensity] || 3;
+    return map[intensity] || 1; // Default to light (1 generation)
   }
   
   async evolve(baseTestCases, ticketData, callAIFunc) {
@@ -107,15 +107,14 @@ class EvolutionaryOptimizer {
   }
   
   async evaluateFitness(population, ticketData) {
-    const scores = [];
-
-    for (let i = 0; i < population.length; i++) {
+    // PARALLEL OPTIMIZATION: Evaluate all individuals in parallel instead of sequentially
+    const fitnessPromises = population.map((individual, i) => {
       // Skip quality evaluation for every 3rd individual to reduce AI calls
       const skipQuality = (i % 3 !== 0);
-      const score = await this.calculateFitness(population[i], ticketData, skipQuality);
-      scores.push(score);
-    }
+      return this.calculateFitness(individual, ticketData, skipQuality);
+    });
 
+    const scores = await Promise.all(fitnessPromises);
     return scores;
   }
 
@@ -266,15 +265,18 @@ Return quality score (0-1):`;
       'errorInjection',
       'contextShifting'
     ];
-    
-    for (let i = 0; i < offspring.length; i++) {
+
+    // PARALLEL OPTIMIZATION: Apply mutations in parallel instead of sequentially
+    const mutationPromises = offspring.map(async (individual, i) => {
       if (Math.random() < this.mutationRate) {
         const strategy = mutationStrategies[Math.floor(Math.random() * mutationStrategies.length)];
-        offspring[i] = await this.applyMutation(offspring[i], strategy, ticketData);
+        return await this.applyMutation(individual, strategy, ticketData);
       }
-    }
-    
-    return offspring;
+      return individual; // Return unchanged if no mutation
+    });
+
+    const mutatedOffspring = await Promise.all(mutationPromises);
+    return mutatedOffspring;
   }
   
   async applyMutation(testCases, strategy, ticketData) {

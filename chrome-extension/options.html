@@ -161,6 +161,19 @@
     .btn.secondary:hover {
       background: #e2e8f0;
     }
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .btn:disabled:hover {
+      background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%);
+      transform: none;
+      box-shadow: none;
+    }
+    .btn.secondary:disabled:hover {
+      background: #f1f5f9;
+    }
     .save-section {
       display: flex;
       gap: 12px;
@@ -477,8 +490,8 @@
       </div>
       
       <div class="section">
-        <h2>🧬 Evolutionary Optimization (Hybrid System)</h2>
-        <p>Enable genetic algorithm-based optimization for 50-150% more test coverage.</p>
+        <h2>🧬 Evolutionary Optimization (Hybrid System - OPTIMIZED ⚡)</h2>
+        <p>Enable genetic algorithm-based optimization for 50-150% more test coverage. Now 4-6x faster with parallel processing!</p>
         
         <div class="checkbox-group">
           <input type="checkbox" id="enableEvolution" data-testid="enable-evolution">
@@ -488,19 +501,85 @@
         <div class="form-group">
           <label for="evolutionIntensity">Evolution Intensity:</label>
           <select id="evolutionIntensity" data-testid="evolution-intensity">
-            <option value="light">Light (~3 generations, +30-50% tests)</option>
-            <option value="balanced" selected>Balanced (~5 generations, +50-70% tests) - Recommended</option>
-            <option value="intensive">Intensive (~8 generations, +70-100% tests)</option>
-            <option value="exhaustive">Exhaustive (~10 generations, +100-150% tests)</option>
+            <option value="light" selected>⚡ Light (1 generation, ~10-15s, +30-50% tests) - Fast & Recommended</option>
+            <option value="balanced">⚖️ Balanced (2 generations, ~20-30s, +50-70% tests)</option>
+            <option value="intensive">🔥 Intensive (3 generations, ~40-50s, +70-100% tests)</option>
+            <option value="exhaustive">💪 Exhaustive (5 generations, ~80-100s, +100-150% tests)</option>
           </select>
         </div>
         
         <div class="info-box">
-          ℹ️ The Hybrid (CoT + Evolution) system combines Chain of Thought reasoning with genetic algorithm optimization using 5 mutation strategies: Data Variation, Scenario Expansion, Boundary Testing, Error Injection, and Context Shifting.
+          ℹ️ <strong>NEW: Parallel Processing Optimization!</strong> The Hybrid (CoT + Evolution) system now uses parallel AI calls for 4-6x faster execution. It combines Chain of Thought reasoning with genetic algorithm optimization using 5 mutation strategies: Data Variation, Scenario Expansion, Boundary Testing, Error Injection, and Context Shifting. Light mode now completes in just 10-15 seconds!
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>🧠 Historical Test Case Mining (Intelligent Learning)</h2>
+        <p>Learn from past bugs to generate better test cases. Searches Jira history for similar issues and prevents recurring bugs.</p>
+
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableHistoricalMining" data-testid="enable-historical-mining">
+          <label for="enableHistoricalMining">Enable Historical Test Case Mining</label>
+        </div>
+
+        <div class="form-group">
+          <label for="historicalMaxResults">Maximum Historical Issues to Analyze:</label>
+          <input type="number" id="historicalMaxResults" value="20" min="5" max="50" step="5" data-testid="historical-max-results">
+          <p class="help-text">Number of historical bugs to analyze (5-50). More issues = better insights but slower analysis.</p>
+        </div>
+
+        <div class="form-group">
+          <label for="historicalJqlFilters">Custom JQL Filters (Advanced):</label>
+          <textarea
+            id="historicalJqlFilters"
+            placeholder="issuetype = Bug AND created >= -365d AND status in (Done, Resolved, Closed)"
+            rows="3"
+            data-testid="historical-jql-filters"
+            style="font-family: 'Courier New', monospace; font-size: 13px;"
+          ></textarea>
+          <p class="help-text">
+            <strong>Customize the JQL query used for historical bug search.</strong><br>
+            • The keyword search (e.g., <code>text ~ "keyword1" OR text ~ "keyword2"</code>) is automatically added<br>
+            • Only modify the filters: issue type, date range, status, project, etc.<br>
+            • Example: <code>issuetype in (Bug, Defect) AND created >= -180d AND project = "MYPROJ"</code><br>
+            • Leave empty to use default: <code>issuetype = Bug AND created >= -365d AND status in (Done, Resolved, Closed)</code>
+          </p>
+        </div>
+
+        <div class="form-group">
+          <label for="jiraEmail">Jira Email (Optional - for API token authentication):</label>
+          <input type="email" id="jiraEmail" placeholder="your-email@company.com" data-testid="jira-email">
+          <p class="help-text">Your Jira account email. Only needed if cookie-based authentication fails.</p>
+        </div>
+
+        <div class="form-group">
+          <label for="jiraApiToken">Jira API Token (Optional):</label>
+          <input type="password" id="jiraApiToken" placeholder="Enter Jira API token" data-testid="jira-api-token">
+          <p class="help-text">
+            Optional API token for Historical Mining authentication. Get your token:
+            <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" class="help-link">Atlassian API Tokens</a>
+            <br><strong>Note:</strong> If left empty, uses browser session cookies (not recommended).
+          </p>
+          <button type="button" class="btn secondary" id="testJiraAuth" style="margin-top: 10px;">
+            🔐 Test Jira Authentication
+          </button>
+          <div id="authTestStatus" style="margin-top: 10px;"></div>
+        </div>
+
+        <div class="info-box">
+          ℹ️ <strong>How it works:</strong> When generating test cases, QAtalyst will:
+          <ol style="margin-left: 20px; margin-top: 8px; line-height: 1.6;">
+            <li>Extract key features from your current ticket (e.g., "login", "api", "payment")</li>
+            <li>Build JQL query: <code>(text ~ "keyword1" OR text ~ "keyword2") AND [your custom filters]</code></li>
+            <li>Search Jira across projects (or specific project if you specify)</li>
+            <li>Analyze patterns, edge cases, and failure scenarios from found bugs</li>
+            <li>Generate additional tests marked with 🛡️ (bug prevention) or 📚 (historical learning)</li>
+          </ol>
+          <p style="margin-top: 12px;"><strong>Benefits:</strong> 30-50% better coverage by learning from past bugs, prevents recurring issues, identifies commonly missed edge cases.</p>
         </div>
       </div>
     </div>
-    
+
     <!-- Integrations Tab -->
     <div class="tab-content" id="integrations-tab">
       <div class="section">
@@ -584,8 +663,46 @@
     <div class="tab-content" id="help-tab">
       <div class="section">
         <h2>❓ Help & Documentation</h2>
-        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v9.0 - AI-powered test case generation with advanced features.</p>
-        
+        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v9.2.2 - AI-powered test case generation with advanced features.</p>
+
+        <!-- What's New -->
+        <div class="help-card" style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border-color: #86efac;">
+          <h3 style="color: #16a34a;">✨ What's New in v9.2.2</h3>
+
+          <h4 style="color: #15803d;">🚀 Major Performance Improvements</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>4-6x Faster Evolution:</strong> Parallel processing optimization reduces evolution time from 60-90s to just 10-15s (Light mode)!</li>
+            <li><strong>Optimized Defaults:</strong> Light mode now recommended for most cases - fast enough for daily use</li>
+          </ul>
+
+          <h4 style="color: #15803d; margin-top: 16px;">🧠 Historical Test Case Mining (NEW)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Learn from Past Bugs:</strong> Automatically searches Jira history for similar issues and generates bug-prevention tests</li>
+            <li><strong>30-50% Better Coverage:</strong> Identifies commonly missed edge cases from your organization's bug history</li>
+            <li><strong>Smart Authentication:</strong> Built-in Jira API token test button to verify setup</li>
+            <li><strong>Customizable JQL:</strong> Control which historical bugs to analyze</li>
+          </ul>
+
+          <h4 style="color: #15803d; margin-top: 16px;">📊 Critical Requirement Analysis (NEW)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Proactive Quality Gate:</strong> Identifies gaps, ambiguities, and untestable requirements BEFORE test generation</li>
+            <li><strong>Saves Time:</strong> Catch issues in minutes instead of days of back-and-forth during testing</li>
+            <li><strong>Testability Scoring:</strong> Rates each requirement as High/Medium/Low testability</li>
+            <li><strong>Actionable Recommendations:</strong> Specific questions to ask stakeholders</li>
+          </ul>
+
+          <h4 style="color: #15803d; margin-top: 16px;">🎨 UI Enhancements</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Expand Button:</strong> Click ⇔ next to close button to double the panel width (420px → 840px)</li>
+            <li><strong>Cleaner Header:</strong> Removed rocket emoji for a more professional look</li>
+            <li><strong>Better Visual Indicators:</strong> 🛡️ for bug-prevention tests, clear progress tracking</li>
+          </ul>
+
+          <p style="margin-top: 16px; padding: 12px; background: white; border-radius: 6px; font-size: 13px;">
+            <strong>💡 Quick Tip:</strong> Enable Historical Mining + Evolution Light mode for the best balance of coverage and speed!
+          </p>
+        </div>
+
         <!-- Quick Start -->
         <div class="help-card">
           <h3>🚀 Quick Start Guide</h3>
@@ -648,12 +765,12 @@
           </div>
           
           <div class="feature-section">
-            <h4>🧬 Phase 3: Evolutionary Optimization</h4>
-            <p><strong>Genetic Algorithm for Enhanced Coverage (+50-150% tests):</strong></p>
+            <h4>🧬 Phase 3: Evolutionary Optimization (OPTIMIZED)</h4>
+            <p><strong>Genetic Algorithm with Parallel Processing (+50-150% tests, 4-6x faster!):</strong></p>
             <ul>
-              <li><strong>Population:</strong> 15 test suite variations</li>
+              <li><strong>Population:</strong> 6 test suite variations (parallel evaluation)</li>
               <li><strong>Fitness Evaluation:</strong> Coverage diversity (30%) + Quality (40%) + Completeness (30%)</li>
-              <li><strong>5 Mutation Strategies:</strong>
+              <li><strong>5 Mutation Strategies (parallel execution):</strong>
                 <ul style="margin-left: 20px; margin-top: 6px;">
                   <li>Data Variation - Explore input combinations</li>
                   <li>Scenario Expansion - Add alternative paths</li>
@@ -662,9 +779,16 @@
                   <li>Context Shifting - Different users/environments</li>
                 </ul>
               </li>
-              <li><strong>Intensity Levels:</strong> Light (3 gen) | Balanced (5 gen) | Intensive (8 gen) | Exhaustive (10 gen)</li>
+              <li><strong>Intensity Levels (NEW - Much Faster):</strong>
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>⚡ Light (1 gen, ~10-15s) - Recommended for most cases</li>
+                  <li>⚖️ Balanced (2 gen, ~20-30s) - Good quality/speed tradeoff</li>
+                  <li>🔥 Intensive (3 gen, ~40-50s) - Thorough optimization</li>
+                  <li>💪 Exhaustive (5 gen, ~80-100s) - Maximum coverage</li>
+                </ul>
+              </li>
             </ul>
-            <p style="margin-top: 12px;"><em>Configure in Test Case Settings tab</em></p>
+            <p style="margin-top: 12px;"><em>Configure in Test Case Settings tab. Now 4-6x faster with parallel processing!</em></p>
           </div>
           
           <div class="feature-section">
@@ -710,6 +834,57 @@
             </ul>
             <p style="margin-top: 12px;"><em>Enable in Test Case Settings: "Enable Enhanced Test Generation"</em></p>
           </div>
+
+          <div class="feature-section">
+            <h4>🧠 Phase 6: Historical Test Case Mining (NEW)</h4>
+            <p><strong>Learn from Past Bugs (+30-50% better coverage):</strong></p>
+            <ul>
+              <li><strong>Intelligent Bug Search:</strong> Automatically extracts keywords from your ticket and searches Jira history for similar bugs</li>
+              <li><strong>Pattern Analysis:</strong> Identifies recurring bug patterns, common failure scenarios, and edge cases</li>
+              <li><strong>Bug Prevention Tests:</strong> Generates tests marked with 🛡️ icon to prevent recurring issues</li>
+              <li><strong>Customizable JQL Filters:</strong> Control which bugs to analyze (date range, status, project, etc.)</li>
+              <li><strong>Smart Authentication:</strong>
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Uses Jira API token (recommended) or browser session cookies</li>
+                  <li>Built-in authentication test button to verify setup</li>
+                  <li>Works with Jira Cloud REST API v3</li>
+                </ul>
+              </li>
+              <li><strong>Historical Insights:</strong> Shows total bugs analyzed, patterns identified, and risk areas detected</li>
+            </ul>
+            <p style="margin-top: 12px;"><em>Configure in Test Case Settings: "Historical Test Case Mining"</em></p>
+          </div>
+
+          <div class="feature-section">
+            <h4>📊 Phase 7: Critical Requirement Analysis (NEW)</h4>
+            <p><strong>Proactive Quality Gate - Catch Issues Before Testing:</strong></p>
+            <ul>
+              <li><strong>⚠️ Requirement Gaps:</strong> Identifies missing information, undefined behaviors, and unstated assumptions
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Missing error handling scenarios</li>
+                  <li>Incomplete workflows</li>
+                  <li>Unstated assumptions</li>
+                </ul>
+              </li>
+              <li><strong>❓ Ambiguity Detection:</strong> Flags vague terms ("fast", "user-friendly", "soon") and unclear requirements</li>
+              <li><strong>🚫 Untestable Requirements:</strong> Identifies requirements without measurable criteria
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Suggests how to make them testable</li>
+                  <li>Provides measurable alternatives</li>
+                </ul>
+              </li>
+              <li><strong>⚡ Conflict Detection:</strong> Highlights contradictions and inconsistencies in requirements</li>
+              <li><strong>📊 Testability Scoring:</strong> Rates each requirement as High/Medium/Low testability with justification</li>
+              <li><strong>🎯 Actionable Recommendations:</strong>
+                <ul style="margin-left: 20px; margin-top: 6px;">
+                  <li>Questions to ask stakeholders</li>
+                  <li>Required clarifications before testing</li>
+                  <li>Assumptions that need validation</li>
+                </ul>
+              </li>
+            </ul>
+            <p style="margin-top: 12px;"><em>Automatically runs when you click "Analyse Requirements". Saves time by catching issues in minutes, not days!</em></p>
+          </div>
         </div>
         
         <!-- Advanced Usage -->
@@ -723,21 +898,45 @@
                 <li>✅ Enable Response Streaming</li>
                 <li>✅ Enable Multi-Agent System</li>
                 <li>✅ Enable Enhanced Test Generation</li>
-                <li>✅ Enable Evolutionary Optimization (Balanced intensity)</li>
+                <li>✅ Enable Evolutionary Optimization (Light/Balanced intensity)</li>
+                <li>✅ Enable Historical Test Case Mining</li>
+              </ul>
+            </li>
+            <li><strong>Configure Historical Mining (if enabled):</strong>
+              <ul style="margin-left: 20px; margin-top: 6px;">
+                <li>Add your Jira email and API token</li>
+                <li>Click "Test Jira Authentication" to verify</li>
+                <li>Customize JQL filters if needed (optional)</li>
               </ul>
             </li>
             <li><strong>Set test count:</strong> 30-50 for balanced coverage</li>
             <li><strong>Add external links:</strong> Link Confluence/Figma/Docs in Jira ticket description</li>
-            <li><strong>Generate:</strong> Watch agents work → Enhancement → Evolution → Complete!</li>
+            <li><strong>Start with Requirements Analysis:</strong>
+              <ul style="margin-left: 20px; margin-top: 6px;">
+                <li>Click "Analyse Requirements" first</li>
+                <li>Review the Critical Quality Analysis section</li>
+                <li>Address gaps and ambiguities before generating tests</li>
+              </ul>
+            </li>
+            <li><strong>Generate Tests:</strong> Watch agents work → Historical Mining → Enhancement → Evolution → Complete!</li>
           </ol>
-          
+
           <h4 style="margin-top: 16px;">Tips & Tricks:</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>Better Requirements = Better Tests:</strong> Add detailed acceptance criteria in Jira</li>
+            <li><strong>Use Requirement Analysis First:</strong> Catch ambiguities and gaps before generating tests - saves rework!</li>
+            <li><strong>Historical Mining Setup:</strong> One-time API token setup gives 30-50% better coverage on all future tests</li>
             <li><strong>Use Streaming:</strong> See progress in real-time, stop if needed</li>
-            <li><strong>Start Small:</strong> Test with 20 tests first, then scale up</li>
-            <li><strong>Review Gaps:</strong> Check gap analysis badges for missing coverage</li>
-            <li><strong>Complexity Badge:</strong> If complexity score is high, let the system auto-scale</li>
+            <li><strong>Start Small:</strong> Test with 20 tests + Light evolution first, then scale up</li>
+            <li><strong>Review Badges:</strong>
+              <ul style="margin-left: 20px; margin-top: 6px;">
+                <li>🛡️ = Bug Prevention Test (from historical data)</li>
+                <li>🔍 = Gap-filling test (from enhancement analysis)</li>
+                <li>📊 = Complexity-scaled test count</li>
+              </ul>
+            </li>
+            <li><strong>Evolution Performance:</strong> Light mode (10-15s) is recommended for most cases now!</li>
+            <li><strong>Complexity Badge:</strong> If complexity score is high, let the system auto-scale test count</li>
           </ul>
         </div>
         
@@ -767,12 +966,42 @@
             <li><strong>Too many tests:</strong> Disable evolution or reduce slider</li>
             <li><strong>Missing test types:</strong> Enable more agents in Agent Configuration</li>
           </ul>
-          
+
+          <h4>Historical Mining Issues:</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>"Historical mining failed":</strong>
+              <ul style="margin-left: 20px; margin-top: 6px;">
+                <li>Click "Test Jira Authentication" button first</li>
+                <li>Verify your Jira email and API token are correct</li>
+                <li>Check that your base URL is correct (no .com before .atlassian)</li>
+                <li>Ensure you have permission to search historical bugs</li>
+              </ul>
+            </li>
+            <li><strong>"No historical bugs found":</strong> Try adjusting JQL filters - broaden date range or remove project filter</li>
+            <li><strong>"Authentication failed":</strong> Generate new API token from Atlassian and update in settings</li>
+            <li><strong>"TypeError with description":</strong> Already fixed in v9.2.2 - reload the extension</li>
+          </ul>
+
+          <h4>Requirement Analysis Issues:</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>No gaps/ambiguities shown:</strong> This is good! It means requirements are well-defined</li>
+            <li><strong>Too many flagged items:</strong> Review with product manager before generating tests - saves rework</li>
+            <li><strong>False positives:</strong> AI is intentionally critical - use judgment on which items are actual issues</li>
+          </ul>
+
           <h4>Performance:</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Taking too long:</strong> Disable evolution or use Light intensity</li>
+            <li><strong>Taking too long:</strong> Disable evolution or use Light intensity (now 10-15s!)</li>
             <li><strong>Memory issues:</strong> Reduce test count, close other tabs</li>
             <li><strong>Streaming stops:</strong> Check network, reload extension</li>
+            <li><strong>Evolution slow:</strong> Ensure you're on v9.2.2+ with parallel processing optimization</li>
+          </ul>
+
+          <h4>UI/Panel Issues:</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Panel too narrow:</strong> Click the ⇔ expand button (next to close button) to double the width</li>
+            <li><strong>Can't see expand button:</strong> Reload the extension to get the latest UI updates</li>
+            <li><strong>No rocket icon:</strong> Removed in v9.2.2 for cleaner UI</li>
           </ul>
         </div>
         

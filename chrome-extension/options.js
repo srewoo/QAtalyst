@@ -71,6 +71,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     'securityPercent',
     'enableEvolution',
     'evolutionIntensity',
+    'enableHistoricalMining',
+    'historicalMaxResults',
+    'historicalJqlFilters',
+    'jiraEmail',
+    'jiraApiToken',
     'testrailUrl',
     'testrailUsername',
     'testrailApiKey',
@@ -129,7 +134,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   document.getElementById('enableEvolution').checked = settings.enableEvolution || false;
   document.getElementById('evolutionIntensity').value = settings.evolutionIntensity || 'light';
-  
+
+  // Historical Mining
+  document.getElementById('enableHistoricalMining').checked = settings.enableHistoricalMining || false;
+  document.getElementById('historicalMaxResults').value = settings.historicalMaxResults || 20;
+  document.getElementById('historicalJqlFilters').value = settings.historicalJqlFilters || '';
+  document.getElementById('jiraEmail').value = settings.jiraEmail || '';
+  document.getElementById('jiraApiToken').value = settings.jiraApiToken || '';
+
   // Integrations
   document.getElementById('testrailUrl').value = settings.testrailUrl || '';
   document.getElementById('testrailUsername').value = settings.testrailUsername || '';
@@ -198,7 +210,14 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     
     enableEvolution: document.getElementById('enableEvolution').checked,
     evolutionIntensity: document.getElementById('evolutionIntensity').value,
-    
+
+    // Historical Mining
+    enableHistoricalMining: document.getElementById('enableHistoricalMining').checked,
+    historicalMaxResults: parseInt(document.getElementById('historicalMaxResults').value),
+    historicalJqlFilters: document.getElementById('historicalJqlFilters').value.trim(),
+    jiraEmail: document.getElementById('jiraEmail').value.trim(),
+    jiraApiToken: document.getElementById('jiraApiToken').value.trim(),
+
     // Integrations
     testrailUrl: document.getElementById('testrailUrl').value,
     testrailUsername: document.getElementById('testrailUsername').value,
@@ -227,5 +246,120 @@ document.getElementById('resetBtn').addEventListener('click', async () => {
   if (confirm('Are you sure you want to reset all settings to defaults?')) {
     await chrome.storage.sync.clear();
     window.location.reload();
+  }
+});
+
+// Test Jira Authentication
+document.getElementById('testJiraAuth').addEventListener('click', async () => {
+  const jiraEmail = document.getElementById('jiraEmail').value.trim();
+  const jiraApiToken = document.getElementById('jiraApiToken').value.trim();
+  const statusDiv = document.getElementById('authTestStatus');
+  const button = document.getElementById('testJiraAuth');
+
+  // Clear previous status
+  statusDiv.innerHTML = '';
+
+  // Validate inputs
+  if (!jiraEmail || !jiraApiToken) {
+    statusDiv.innerHTML = '<div style="color: #dc2626; font-size: 13px;">❌ Please enter both Jira email and API token</div>';
+    return;
+  }
+
+  // Disable button and show loading
+  button.disabled = true;
+  button.textContent = '🔄 Testing...';
+  statusDiv.innerHTML = '<div style="color: #0ea5e9; font-size: 13px;">⏳ Testing authentication...</div>';
+
+  try {
+    // Get Jira base URL from active tab
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    let baseUrl = 'https://mindtickle.atlassian.net'; // Default fallback
+
+    if (tabs[0] && tabs[0].url) {
+      const url = new URL(tabs[0].url);
+      if (url.hostname.includes('atlassian.net') || url.hostname.includes('jira')) {
+        baseUrl = `${url.protocol}//${url.hostname}`;
+      }
+    }
+
+    // Construct API URL
+    const apiUrl = `${baseUrl}/rest/api/3/myself`;
+
+    // Build headers with Basic Auth
+    const credentials = btoa(`${jiraEmail}:${jiraApiToken}`);
+    const headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Authorization': `Basic ${credentials}`
+    };
+
+    console.log('Testing Jira auth to:', apiUrl);
+
+    // Make the request
+    const response = await fetch(apiUrl, {
+      method: 'GET',
+      headers: headers,
+      credentials: 'omit' // Don't use cookies, only API token
+    });
+
+    console.log('Auth test response status:', response.status);
+
+    if (response.ok) {
+      const userData = await response.json();
+      console.log('Auth test successful:', userData);
+
+      statusDiv.innerHTML = `
+        <div style="background: #f0fdf4; border: 1px solid #bbf7d0; padding: 10px; border-radius: 6px; font-size: 13px; color: #16a34a;">
+          ✅ <strong>Authentication Successful!</strong><br>
+          👤 Logged in as: <strong>${userData.displayName}</strong><br>
+          📧 Email: ${userData.emailAddress}<br>
+          🔗 Account: ${userData.accountId}
+        </div>
+      `;
+    } else {
+      // Authentication failed
+      let errorMessage = 'Authentication failed';
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.errorMessages?.join(', ') || errorData.message || errorMessage;
+      } catch (e) {
+        try {
+          errorMessage = await response.text();
+        } catch (textError) {
+          // Use default message
+        }
+      }
+
+      console.error('Auth test failed:', response.status, errorMessage);
+
+      statusDiv.innerHTML = `
+        <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 10px; border-radius: 6px; font-size: 13px; color: #dc2626;">
+          ❌ <strong>Authentication Failed (${response.status})</strong><br>
+          ${errorMessage}<br><br>
+          <strong>Troubleshooting:</strong><br>
+          ${response.status === 401 ? '• Check if your API token is correct<br>• Ensure email matches your Jira account' : ''}
+          ${response.status === 403 ? '• You may not have permission to access this API<br>• Try regenerating your API token' : ''}
+          ${response.status === 404 ? '• Jira URL may be incorrect<br>• Detected URL: ' + baseUrl : ''}
+        </div>
+      `;
+    }
+  } catch (error) {
+    console.error('Auth test error:', error);
+
+    statusDiv.innerHTML = `
+      <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 10px; border-radius: 6px; font-size: 13px; color: #dc2626;">
+        ❌ <strong>Connection Error</strong><br>
+        ${error.message}<br><br>
+        <strong>Possible causes:</strong><br>
+        • Network connection issues<br>
+        • CORS restrictions<br>
+        • Jira URL is incorrect<br>
+        • Firewall blocking the request
+      </div>
+    `;
+  } finally {
+    // Re-enable button
+    button.disabled = false;
+    button.textContent = '🔐 Test Jira Authentication';
   }
 });
