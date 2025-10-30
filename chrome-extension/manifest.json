@@ -8,6 +8,8 @@
     "activeTab"
   ],
   "host_permissions": [
+    "https://*/*",
+    "http://*/*",
     "https://*.atlassian.net/*",
     "https://*.jira.com/*",
     "https://api.openai.com/*",

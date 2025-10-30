@@ -598,7 +598,11 @@
           </div>
           <div class="form-group">
             <label for="testrailApiKey">API Key:</label>
-            <input type="password" id="testrailApiKey" placeholder="Enter TestRail API key" data-testid="testrail-api-key">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <input type="password" id="testrailApiKey" placeholder="Enter TestRail API key" data-testid="testrail-api-key" style="flex-grow: 1;">
+              <button type="button" class="btn secondary" id="testTestrail">Test</button>
+            </div>
+            <span id="testrailStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
           </div>
         </div>
         
@@ -620,14 +624,23 @@
         <h2>📄 Confluence Integration</h2>
         <p>Configure Confluence for requirement extraction.</p>
         
+        <div class="form-group">
+          <label for="confluenceUrl">Confluence URL:</label>
+          <input type="text" id="confluenceUrl" placeholder="https://your-domain.atlassian.net" data-testid="confluence-url">
+        </div>
+
         <div class="form-row">
           <div class="form-group">
-            <label for="confluenceUrl">Confluence URL:</label>
-            <input type="text" id="confluenceUrl" placeholder="https://your-domain.atlassian.net" data-testid="confluence-url">
+            <label for="confluenceEmail">Email Address:</label>
+            <input type="email" id="confluenceEmail" placeholder="your-email@company.com" data-testid="confluence-email">
           </div>
           <div class="form-group">
             <label for="confluenceToken">API Token:</label>
-            <input type="password" id="confluenceToken" placeholder="Enter Confluence API token" data-testid="confluence-token">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <input type="password" id="confluenceToken" placeholder="Enter Confluence API token" data-testid="confluence-token" style="flex-grow: 1;">
+              <button type="button" class="btn secondary" id="testConfluence">Test</button>
+            </div>
+            <span id="confluenceStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
           </div>
         </div>
         
@@ -640,7 +653,11 @@
         
         <div class="form-group">
           <label for="figmaToken">Figma Personal Access Token:</label>
-          <input type="password" id="figmaToken" placeholder="Enter Figma token" data-testid="figma-token">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <input type="password" id="figmaToken" placeholder="Enter Figma token" data-testid="figma-token" style="flex-grow: 1;">
+            <button type="button" class="btn secondary" id="testFigma">Test</button>
+          </div>
+          <span id="figmaStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
         </div>
         
         <a href="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens" target="_blank" class="help-link">📖 Get Figma Token</a>
@@ -652,7 +669,11 @@
         
         <div class="form-group">
           <label for="googleApiKey">Google API Key:</label>
-          <input type="password" id="googleApiKey" placeholder="Enter Google API key" data-testid="google-api-key">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <input type="password" id="googleApiKey" placeholder="Enter Google API key" data-testid="google-api-key" style="flex-grow: 1;">
+            <button type="button" class="btn secondary" id="testGoogle">Test</button>
+          </div>
+          <span id="googleStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
         </div>
         
         <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="help-link">📖 Get Google API Key</a>

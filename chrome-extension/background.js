@@ -93,8 +93,114 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'testIntegration') {
+    (async () => {
+      try {
+        const result = await handleTestIntegration(request.data);
+        sendResponse(result);
+      } catch (error) {
+        sendResponse({ success: false, message: error.message });
+      }
+    })();
+    return true; // Keep the message channel open for async response
+  }
+
   return false;
 });
+
+async function handleTestIntegration(data) {
+  const { type, ...credentials } = data;
+
+  switch (type) {
+    case 'confluence':
+      return testConfluence(credentials);
+    case 'figma':
+      return testFigma(credentials);
+    case 'google':
+      return testGoogle(credentials);
+    case 'testrail':
+      return testTestRail(credentials);
+    default:
+      return { success: false, message: 'Unknown integration type' };
+  }
+}
+
+async function testConfluence({ url, email, token }) {
+  if (!url || !email || !token) {
+    return { success: false, message: 'URL, email, and token are required' };
+  }
+  try {
+    const credentials = btoa(`${email}:${token}`);
+    const response = await fetch(`${url}/wiki/rest/api/space`, {
+      headers: { 
+        'Authorization': `Basic ${credentials}`,
+        'Content-Type': 'application/json'
+      },
+    });
+    if (response.ok) {
+      return { success: true };
+    } else {
+      return { success: false, message: `Failed with status: ${response.status}` };
+    }
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+async function testFigma({ token }) {
+  if (!token) {
+    return { success: false, message: 'Token is required' };
+  }
+  try {
+    const response = await fetch('https://api.figma.com/v1/me', {
+      headers: { 'X-Figma-Token': token },
+    });
+    if (response.ok) {
+      return { success: true };
+    } else {
+      return { success: false, message: `Failed with status: ${response.status}` };
+    }
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+async function testGoogle({ apiKey }) {
+  if (!apiKey) {
+    return { success: false, message: 'API key is required' };
+  }
+  try {
+    const response = await fetch(`https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=017576662512468239146:omuauf_lfve&q=testrail`);
+    if (response.ok) {
+      return { success: true };
+    } else {
+      return { success: false, message: `Failed with status: ${response.status}` };
+    }
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+async function testTestRail({ url, username, apiKey }) {
+  if (!url || !username || !apiKey) {
+    return { success: false, message: 'URL, username, and API key are required' };
+  }
+  try {
+    const response = await fetch(`${url}/index.php?/api/v2/get_statuses`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + btoa(`${username}:${apiKey}`),
+      },
+    });
+    if (response.ok) {
+      return { success: true };
+    } else {
+      return { success: false, message: `Failed with status: ${response.status}` };
+    }
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
 
 // Sleep utility for retry delays
 function sleep(ms) {

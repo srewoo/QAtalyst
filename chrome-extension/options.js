@@ -82,6 +82,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'testrailProjectId',
     'testrailSection',
     'confluenceUrl',
+    'confluenceEmail',
     'confluenceToken',
     'figmaToken',
     'googleApiKey'
@@ -149,6 +150,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('testrailProjectId').value = settings.testrailProjectId || '';
   document.getElementById('testrailSection').value = settings.testrailSection || 'QAtalyst_Automation';
   document.getElementById('confluenceUrl').value = settings.confluenceUrl || '';
+  document.getElementById('confluenceEmail').value = settings.confluenceEmail || '';
   document.getElementById('confluenceToken').value = settings.confluenceToken || '';
   document.getElementById('figmaToken').value = settings.figmaToken || '';
   document.getElementById('googleApiKey').value = settings.googleApiKey || '';
@@ -225,6 +227,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     testrailProjectId: document.getElementById('testrailProjectId').value,
     testrailSection: document.getElementById('testrailSection').value,
     confluenceUrl: document.getElementById('confluenceUrl').value,
+    confluenceEmail: document.getElementById('confluenceEmail').value,
     confluenceToken: document.getElementById('confluenceToken').value,
     figmaToken: document.getElementById('figmaToken').value,
     googleApiKey: document.getElementById('googleApiKey').value
@@ -363,3 +366,51 @@ document.getElementById('testJiraAuth').addEventListener('click', async () => {
     button.textContent = '🔐 Test Jira Authentication';
   }
 });
+
+document.getElementById('testTestrail').addEventListener('click', () => handleTestIntegration('testrail'));
+document.getElementById('testConfluence').addEventListener('click', () => handleTestIntegration('confluence'));
+document.getElementById('testFigma').addEventListener('click', () => handleTestIntegration('figma'));
+document.getElementById('testGoogle').addEventListener('click', () => handleTestIntegration('google'));
+
+async function handleTestIntegration(type) {
+  const statusEl = document.getElementById(`${type}Status`);
+  statusEl.textContent = 'Testing...';
+
+  let data = { type };
+
+  if (type === 'testrail') {
+    data.url = document.getElementById('testrailUrl').value;
+    data.username = document.getElementById('testrailUsername').value;
+    data.apiKey = document.getElementById('testrailApiKey').value;
+  } else if (type === 'confluence') {
+    data.url = document.getElementById('confluenceUrl').value;
+    data.email = document.getElementById('confluenceEmail').value;
+    data.token = document.getElementById('confluenceToken').value;
+  } else if (type === 'figma') {
+    data.token = document.getElementById('figmaToken').value;
+  } else if (type === 'google') {
+    data.apiKey = document.getElementById('googleApiKey').value;
+  }
+
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action: 'testIntegration', data }, (response) => {
+        if (chrome.runtime.lastError) {
+          return reject(new Error(chrome.runtime.lastError.message));
+        }
+        if (response.error) {
+          return reject(new Error(response.error));
+        }
+        resolve(response);
+      });
+    });
+
+    if (response.success) {
+      statusEl.textContent = '✅ Success';
+    } else {
+      statusEl.textContent = `❌ Error: ${response.message}`;
+    }
+  } catch (error) {
+    statusEl.textContent = `❌ Error: ${error.message}`;
+  }
+}
