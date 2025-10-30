@@ -259,6 +259,31 @@
       font-size: 13px;
       padding: 6px 10px;
     }
+    .info-icon {
+      position: relative;
+      display: inline-block;
+      cursor: pointer;
+    }
+    .info-icon .tooltip {
+      visibility: hidden;
+      width: 250px;
+      background-color: #555;
+      color: #fff;
+      text-align: center;
+      border-radius: 6px;
+      padding: 5px;
+      position: absolute;
+      z-index: 1;
+      bottom: 125%;
+      left: 50%;
+      margin-left: -125px;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .info-icon:hover .tooltip {
+      visibility: visible;
+      opacity: 1;
+    }
     
     /* Help & Docs Styling */
     .help-card {
@@ -668,7 +693,12 @@
         <p>Configure Google API for document access.</p>
         
         <div class="form-group">
-          <label for="googleApiKey">Google API Key:</label>
+          <label for="googleApiKey">
+            Google API Key
+            <span class="info-icon">ⓘ
+                <span class="tooltip">This API key must have access to the Google Docs API (for reading linked documents) and the Google Custom Search API (for validating the key).</span>
+            </span>
+          </label>
           <div style="display: flex; align-items: center; gap: 10px;">
             <input type="password" id="googleApiKey" placeholder="Enter Google API key" data-testid="google-api-key" style="flex-grow: 1;">
             <button type="button" class="btn secondary" id="testGoogle">Test</button>
