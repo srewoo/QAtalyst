@@ -263,7 +263,10 @@
     // Create panel HTML
     panel.innerHTML = `
       <div class="qatalyst-header">
-        <h3>QAtalyst</h3>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <img src="${chrome.runtime.getURL('icons/icon16.png')}" alt="QAtalyst" style="width: 20px; height: 20px;">
+          <h3>QAtalyst</h3>
+        </div>
         <div class="qatalyst-header-buttons">
           <button class="qatalyst-expand" id="qatalyst-expand" title="Expand/Collapse">⇔</button>
           <button class="qatalyst-close" id="qatalyst-close">×</button>
