@@ -247,7 +247,9 @@ Return ONLY valid JSON, no markdown formatting.`;
   }
   
   getUserMessage(ticketData, previousResults) {
-    const testCount = Math.floor((this.settings?.testCount || 30) * 0.40);
+    // Use positivePercent from settings, default to 40%
+    const percentage = (this.settings?.positivePercent || 40) / 100;
+    const testCount = Math.floor((this.settings?.testCount || 30) * percentage);
     const existingTests = previousResults.testCases?.map(tc => `- ${tc.title}`).join('\n') || 'None yet';
     const keywords = this.extractKeywords(ticketData);
     const personas = this.inferPersonas(ticketData);
@@ -369,7 +371,9 @@ Return ONLY valid JSON, no markdown formatting.`;
   }
   
   getUserMessage(ticketData, previousResults) {
-    const testCount = Math.floor((this.settings?.testCount || 30) * 0.30);
+    // Use negativePercent from settings, default to 25%
+    const percentage = (this.settings?.negativePercent || 25) / 100;
+    const testCount = Math.floor((this.settings?.testCount || 30) * percentage);
     const existingTests = previousResults.testCases?.map(tc => `- ${tc.title}`).join('\n') || 'None yet';
     const keywords = this.extractKeywords(ticketData);
     
@@ -479,7 +483,9 @@ Return ONLY valid JSON, no markdown formatting.`;
   }
   
   getUserMessage(ticketData, previousResults) {
-    const testCount = Math.floor((this.settings?.testCount || 30) * 0.20);
+    // Use edgePercent from settings, default to 10%
+    const percentage = (this.settings?.edgePercent || 10) / 100;
+    const testCount = Math.floor((this.settings?.testCount || 30) * percentage);
     const existingTests = previousResults.testCases?.map(tc => `- ${tc.title}`).join('\n') || 'None yet';
     
     return `Based on this requirement analysis:
@@ -624,10 +630,12 @@ Generate test cases in this EXACT JSON format:
 
 Return ONLY valid JSON, no markdown formatting.`;
   }
-  
+
   getUserMessage(ticketData, previousResults) {
-    const testCount = Math.floor((this.settings?.testCount || 30) * 0.05) || 2;
-    
+    // Use integrationPercent from settings, default to 5%
+    const percentage = (this.settings?.integrationPercent || 5) / 100;
+    const testCount = Math.floor((this.settings?.testCount || 30) * percentage) || 2;
+
     return `Based on this requirement analysis:
 
 ${previousResults.analysis || 'No prior analysis available'}

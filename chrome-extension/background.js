@@ -208,11 +208,15 @@ function sleep(ms) {
 }
 
 // Call OpenAI API directly
-async function callOpenAI(messages, settings, retries = MAX_RETRIES) {
+async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
   
   try {
+    const messages = [
+      { role: 'user', content: contentParts }
+    ];
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -244,7 +248,7 @@ async function callOpenAI(messages, settings, retries = MAX_RETRIES) {
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying OpenAI request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
-      return callOpenAI(messages, settings, retries - 1);
+      return callOpenAI(contentParts, settings, retries - 1);
     }
 
     if (error.name === 'AbortError') {
@@ -264,7 +268,7 @@ async function callOpenAI(messages, settings, retries = MAX_RETRIES) {
 }
 
 // Call Gemini API directly
-async function callGemini(prompt, settings, retries = MAX_RETRIES) {
+async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
   
@@ -272,6 +276,18 @@ async function callGemini(prompt, settings, retries = MAX_RETRIES) {
     const model = settings.llmModel || 'gemini-2.0-flash-exp';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.apiKey}`;
     
+    const geminiContent = contentParts.map(part => {
+      if (typeof part === 'string') {
+        return { text: part };
+      } else if (part.type === 'image_url') {
+        // Gemini expects { inlineData: { mimeType: 'image/png', data: 'base64string' } }
+        const base64Data = part.image_url.url.split(',')[1];
+        const mimeType = part.image_url.url.split(':')[1].split(';')[0];
+        return { inlineData: { mimeType: mimeType, data: base64Data } };
+      }
+      return part; // Return as is if other types are introduced
+    });
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -279,7 +295,7 @@ async function callGemini(prompt, settings, retries = MAX_RETRIES) {
       },
       body: JSON.stringify({
         contents: [{
-          parts: [{ text: prompt }]
+          parts: geminiContent
         }],
         generationConfig: {
           temperature: settings.temperature || 0.7,
@@ -305,7 +321,7 @@ async function callGemini(prompt, settings, retries = MAX_RETRIES) {
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Gemini request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
-      return callGemini(prompt, settings, retries - 1);
+      return callGemini(contentParts, settings, retries - 1);
     }
 
     if (error.name === 'AbortError') {
@@ -325,11 +341,33 @@ async function callGemini(prompt, settings, retries = MAX_RETRIES) {
 }
 
 // Call Claude (Anthropic) API directly
-async function callClaude(messages, settings, retries = MAX_RETRIES) {
+async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
   
   try {
+    const claudeMessages = [
+      { role: 'user', content: [] }
+    ];
+
+    for (const part of contentParts) {
+      if (typeof part === 'string') {
+        claudeMessages[0].content.push({ type: 'text', text: part });
+      } else if (part.type === 'image_url') {
+        // Claude expects { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'base64string' } }
+        const base64Data = part.image_url.url.split(',')[1];
+        const mediaType = part.image_url.url.split(':')[1].split(';')[0];
+        claudeMessages[0].content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: mediaType,
+            data: base64Data
+          }
+        });
+      }
+    }
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -340,11 +378,7 @@ async function callClaude(messages, settings, retries = MAX_RETRIES) {
       body: JSON.stringify({
         model: settings.llmModel || 'claude-3-5-sonnet-20241022',
         max_tokens: settings.maxTokens || 4000,
-        system: messages[0].role === 'system' ? messages[0].content : undefined,
-        messages: messages.filter(m => m.role !== 'system').map(m => ({
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content: m.content
-        })),
+        messages: claudeMessages,
         temperature: settings.temperature || 0.7
       }),
       signal: controller.signal
@@ -366,7 +400,7 @@ async function callClaude(messages, settings, retries = MAX_RETRIES) {
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Claude request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
-      return callClaude(messages, settings, retries - 1);
+      return callClaude(contentParts, settings, retries - 1);
     }
 
     if (error.name === 'AbortError') {
@@ -386,13 +420,17 @@ async function callClaude(messages, settings, retries = MAX_RETRIES) {
 }
 
 // Streaming version of OpenAI API
-async function callOpenAIStream(messages, settings, onChunk, requestId) {
+async function callOpenAIStream(contentParts, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
 
   let reader = null;
 
   try {
+    const messages = [
+      { role: 'user', content: contentParts }
+    ];
+
     const response = await fetch(CONFIG.ENDPOINTS.openai, {
       method: 'POST',
       headers: {
@@ -467,13 +505,34 @@ async function callOpenAIStream(messages, settings, onChunk, requestId) {
 }
 
 // Streaming version of Claude API
-async function callClaudeStream(messages, settings, onChunk, requestId) {
+async function callClaudeStream(contentParts, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
 
   let reader = null;
 
   try {
+    const claudeMessages = [
+      { role: 'user', content: [] }
+    ];
+
+    for (const part of contentParts) {
+      if (typeof part === 'string') {
+        claudeMessages[0].content.push({ type: 'text', text: part });
+      } else if (part.type === 'image_url') {
+        const base64Data = part.image_url.url.split(',')[1];
+        const mediaType = part.image_url.url.split(':')[1].split(';')[0];
+        claudeMessages[0].content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: mediaType,
+            data: base64Data
+          }
+        });
+      }
+    }
+
     const response = await fetch(CONFIG.ENDPOINTS.claude, {
       method: 'POST',
       headers: {
@@ -484,11 +543,7 @@ async function callClaudeStream(messages, settings, onChunk, requestId) {
       body: JSON.stringify({
         model: settings.llmModel || CONFIG.DEFAULT_MODELS.claude,
         max_tokens: settings.maxTokens || CONFIG.DEFAULT_MAX_TOKENS,
-        system: messages[0].role === 'system' ? messages[0].content : undefined,
-        messages: messages.filter(m => m.role !== 'system').map(m => ({
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content: m.content
-        })),
+        messages: claudeMessages,
         temperature: settings.temperature || CONFIG.DEFAULT_TEMPERATURE,
         stream: true
       }),
@@ -552,7 +607,7 @@ async function callClaudeStream(messages, settings, onChunk, requestId) {
 }
 
 // Streaming version of Gemini API (Note: Gemini uses SSE differently)
-async function callGeminiStream(prompt, settings, onChunk, requestId) {
+async function callGeminiStream(contentParts, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
 
@@ -562,6 +617,17 @@ async function callGeminiStream(prompt, settings, onChunk, requestId) {
     const model = settings.llmModel || CONFIG.DEFAULT_MODELS.gemini;
     const url = `${CONFIG.ENDPOINTS.gemini}/${model}:streamGenerateContent?key=${settings.apiKey}&alt=sse`;
 
+    const geminiContent = contentParts.map(part => {
+      if (typeof part === 'string') {
+        return { text: part };
+      } else if (part.type === 'image_url') {
+        const base64Data = part.image_url.url.split(',')[1];
+        const mimeType = part.image_url.url.split(':')[1].split(';')[0];
+        return { inlineData: { mimeType: mimeType, data: base64Data } };
+      }
+      return part; // Return as is if other types are introduced
+    });
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -569,7 +635,7 @@ async function callGeminiStream(prompt, settings, onChunk, requestId) {
       },
       body: JSON.stringify({
         contents: [{
-          parts: [{ text: prompt }]
+          parts: geminiContent
         }],
         generationConfig: {
           temperature: settings.temperature || CONFIG.DEFAULT_TEMPERATURE,
@@ -636,20 +702,13 @@ async function callGeminiStream(prompt, settings, onChunk, requestId) {
 }
 
 // Unified streaming AI call function
-async function callAIStream(systemMessage, userMessage, settings, onChunk, requestId) {
+async function callAIStream(contentParts, settings, onChunk, requestId) {
   if (settings.llmProvider === 'openai') {
-    return await callOpenAIStream([
-      { role: 'system', content: systemMessage },
-      { role: 'user', content: userMessage }
-    ], settings, onChunk, requestId);
+    return await callOpenAIStream(contentParts, settings, onChunk, requestId);
   } else if (settings.llmProvider === 'gemini') {
-    const fullPrompt = `${systemMessage}\n\nUser Request: ${userMessage}`;
-    return await callGeminiStream(fullPrompt, settings, onChunk, requestId);
+    return await callGeminiStream(contentParts, settings, onChunk, requestId);
   } else if (settings.llmProvider === 'claude') {
-    return await callClaudeStream([
-      { role: 'system', content: systemMessage },
-      { role: 'user', content: userMessage }
-    ], settings, onChunk, requestId);
+    return await callClaudeStream(contentParts, settings, onChunk, requestId);
   } else {
     throw new Error(`Unsupported AI provider: ${settings.llmProvider}`);
   }
@@ -667,20 +726,13 @@ function cancelStream(requestId) {
 }
 
 // Unified AI call function (non-streaming - kept for backward compatibility)
-async function callAI(systemMessage, userMessage, settings) {
+async function callAI(contentParts, settings) {
   if (settings.llmProvider === 'openai') {
-    return await callOpenAI([
-      { role: 'system', content: systemMessage },
-      { role: 'user', content: userMessage }
-    ], settings);
+    return await callOpenAI(contentParts, settings);
   } else if (settings.llmProvider === 'gemini') {
-    const fullPrompt = `${systemMessage}\n\nUser Request: ${userMessage}`;
-    return await callGemini(fullPrompt, settings);
+    return await callGemini(contentParts, settings);
   } else if (settings.llmProvider === 'claude') {
-    return await callClaude([
-      { role: 'system', content: systemMessage },
-      { role: 'user', content: userMessage }
-    ], settings);
+    return await callClaude(contentParts, settings);
   } else {
     throw new Error(`Unsupported AI provider: ${settings.llmProvider}`);
   }
@@ -720,9 +772,10 @@ async function handleAnalyzeRequirements(data) {
 
   // Fetch external content if integrations are configured
   let enrichedTicketData = ticketData;
+  let externalContent = null; // Declare at function scope
   if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
     const integrationManager = new IntegrationManager(settings);
-    const externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+    externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
 
     // Use enriched description if external content was found
     if (externalContent.enrichedDescription !== ticketData.description) {
@@ -819,7 +872,31 @@ ${enrichedTicketData.externalSources ? `**External Sources:** ${enrichedTicketDa
 
 Provide comprehensive requirement analysis.`;
 
-  const analysis = await callAI(systemMessage, userMessage, settings);
+  const contentParts = [
+    { type: 'text', text: systemMessage },
+    { type: 'text', text: userMessage }
+  ];
+
+  // Add Figma images if available
+  if (externalContent && externalContent.figma) {
+    externalContent.figma.forEach(figmaFile => {
+      if (figmaFile.images && figmaFile.images.length > 0) {
+        figmaFile.images.forEach(base64Image => {
+          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+        });
+      }
+    });
+  }
+
+  // Add Jira image attachments if available
+  if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+    console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to analysis`);
+    enrichedTicketData.imageAttachments.forEach(image => {
+      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+    });
+  }
+
+  const analysis = await callAI(contentParts, settings);
   
   return { 
     analysis,
@@ -829,8 +906,30 @@ Provide comprehensive requirement analysis.`;
 
 async function handleGenerateTestScope(data) {
   validateSettings(data.settings);
-  
+
   const { ticketKey, ticketData, settings } = data;
+
+  // Fetch external content if integrations are configured
+  let enrichedTicketData = ticketData;
+  let currentExternalSources = null;
+  let externalContent = null; // Declare at function scope
+  if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
+    const integrationManager = new IntegrationManager(settings);
+    externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+
+    // Use enriched description if external content was found
+    if (externalContent.enrichedDescription !== ticketData.description) {
+      enrichedTicketData = {
+        ...ticketData,
+        description: externalContent.enrichedDescription,
+      };
+      currentExternalSources = {
+        confluence: externalContent.confluence.length,
+        figma: externalContent.figma.length,
+        googleDocs: externalContent.googleDocs.length
+      };
+    }
+  }
   
   const systemMessage = `You are a senior test architect. Create comprehensive test scope for Jira tickets.
 
@@ -848,14 +947,39 @@ Format as structured markdown.`;
   const userMessage = `Create test scope for:
 
 **Ticket:** ${ticketKey}
-**Summary:** ${ticketData.summary || 'N/A'}
-**Description:** ${ticketData.description || 'N/A'}
+**Summary:** ${enrichedTicketData.summary || 'N/A'}
+**Description:** ${enrichedTicketData.description || 'N/A'}
+${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
 
 Provide detailed test scope covering all aspects.`;
 
-  const scope = await callAI(systemMessage, userMessage, settings);
-  
-  return { scope };
+  const contentParts = [
+    { type: 'text', text: systemMessage },
+    { type: 'text', text: userMessage }
+  ];
+
+  // Add Figma images if available
+  if (externalContent && externalContent.figma) {
+    externalContent.figma.forEach(figmaFile => {
+      if (figmaFile.images && figmaFile.images.length > 0) {
+        figmaFile.images.forEach(base64Image => {
+          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+        });
+      }
+    });
+  }
+
+  // Add Jira image attachments if available
+  if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+    console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to scope generation`);
+    enrichedTicketData.imageAttachments.forEach(image => {
+      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+    });
+  }
+
+  const scope = await callAI(contentParts, settings);
+
+  return { scope, externalSources: currentExternalSources };
 }
 
 async function handleGenerateTestCases(data) {
@@ -891,7 +1015,11 @@ Format as JSON array.`;
 
 Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"Positive","priority":"P0","steps":["step1","step2"],"expectedResult":"...","preconditions":"...","testData":"..."}]`;
 
-  const response = await callAI(systemMessage, userMessage, settings);
+  const contentParts = [
+    { type: 'text', text: systemMessage },
+    { type: 'text', text: userMessage }
+  ];
+  const response = await callAI(contentParts, settings);
   
   // Parse JSON from response
   try {
@@ -922,6 +1050,28 @@ async function handleAnalyzeRequirementsStream(data, tabId) {
 
   const { ticketKey, ticketData, settings } = data;
   const requestId = `analyze-${Date.now()}`;
+
+  // Fetch external content if integrations are configured
+  let enrichedTicketData = ticketData;
+  let currentExternalSources = null;
+  let externalContent = null; // Declare at function scope
+  if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
+    const integrationManager = new IntegrationManager(settings);
+    externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+
+    // Use enriched description if external content was found
+    if (externalContent.enrichedDescription !== ticketData.description) {
+      enrichedTicketData = {
+        ...ticketData,
+        description: externalContent.enrichedDescription,
+      };
+      currentExternalSources = {
+        confluence: externalContent.confluence.length,
+        figma: externalContent.figma.length,
+        googleDocs: externalContent.googleDocs.length
+      };
+    }
+  }
 
   const systemMessage = `You are a senior business analyst and requirements quality expert specializing in requirement analysis.
 Analyze Jira tickets and extract structured requirements for test case generation.
@@ -995,15 +1145,40 @@ Provide comprehensive, critical analysis. Be honest about gaps and ambiguities -
   const userMessage = `Analyze this Jira ticket:
 
 **Ticket:** ${ticketKey}
-**Summary:** ${ticketData.summary || 'N/A'}
-**Description:** ${ticketData.description || 'N/A'}
-**Comments:** ${ticketData.comments?.length || 0} comments
-**Attachments:** ${ticketData.attachments?.length || 0} files
-**Linked Pages:** ${ticketData.linkedPages?.length || 0} pages
+**Summary:** ${enrichedTicketData.summary || 'N/A'}
+**Description:** ${enrichedTicketData.description || 'N/A'}
+**Comments:** ${enrichedTicketData.comments?.length || 0} comments
+**Attachments:** ${enrichedTicketData.attachments?.length || 0} files
+**Linked Pages:** ${enrichedTicketData.linkedPages?.length || 0} pages
+${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
 
 Provide comprehensive requirement analysis.`;
 
-  const analysis = await callAIStream(systemMessage, userMessage, settings, (chunk) => {
+  const contentParts = [
+    { type: 'text', text: systemMessage },
+    { type: 'text', text: userMessage }
+  ];
+
+  // Add Figma images if available
+  if (externalContent && externalContent.figma) {
+    externalContent.figma.forEach(figmaFile => {
+      if (figmaFile.images && figmaFile.images.length > 0) {
+        figmaFile.images.forEach(base64Image => {
+          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+        });
+      }
+    });
+  }
+
+  // Add Jira image attachments if available
+  if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+    console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to streaming analysis`);
+    enrichedTicketData.imageAttachments.forEach(image => {
+      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+    });
+  }
+
+  const analysis = await callAIStream(contentParts, settings, (chunk) => {
     // Send each chunk to content script
     chrome.tabs.sendMessage(tabId, {
       action: 'streamChunk',
@@ -1012,32 +1187,69 @@ Provide comprehensive requirement analysis.`;
     });
   }, requestId);
   
-  return { analysis, requestId };
+  return { 
+    analysis,
+    externalSources: currentExternalSources,
+    requestId 
+  };
 }
 
 async function handleGenerateTestScopeStream(data, tabId) {
   validateSettings(data.settings);
-  
+
   const { ticketKey, ticketData, settings } = data;
   const requestId = `scope-${Date.now()}`;
+
+  // Fetch external content if integrations are configured
+  let enrichedTicketData = ticketData;
+  let currentExternalSources = null;
+  let externalContent = null; // Declare at function scope
+  if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
+    const integrationManager = new IntegrationManager(settings);
+    externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+
+    // Use enriched description if external content was found
+    if (externalContent.enrichedDescription !== ticketData.description) {
+      enrichedTicketData = {
+        ...ticketData,
+        description: externalContent.enrichedDescription,
+      };
+      currentExternalSources = {
+        confluence: externalContent.confluence.length,
+        figma: externalContent.figma.length,
+        googleDocs: externalContent.googleDocs.length
+      };
+    }
+  }
   
   const systemMessage = `You are a test planning expert creating comprehensive test scope documents.`;
 
   const userMessage = `Create a test scope document for:
 
 **Ticket:** ${ticketKey}
-**Summary:** ${ticketData.summary || 'N/A'}
-**Description:** ${ticketData.description || 'N/A'}
+**Summary:** ${enrichedTicketData.summary || 'N/A'}
+**Description:** ${enrichedTicketData.description || 'N/A'}
+${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
 
-Include:
-1. Testing objectives
-2. In-scope features
-3. Out-of-scope items
-4. Test approach
-5. Risk assessment
-6. Success criteria`;
+Provide detailed test scope covering all aspects.`;
 
-  const testScope = await callAIStream(systemMessage, userMessage, settings, (chunk) => {
+  const contentParts = [
+    { type: 'text', text: systemMessage },
+    { type: 'text', text: userMessage }
+  ];
+
+  // Add Figma images if available
+  if (externalContent && externalContent.figma) {
+    externalContent.figma.forEach(figmaFile => {
+      if (figmaFile.images && figmaFile.images.length > 0) {
+        figmaFile.images.forEach(base64Image => {
+          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+        });
+      }
+    });
+  }
+
+  const testScope = await callAIStream(contentParts, settings, (chunk) => {
     chrome.tabs.sendMessage(tabId, {
       action: 'streamChunk',
       requestId: requestId,
@@ -1045,7 +1257,7 @@ Include:
     });
   }, requestId);
   
-  return { testScope, requestId };
+  return { testScope, externalSources: currentExternalSources, requestId };
 }
 
 async function handleGenerateTestCasesStream(data, tabId) {
@@ -1127,13 +1339,48 @@ Generate ${settings.testCount || 30} test cases total.`;
 
 // Multi-agent test generation handler
 async function handleGenerateTestCasesMultiAgent(data, tabId) {
+  console.log('🎯 Background: handleGenerateTestCasesMultiAgent called');
+  console.log('🎯 Background: data received:', { ticketKey: data.ticketKey, hasSettings: !!data.settings });
+  console.log('🎯 Background: settings.llmProvider:', data.settings?.llmProvider);
+  console.log('🎯 Background: settings.enableMultiAgent:', data.settings?.enableMultiAgent);
+
   validateSettings(data.settings);
+  console.log('✅ Background: settings validated');
+
+  const { ticketKey, ticketData, settings, externalSources: initialExternalSources } = data;
   
-  const { ticketKey, ticketData, settings } = data;
-  
+  // Fetch external content if integrations are configured and not already provided
+  let enrichedTicketData = ticketData;
+  let currentExternalSources = initialExternalSources;
+
+  if (!currentExternalSources && (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey)) {
+    const integrationManager = new IntegrationManager(settings);
+    const externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+
+    if (externalContent.enrichedDescription !== ticketData.description) {
+      enrichedTicketData = {
+        ...ticketData,
+        description: externalContent.enrichedDescription,
+      };
+      currentExternalSources = {
+        confluence: externalContent.confluence.length,
+        figma: externalContent.figma.length,
+        googleDocs: externalContent.googleDocs.length
+      };
+    }
+  }
+
   // Bind callAI to all agents
   const bindCallAI = (agent) => {
-    agent.callAI = callAI.bind(null);
+    // Agents call with (systemMessage, userMessage, settings)
+    // but callAI expects (contentParts, settings)
+    agent.callAI = async (systemMessage, userMessage, agentSettings) => {
+      const contentParts = [
+        { type: 'text', text: systemMessage },
+        { type: 'text', text: userMessage }
+      ];
+      return await callAI(contentParts, agentSettings || settings);
+    };
     agent.settings = settings;
   };
   
@@ -1154,11 +1401,11 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   if (!analysis) {
     const analysisAgent = new RequirementAnalysisAgent();
     bindCallAI(analysisAgent);
-    analysis = await analysisAgent.execute(ticketData, {}, settings);
+    analysis = await analysisAgent.execute(enrichedTicketData, {}, settings);
   }
   
   // Execute all agents
-  const results = await orchestrator.executeAgents(ticketData, analysis);
+  const results = await orchestrator.executeAgents(enrichedTicketData, analysis);
   
   // Apply enhancements (gap analysis, complexity scaling)
   let enhancementResults = null;
@@ -1168,8 +1415,16 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       status: 'analyzing'
     });
 
-    const enhancer = new EnhancementEngine(settings, callAI.bind(null));
-    enhancementResults = await enhancer.enhance(results.testCases, ticketData, results.analysis);
+    // Create wrapper for EnhancementEngine that converts 3-param to 2-param callAI
+    const enhancerCallAI = async (systemMessage, userMessage, enhancerSettings) => {
+      const contentParts = [
+        { type: 'text', text: systemMessage },
+        { type: 'text', text: userMessage }
+      ];
+      return await callAI(contentParts, enhancerSettings || settings);
+    };
+    const enhancer = new EnhancementEngine(settings, enhancerCallAI);
+    enhancementResults = await enhancer.enhance(results.testCases, enrichedTicketData, results.analysis);
 
     // Add gap-filling tests if any
     if (enhancementResults.additionalTests && enhancementResults.additionalTests.length > 0) {
@@ -1192,8 +1447,16 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       status: 'analyzing'
     });
 
-    const historicalMiner = new HistoricalMiningEngine(settings, callAI.bind(null), data.baseUrl);
-    historicalResults = await historicalMiner.mineAndEnhance(ticketData, results.testCases);
+    // Create wrapper for HistoricalMiningEngine that converts 3-param to 2-param callAI
+    const historicalCallAI = async (systemMessage, userMessage, historicalSettings) => {
+      const contentParts = [
+        { type: 'text', text: systemMessage },
+        { type: 'text', text: userMessage }
+      ];
+      return await callAI(contentParts, historicalSettings || settings);
+    };
+    const historicalMiner = new HistoricalMiningEngine(settings, historicalCallAI, data.baseUrl);
+    historicalResults = await historicalMiner.mineAndEnhance(enrichedTicketData, results.testCases);
 
     // Replace testCases with enhanced version
     if (historicalResults && historicalResults.enhancedTests) {
@@ -1222,12 +1485,13 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     originalCount: originalTestCount,
     enhancements: enhancementResults,
     historicalInsights: historicalResults?.insights || null,
-    historicalBugs: historicalResults?.historicalBugs || []
+    historicalBugs: historicalResults?.historicalBugs || [],
+    externalSources: currentExternalSources // Include external sources in the response
   };
 
   // Start evolution in background (non-blocking)
   if (settings.enableEvolution && results.testCases.length > 0) {
-    runEvolutionInBackground(results.testCases, ticketData, settings, tabId, originalTestCount);
+    runEvolutionInBackground(results.testCases, enrichedTicketData, settings, tabId, originalTestCount);
   }
 
   return baseResponse;
@@ -1246,7 +1510,15 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
       });
     });
 
-    const evolvedTests = await evolution.evolve(baseTests, ticketData, callAI.bind(null));
+    // Create wrapper for EvolutionaryOptimizer that converts 3-param to 2-param callAI
+    const evolutionCallAI = async (systemMessage, userMessage, evolutionSettings) => {
+      const contentParts = [
+        { type: 'text', text: systemMessage },
+        { type: 'text', text: userMessage }
+      ];
+      return await callAI(contentParts, evolutionSettings || settings);
+    };
+    const evolvedTests = await evolution.evolve(baseTests, ticketData, evolutionCallAI);
 
     // Calculate new statistics
     const statistics = {
@@ -1391,3 +1663,4 @@ Please regenerate the test cases incorporating the user's feedback. Return the r
 chrome.runtime.onInstalled.addListener(() => {
   console.log('QAtalyst extension installed with multi-agent system');
 });
+

@@ -156,6 +156,70 @@ class SecurityManager {
   }
 
   /**
+   * Encrypt and encode API key for storage
+   * Returns a single string that can be stored directly
+   * @param {string} apiKey - Plain text API key
+   * @param {string} password - Optional password
+   * @returns {Promise<string>} Encrypted key as JSON string with "enc:" prefix
+   */
+  async encryptApiKeyForStorage(apiKey, password = null) {
+    if (!apiKey || typeof apiKey !== 'string') {
+      return apiKey; // Return as-is if invalid
+    }
+
+    try {
+      const encrypted = await this.encryptApiKey(apiKey, password);
+      // Store as JSON with a prefix to identify encrypted values
+      return 'enc:' + JSON.stringify(encrypted);
+    } catch (error) {
+      console.error('Failed to encrypt API key for storage:', error);
+      return apiKey; // Fallback to plain text if encryption fails
+    }
+  }
+
+  /**
+   * Decrypt API key from storage
+   * Handles both encrypted and plain text values for migration
+   * @param {string} storedValue - Value from storage
+   * @param {string} password - Optional password
+   * @returns {Promise<string>} Decrypted API key
+   */
+  async decryptApiKeyFromStorage(storedValue, password = null) {
+    if (!storedValue || typeof storedValue !== 'string') {
+      return storedValue; // Return as-is if invalid
+    }
+
+    // Check if value is encrypted (has our prefix)
+    if (!storedValue.startsWith('enc:')) {
+      // Plain text value - return as-is for backward compatibility
+      return storedValue;
+    }
+
+    try {
+      // Remove prefix and parse JSON
+      const jsonStr = storedValue.substring(4);
+      const { encrypted, salt, iv } = JSON.parse(jsonStr);
+
+      // Decrypt using the original method
+      return await this.decryptApiKey(encrypted, salt, iv, password);
+    } catch (error) {
+      console.error('Failed to decrypt API key from storage:', error);
+      // If decryption fails, return the original value without the prefix
+      // This handles corrupted encrypted data
+      return storedValue.substring(4);
+    }
+  }
+
+  /**
+   * Check if a stored value is encrypted
+   * @param {string} storedValue - Value from storage
+   * @returns {boolean} True if encrypted
+   */
+  isEncrypted(storedValue) {
+    return storedValue && typeof storedValue === 'string' && storedValue.startsWith('enc:');
+  }
+
+  /**
    * Sanitize HTML to prevent XSS attacks
    * Removes dangerous tags and attributes
    * @param {string} html - HTML string to sanitize

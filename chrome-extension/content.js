@@ -32,7 +32,34 @@
       handleEvolutionError(request.error);
     }
   });
-  
+
+  // Helper function to load and decrypt settings
+  async function loadAndDecryptSettings(keys) {
+    const settings = await chrome.storage.sync.get(keys);
+
+    // Decrypt sensitive tokens using the wrapper method that handles plain text gracefully
+    if (settings.apiKey) {
+      settings.apiKey = await securityManager.decryptApiKeyFromStorage(settings.apiKey);
+    }
+    if (settings.jiraApiToken) {
+      settings.jiraApiToken = await securityManager.decryptApiKeyFromStorage(settings.jiraApiToken);
+    }
+    if (settings.confluenceToken) {
+      settings.confluenceToken = await securityManager.decryptApiKeyFromStorage(settings.confluenceToken);
+    }
+    if (settings.figmaToken) {
+      settings.figmaToken = await securityManager.decryptApiKeyFromStorage(settings.figmaToken);
+    }
+    if (settings.googleApiKey) {
+      settings.googleApiKey = await securityManager.decryptApiKeyFromStorage(settings.googleApiKey);
+    }
+    if (settings.testrailApiKey) {
+      settings.testrailApiKey = await securityManager.decryptApiKeyFromStorage(settings.testrailApiKey);
+    }
+
+    return settings;
+  }
+
   function handleStreamChunk(requestId, chunk) {
     if (requestId !== currentStreamingRequestId) return;
     
@@ -413,7 +440,7 @@
   // Extract attachments from ticket
   function extractAttachments() {
     const attachments = [];
-    
+
     // Try multiple selectors for different Jira versions
     const attachmentElements = document.querySelectorAll(
       '[data-testid="issue.views.field.rich-text.attachments.attachment-item"],' +
@@ -421,26 +448,75 @@
       '.attachment-item,' +
       '[data-testid="media-card-view"]'
     );
-    
+
     attachmentElements.forEach((attachEl, index) => {
       const linkEl = attachEl.querySelector('a') ||
                     attachEl.querySelector('[data-testid="media-card-link"]');
-      
+
       const nameEl = attachEl.querySelector('.attachment-title') ||
                     attachEl.querySelector('[data-testid="media-card-title"]') ||
                     linkEl;
-      
+
       if (linkEl) {
+        const fileName = nameEl ? nameEl.textContent.trim() : 'Unknown';
+        const fileType = extractFileType(fileName);
+
         attachments.push({
           id: index + 1,
-          name: nameEl ? nameEl.textContent.trim() : 'Unknown',
+          name: fileName,
           url: linkEl.href || '',
-          type: extractFileType(nameEl ? nameEl.textContent : '')
+          type: fileType,
+          isImage: fileType === 'image'
         });
       }
     });
-    
+
     return attachments;
+  }
+
+  // Fetch image attachments as base64 (for vision models)
+  async function fetchImageAttachments(attachments) {
+    const imageAttachments = attachments.filter(att => att.isImage);
+    const imageData = [];
+
+    console.log(`📷 Found ${imageAttachments.length} image attachments to fetch`);
+
+    for (const attachment of imageAttachments) {
+      try {
+        console.log(`📥 Fetching image: ${attachment.name}`);
+        const response = await fetch(attachment.url);
+
+        if (!response.ok) {
+          console.warn(`⚠️ Failed to fetch ${attachment.name}: ${response.status}`);
+          continue;
+        }
+
+        const blob = await response.blob();
+        const base64 = await blobToBase64(blob);
+
+        imageData.push({
+          name: attachment.name,
+          data: base64,
+          mimeType: blob.type
+        });
+
+        console.log(`✅ Fetched ${attachment.name} (${(blob.size / 1024).toFixed(2)} KB)`);
+      } catch (error) {
+        console.warn(`⚠️ Error fetching ${attachment.name}:`, error.message);
+      }
+    }
+
+    return imageData;
+  }
+
+  // Convert blob to base64
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   }
   
   // Extract file type from filename
@@ -569,9 +645,20 @@
     const resultsContainer = document.getElementById('results-container');
     const btn = document.getElementById('analyze-btn');
     btn.disabled = true;
-    
+
     try {
-      const settings = await chrome.storage.sync.get(['llmProvider', 'llmModel', 'apiKey', 'enableStreaming']);
+      const settings = await loadAndDecryptSettings([
+        'llmProvider', 'llmModel', 'apiKey', 'enableStreaming',
+        'confluenceUrl', 'confluenceEmail', 'confluenceToken',
+        'figmaToken', 'googleApiKey'
+      ]);
+
+      // Fetch Jira image attachments if model supports vision
+      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro'];
+      if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
+        console.log('📷 Vision model detected, fetching Jira image attachments...');
+        ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
+      }
       
       // Validate settings
       const validationErrors = validateSettingsUI(settings);
@@ -669,8 +756,19 @@
     btn.disabled = true;
     
     try {
-      const settings = await chrome.storage.sync.get(['llmProvider', 'llmModel', 'apiKey', 'enableStreaming']);
-      
+      const settings = await loadAndDecryptSettings([
+        'llmProvider', 'llmModel', 'apiKey', 'enableStreaming',
+        'confluenceUrl', 'confluenceEmail', 'confluenceToken',
+        'figmaToken', 'googleApiKey'
+      ]);
+
+      // Fetch Jira image attachments if model supports vision
+      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro'];
+      if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
+        console.log('📷 Vision model detected, fetching Jira image attachments...');
+        ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
+      }
+
       // Validate settings
       const validationErrors = validateSettingsUI(settings);
       if (validationErrors.length > 0) {
@@ -757,29 +855,64 @@
     btn.disabled = true;
     
     try {
-      const settings = await chrome.storage.sync.get([
+      const settings = await loadAndDecryptSettings([
         'llmProvider', 'llmModel', 'apiKey', 'enableStreaming', 'enableMultiAgent',
-        'enableEvolution', 'evolutionIntensity',
-        'enableRegression', 'testDistribution', 'testCount',
+        'enableEvolution', 'evolutionIntensity', 'testCount',
         'enablePositiveAgent', 'enableNegativeAgent', 'enableEdgeAgent',
         'enableRegressionAgent', 'enableIntegrationAgent', 'enableReviewAgent',
         'enableHistoricalMining', 'historicalMaxResults', 'historicalJqlFilters',
         'jiraEmail', 'jiraApiToken'
       ]);
-      
+
+      // Fetch Jira image attachments if model supports vision
+      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro'];
+      if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
+        console.log('📷 Vision model detected, fetching Jira image attachments...');
+        ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
+      }
+
+      // Debug logging for settings
+      console.log('🔍 QAtalyst Settings Loaded:', {
+        enableMultiAgent: settings.enableMultiAgent,
+        enableEvolution: settings.enableEvolution,
+        enableRegressionAgent: settings.enableRegressionAgent,
+        enablePositiveAgent: settings.enablePositiveAgent,
+        enableNegativeAgent: settings.enableNegativeAgent,
+        enableEdgeAgent: settings.enableEdgeAgent,
+        testCount: settings.testCount,
+        llmProvider: settings.llmProvider,
+        llmModel: settings.llmModel
+      });
+
+      // Debug: Direct storage check to verify what's actually stored
+      chrome.storage.sync.get(['enableMultiAgent'], (result) => {
+        console.log('🔍 Direct storage check for enableMultiAgent:', result);
+        console.log('🔍 Type of enableMultiAgent:', typeof result.enableMultiAgent);
+        console.log('🔍 Value is truthy?', !!result.enableMultiAgent);
+      });
+
       // Validate settings
       const validationErrors = validateSettingsUI(settings);
       if (validationErrors.length > 0) {
         throw new Error(
-          validationErrors.join('\\n') + 
+          validationErrors.join('\\n') +
           '\\n\\n🔧 Please configure your settings by clicking the Settings button below.'
         );
       }
-      
+
       // Use multi-agent if enabled
+      console.log('🔍 Checking multi-agent enabled:', settings.enableMultiAgent);
       if (settings.enableMultiAgent) {
+        console.log('✅ Multi-agent is enabled, using multi-agent system');
+      } else {
+        console.log('❌ Multi-agent is NOT enabled, using single-agent system');
+      }
+
+      if (settings.enableMultiAgent) {
+        console.log('🚀 Starting multi-agent test case generation...');
         resultsContainer.innerHTML = '<div class="qatalyst-loading">🧬 Initializing multi-agent system...</div>';
 
+        console.log('📤 Sending message to background script...');
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: 'generateTestCasesMultiAgent',
@@ -787,21 +920,27 @@
               ticketKey,
               ticketData,
               settings,
-              baseUrl: window.location.origin
+              baseUrl: window.location.origin,
+              externalSources: currentAnalysisData?.externalSources // Pass external sources if available
             }
           }, response => {
+            console.log('📥 Received response from background script:', response);
             if (chrome.runtime.lastError) {
+              console.error('❌ Chrome runtime error:', chrome.runtime.lastError);
               reject(new Error(chrome.runtime.lastError.message));
             } else if (!response) {
+              console.error('❌ No response received');
               reject(new Error('No response received from extension'));
             } else if (response.error) {
+              console.error('❌ Response contains error:', response.error);
               reject(new Error(response.error));
             } else {
+              console.log('✅ Response successful, displaying results');
               resolve(response);
             }
           });
         });
-        
+
         displayTestCasesResults(response);
       }
       // Use streaming or regular based on settings
@@ -838,8 +977,8 @@
         currentStreamingRequestId = null;
         displayTestCasesResults(response);
       } else {
-        // Regular non-streaming
-        resultsContainer.innerHTML = '<div class="qatalyst-loading">🤖 Generating test cases with multi-agent AI system...</div>';
+        // Regular non-streaming (single-agent)
+        resultsContainer.innerHTML = '<div class="qatalyst-loading">🤖 Generating test cases...</div>';
         
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
@@ -884,28 +1023,13 @@
     const container = document.getElementById('results-container');
     currentAnalysisData = data; // Store for review
 
-    // Show external sources badge if any were fetched
-    let externalSourcesBadge = '';
-    if (data.externalSources) {
-      const total = (data.externalSources.confluence || 0) +
-                    (data.externalSources.figma || 0) +
-                    (data.externalSources.googleDocs || 0);
-      if (total > 0) {
-        externalSourcesBadge = `
-          <div class="external-sources-badge">
-            🔗 Enriched with ${total} external source${total > 1 ? 's' : ''}:
-            ${data.externalSources.confluence ? `${data.externalSources.confluence} Confluence ` : ''}
-            ${data.externalSources.figma ? `${data.externalSources.figma} Figma ` : ''}
-            ${data.externalSources.googleDocs ? `${data.externalSources.googleDocs} Google Docs` : ''}
-          </div>
-        `;
-      }
-    }
+    // Render context summary box
+    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {});
 
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>📊 Requirements Analysis</h4>
-        ${externalSourcesBadge}
+        ${contextSummaryHtml}
         <div class="result-content">
           ${formatAnalysis(data.analysis)}
         </div>
@@ -1008,6 +1132,9 @@
     const container = document.getElementById('results-container');
     currentTestCasesData = data; // Store for review
 
+    // Render context summary box
+    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {});
+
     // Calculate statistics from test cases
     const stats = {
       total: data.total || data.testCases?.length || 0,
@@ -1101,6 +1228,7 @@
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>✅ Generated Test Cases</h4>
+        ${contextSummaryHtml}
         ${evolutionBadge}
         ${enhancementBadges}
         ${historicalBadge}
@@ -1154,6 +1282,34 @@
       }
       await handleRegenerateTestCases(review);
     });
+  }
+  
+  function renderContextSummaryBox(externalSources) {
+    const jiraStatus = '✅ Yes'; // Jira is always the primary context
+    const confluenceStatus = externalSources.confluence > 0 ? '✅ Yes' : '❌ No';
+    const figmaStatus = externalSources.figma > 0 ? '✅ Yes' : '❌ No';
+    const googleDocsStatus = externalSources.googleDocs > 0 ? '✅ Yes' : '❌ No';
+
+    return `
+      <div class="context-summary-box">
+        <div class="context-summary-item">
+          <span class="status-icon">jira:</span> 
+          <span class="status-text">${jiraStatus}</span>
+        </div>
+        <div class="context-summary-item">
+          <span class="status-icon">confluence:</span> 
+          <span class="status-text">${confluenceStatus}</span>
+        </div>
+        <div class="context-summary-item">
+          <span class="status-icon">figma:</span> 
+          <span class="status-text">${figmaStatus}</span>
+        </div>
+        <div class="context-summary-item">
+          <span class="status-icon">google doc:</span> 
+          <span class="status-text">${googleDocsStatus}</span>
+        </div>
+      </div>
+    `;
   }
   
   // Format functions
@@ -1527,7 +1683,16 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await chrome.storage.sync.get(['llmProvider', 'llmModel', 'apiKey']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey']);
+
+      // Check if AI provider is configured
+      if (!settings.llmProvider) {
+        throw new Error('Please select an AI provider in the extension settings first');
+      }
+
+      if (!settings.apiKey) {
+        throw new Error('Please add your API key in the extension settings first');
+      }
 
       resultsContainer.innerHTML = '<div class="qatalyst-loading">🔄 Regenerating analysis based on your feedback...</div>';
 
@@ -1570,7 +1735,16 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await chrome.storage.sync.get(['llmProvider', 'llmModel', 'apiKey']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey']);
+
+      // Check if AI provider is configured
+      if (!settings.llmProvider) {
+        throw new Error('Please select an AI provider in the extension settings first');
+      }
+
+      if (!settings.apiKey) {
+        throw new Error('Please add your API key in the extension settings first');
+      }
 
       resultsContainer.innerHTML = '<div class="qatalyst-loading">🔄 Regenerating test scope based on your feedback...</div>';
 
@@ -1615,7 +1789,16 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await chrome.storage.sync.get(['llmProvider', 'llmModel', 'apiKey', 'testCount']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'testCount']);
+
+      // Check if AI provider is configured
+      if (!settings.llmProvider) {
+        throw new Error('Please select an AI provider in the extension settings first');
+      }
+
+      if (!settings.apiKey) {
+        throw new Error('Please add your API key in the extension settings first');
+      }
 
       resultsContainer.innerHTML = '<div class="qatalyst-loading">🔄 Regenerating test cases based on your feedback...</div>';
 

@@ -8,6 +8,13 @@ const CONFIG = {
   RETRY_DELAY: 2000, // 2 seconds between retries
   MAX_RETRIES: 2,
 
+  // Text Extraction Limits
+  MAX_TEXT_EXTRACT_LENGTH: 30000, // 30,000 characters
+
+  // Figma Image Extraction Limits
+  MAX_FIGMA_IMAGES: 20,
+  MIN_FIGMA_IMAGE_SIZE_KB: 5, // 5 KB
+
   // Rate Limiting
   FIGMA_RATE_LIMIT_DELAY: 1000, // 1 second between Figma requests
   MAX_CONCURRENT_REQUESTS: 5,
