@@ -858,6 +858,7 @@
       const settings = await loadAndDecryptSettings([
         'llmProvider', 'llmModel', 'apiKey', 'enableStreaming', 'enableMultiAgent',
         'enableEvolution', 'evolutionIntensity', 'testCount',
+        'positivePercent', 'negativePercent', 'edgePercent', 'integrationPercent',
         'enablePositiveAgent', 'enableNegativeAgent', 'enableEdgeAgent',
         'enableRegressionAgent', 'enableIntegrationAgent', 'enableReviewAgent',
         'enableHistoricalMining', 'historicalMaxResults', 'historicalJqlFilters',

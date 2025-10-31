@@ -1370,6 +1370,9 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     }
   }
 
+  // Define vision models that support image inputs
+  const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-5-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'gemini-2.0-flash'];
+
   // Bind callAI to all agents
   const bindCallAI = (agent) => {
     // Agents call with (systemMessage, userMessage, settings)
@@ -1379,7 +1382,18 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
         { type: 'text', text: systemMessage },
         { type: 'text', text: userMessage }
       ];
-      return await callAI(contentParts, agentSettings || settings);
+
+      // Add Jira image attachments if available and using vision model
+      const currentSettings = agentSettings || settings;
+      const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
+      if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+        console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to agent API call`);
+        enrichedTicketData.imageAttachments.forEach(image => {
+          contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+        });
+      }
+
+      return await callAI(contentParts, currentSettings);
     };
     agent.settings = settings;
   };
@@ -1421,7 +1435,18 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
         { type: 'text', text: systemMessage },
         { type: 'text', text: userMessage }
       ];
-      return await callAI(contentParts, enhancerSettings || settings);
+
+      // Add Jira image attachments if available and using vision model
+      const currentSettings = enhancerSettings || settings;
+      const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
+      if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+        console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira images to EnhancementEngine API call`);
+        enrichedTicketData.imageAttachments.forEach(image => {
+          contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+        });
+      }
+
+      return await callAI(contentParts, currentSettings);
     };
     const enhancer = new EnhancementEngine(settings, enhancerCallAI);
     enhancementResults = await enhancer.enhance(results.testCases, enrichedTicketData, results.analysis);
@@ -1453,7 +1478,18 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
         { type: 'text', text: systemMessage },
         { type: 'text', text: userMessage }
       ];
-      return await callAI(contentParts, historicalSettings || settings);
+
+      // Add Jira image attachments if available and using vision model
+      const currentSettings = historicalSettings || settings;
+      const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
+      if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+        console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira images to HistoricalMiningEngine API call`);
+        enrichedTicketData.imageAttachments.forEach(image => {
+          contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+        });
+      }
+
+      return await callAI(contentParts, currentSettings);
     };
     const historicalMiner = new HistoricalMiningEngine(settings, historicalCallAI, data.baseUrl);
     historicalResults = await historicalMiner.mineAndEnhance(enrichedTicketData, results.testCases);
@@ -1511,12 +1547,24 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
     });
 
     // Create wrapper for EvolutionaryOptimizer that converts 3-param to 2-param callAI
+    const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-5-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'gemini-2.0-flash'];
     const evolutionCallAI = async (systemMessage, userMessage, evolutionSettings) => {
       const contentParts = [
         { type: 'text', text: systemMessage },
         { type: 'text', text: userMessage }
       ];
-      return await callAI(contentParts, evolutionSettings || settings);
+
+      // Add Jira image attachments if available and using vision model
+      const currentSettings = evolutionSettings || settings;
+      const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
+      if (isVisionModel && ticketData.imageAttachments && ticketData.imageAttachments.length > 0) {
+        console.log(`📷 Adding ${ticketData.imageAttachments.length} Jira images to EvolutionaryOptimizer API call`);
+        ticketData.imageAttachments.forEach(image => {
+          contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+        });
+      }
+
+      return await callAI(contentParts, currentSettings);
     };
     const evolvedTests = await evolution.evolve(baseTests, ticketData, evolutionCallAI);
 
@@ -1632,7 +1680,11 @@ Please regenerate the test cases incorporating the user's feedback. Return the r
   }
 
   // Call AI with the combined prompt
-  const improvedResponse = await callAI(systemMessage, userMessage, settings);
+  const contentParts = [
+    { type: 'text', text: systemMessage },
+    { type: 'text', text: userMessage }
+  ];
+  const improvedResponse = await callAI(contentParts, settings);
 
   // Handle test cases specially (need JSON parsing)
   if (type === 'testCases') {

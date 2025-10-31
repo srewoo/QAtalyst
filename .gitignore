@@ -76,6 +76,7 @@ agenthub/agents/youtube/db
 # Build caches
 .cache/
 .qodo
+.claude
 
 # Mobile development
 android-sdk/ 
