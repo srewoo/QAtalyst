@@ -141,7 +141,15 @@
 
 .qatalyst-btn.secondary {
   background: #f1f5f9;
-  border-color: #cbd5e1;
+  border: 2px solid #cbd5e1;
+  color: #475569;
+}
+
+.qatalyst-btn.secondary:hover:not(:disabled) {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(100, 116, 139, 0.15);
 }
 
 .qatalyst-btn:disabled {
@@ -330,6 +338,13 @@
 
 .tc-steps li {
   margin-bottom: 4px;
+}
+
+.tc-description {
+  font-size: 13px;
+  color: #475569;
+  margin-bottom: 8px;
+  line-height: 1.5;
 }
 
 .tc-expected {

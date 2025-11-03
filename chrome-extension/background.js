@@ -1483,6 +1483,18 @@ async function handleGenerateTestCasesStream(data, tabId) {
   
   const systemMessage = `You are an expert QA engineer generating comprehensive test cases.
 
+**IMPORTANT: Write DETAILED descriptions (2-3 sentences) that:**
+- Start with "Verify that..."
+- Explain what functionality is being tested
+- Mention what the user is able to do (or unable to do for negative tests)
+- Include the expected behavior or outcome
+- Use phrases like: "works correctly", "user is able to", "ensure that", "confirm that", "correctly handles"
+
+Example descriptions:
+- Positive: "Verify that the feature flag works correctly and user is able to toggle LLM functionality on/off at the site level. Ensure the toggle persists across sessions and affects all users in the site."
+- Negative: "Verify that the system correctly validates file upload size and user is unable to upload files exceeding the 10MB limit. Ensure that appropriate error message is displayed and the system prevents the upload."
+- Edge: "Verify that the system correctly handles concurrent user sessions and user is able to perform actions simultaneously from multiple devices. Ensure that data consistency is maintained and no conflicts occur."
+
 Generate test cases in this EXACT JSON format:
 {
   "testCases": [
@@ -1491,7 +1503,7 @@ Generate test cases in this EXACT JSON format:
       "title": "Clear test case title",
       "category": "Positive|Negative|Edge|Integration",
       "priority": "P0|P1|P2|P3",
-      "description": "What this test validates",
+      "description": "Detailed 2-3 sentence description starting with 'Verify that...'",
       "preconditions": "Setup required",
       "steps": ["Step 1", "Step 2", "Step 3"],
       "expected_result": "Expected outcome",

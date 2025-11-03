@@ -205,7 +205,7 @@ EXAMPLE HIGH-QUALITY TEST CASE:
   "title": "User successfully logs in with valid credentials",
   "category": "Positive",
   "priority": "P0",
-  "description": "Verify user can authenticate with correct email and password",
+  "description": "Verify that the user can successfully authenticate with correct email and password. Ensure the login process works correctly, user is able to enter credentials, and the system validates and grants access. Confirm that session is created and user is redirected to the appropriate landing page.",
   "preconditions": "User account exists with email: test@example.com and password set",
   "steps": [
     "Navigate to login page",
@@ -226,6 +226,15 @@ Focus on:
 - Valid input combinations
 - Successful operations
 
+**IMPORTANT: Write DETAILED descriptions (2-3 sentences) that:**
+- Start with "Verify that..."
+- Explain what functionality is being tested
+- Mention what the user is able to do
+- Include the expected behavior or outcome
+- Use phrases like: "works correctly", "user is able to", "ensure that", "confirm that"
+
+Example: "Verify that the feature flag works correctly and user is able to toggle LLM functionality on/off at the site level. Ensure the toggle persists across sessions and affects all users in the site."
+
 Generate test cases in this EXACT JSON format:
 {
   "testCases": [
@@ -234,7 +243,7 @@ Generate test cases in this EXACT JSON format:
       "title": "Clear test case title",
       "category": "Positive",
       "priority": "P0|P1|P2|P3",
-      "description": "What this test validates",
+      "description": "Detailed 2-3 sentence description starting with 'Verify that...'",
       "preconditions": "Setup required",
       "steps": ["Step 1", "Step 2", "Step 3"],
       "expected_result": "Expected outcome",
@@ -326,7 +335,7 @@ EXAMPLE HIGH-QUALITY NEGATIVE TEST:
   "title": "Login fails with invalid password and shows appropriate error",
   "category": "Negative",
   "priority": "P0",
-  "description": "Verify system rejects login with incorrect password and displays clear error message",
+  "description": "Verify that the system correctly rejects login attempts with incorrect password and user is unable to gain unauthorized access. Ensure that appropriate error message is displayed and the system maintains security by not revealing whether the email exists. Confirm that no session is created and user remains on the login page.",
   "preconditions": "User account exists with email: test@example.com",
   "steps": [
     "Navigate to login page",
@@ -349,6 +358,15 @@ Focus on:
 - Error messages and handling
 - System resilience
 
+**IMPORTANT: Write DETAILED descriptions (2-3 sentences) that:**
+- Start with "Verify that..."
+- Explain what error condition is being tested
+- Mention what the user is unable to do (security/validation)
+- Include the expected error handling behavior
+- Use phrases like: "correctly rejects", "user is unable to", "prevents", "validates", "handles error"
+
+Example: "Verify that the system correctly validates file upload size and user is unable to upload files exceeding the 10MB limit. Ensure that appropriate error message is displayed and the system prevents the upload. Confirm that no partial files are stored."
+
 Generate test cases in this EXACT JSON format:
 {
   "testCases": [
@@ -357,7 +375,7 @@ Generate test cases in this EXACT JSON format:
       "title": "Clear test case title",
       "category": "Negative",
       "priority": "P0|P1|P2|P3",
-      "description": "What this test validates",
+      "description": "Detailed 2-3 sentence description starting with 'Verify that...'",
       "preconditions": "Setup required",
       "steps": ["Step 1", "Step 2", "Step 3"],
       "expected_result": "Expected error or rejection",
@@ -440,7 +458,7 @@ EXAMPLE HIGH-QUALITY EDGE CASE TEST:
   "title": "Form submission with maximum allowed character count (255 chars)",
   "category": "Edge",
   "priority": "P1",
-  "description": "Verify system accepts input at exact maximum boundary",
+  "description": "Verify that the system correctly handles input at the exact maximum boundary of 255 characters and user is able to save the form without errors. Ensure that all characters are preserved without truncation and the system displays the complete text. Confirm that no performance degradation occurs at this boundary value.",
   "preconditions": "User logged in, form field has 255 character limit",
   "steps": [
     "Navigate to profile edit page",
@@ -461,6 +479,15 @@ Focus on:
 - System limits
 - **Performance boundaries (max file size, timeout limits)**
 
+**IMPORTANT: Write DETAILED descriptions (2-3 sentences) that:**
+- Start with "Verify that..."
+- Explain what boundary/edge condition is being tested
+- Mention what the user is able to do at this edge case
+- Include the expected system behavior
+- Use phrases like: "correctly handles", "at the boundary", "edge condition", "system maintains", "without degradation"
+
+Example: "Verify that the system correctly handles concurrent user sessions and user is able to perform actions simultaneously from multiple devices. Ensure that data consistency is maintained and no conflicts occur. Confirm that session management works correctly across all active sessions."
+
 Generate test cases in this EXACT JSON format:
 {
   "testCases": [
@@ -469,7 +496,7 @@ Generate test cases in this EXACT JSON format:
       "title": "Clear test case title",
       "category": "Edge",
       "priority": "P1|P2|P3",
-      "description": "What this test validates",
+      "description": "Detailed 2-3 sentence description starting with 'Verify that...'",
       "preconditions": "Setup required",
       "steps": ["Step 1", "Step 2", "Step 3"],
       "expected_result": "Expected behavior at boundary",

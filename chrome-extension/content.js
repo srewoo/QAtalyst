@@ -1533,16 +1533,26 @@
           </button>
         </div>
 
-        <button class="qatalyst-btn primary" id="add-to-jira-btn" style="margin-top: 12px;">
-          <span class="btn-icon">📝</span>
-          <span>Add to Jira</span>
-        </button>
+        <div style="display: flex; gap: 8px; margin-top: 12px;">
+          <button class="qatalyst-btn primary" id="add-to-jira-btn" style="flex: 1;">
+            <span class="btn-icon">📝</span>
+            <span>Add to Jira</span>
+          </button>
+          <button class="qatalyst-btn secondary" id="export-csv-btn" style="flex: 1;">
+            <span class="btn-icon">📥</span>
+            <span>Export to CSV</span>
+          </button>
+        </div>
       </div>
     `;
 
     // Add event listeners
     document.getElementById('add-to-jira-btn')?.addEventListener('click', () => {
       addTestCasesToJira(data.testCases);
+    });
+
+    document.getElementById('export-csv-btn')?.addEventListener('click', () => {
+      exportTestCasesToCSV(data.testCases);
     });
 
     document.getElementById('regenerate-testcases-btn')?.addEventListener('click', async () => {
@@ -1599,6 +1609,7 @@
     return testCases.map((tc, idx) => {
       // Handle both camelCase and snake_case property names
       const expectedResult = tc.expected_result || tc.expectedResult || 'Not specified';
+      const description = tc.description || 'Not specified';
 
       // Add historical badge
       const sourceBadge = tc.source === 'historical'
@@ -1620,12 +1631,79 @@
         <div class="tc-title">${tc.title}</div>
         ${tc.preventionReason ? `<div class="prevention-reason">🛡️ ${tc.preventionReason}</div>` : ''}
         ${historicalInfo}
+        <div class="tc-description">
+          <strong>Description:</strong> ${description}
+        </div>
         <div class="tc-expected">
           <strong>Expected Result:</strong> ${expectedResult}
         </div>
       </div>
     `;
     }).join('');
+  }
+  
+  function exportTestCasesToCSV(testCases) {
+    try {
+      // Define CSV headers
+      const headers = ['ID', 'Title', 'Category', 'Priority', 'Description', 'Expected Result'];
+      
+      // Convert test cases to CSV rows
+      const rows = testCases.map(tc => {
+        const id = tc.id || '';
+        const title = (tc.title || '').replace(/"/g, '""'); // Escape quotes
+        const category = tc.category || '';
+        const priority = tc.priority || '';
+        const description = (tc.description || '').replace(/"/g, '""'); // Escape quotes
+        const expectedResult = (tc.expected_result || tc.expectedResult || '').replace(/"/g, '""'); // Escape quotes
+        
+        // Wrap fields in quotes to handle commas and newlines
+        return [
+          `"${id}"`,
+          `"${title}"`,
+          `"${category}"`,
+          `"${priority}"`,
+          `"${description}"`,
+          `"${expectedResult}"`
+        ].join(',');
+      });
+      
+      // Combine headers and rows
+      const csvContent = [headers.join(','), ...rows].join('\n');
+      
+      // Create blob and download
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      
+      // Generate filename with timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      const ticketKey = extractTicketKey() || 'test-cases';
+      const filename = `${ticketKey}_test_cases_${timestamp}.csv`;
+      
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // Show success message
+      const btn = document.getElementById('export-csv-btn');
+      if (btn) {
+        const originalHTML = btn.innerHTML;
+        btn.innerHTML = '<span class="btn-icon">✅</span><span>Exported!</span>';
+        btn.disabled = true;
+        setTimeout(() => {
+          btn.innerHTML = originalHTML;
+          btn.disabled = false;
+        }, 2000);
+      }
+      
+      console.log(`✅ Exported ${testCases.length} test cases to ${filename}`);
+    } catch (error) {
+      console.error('❌ Error exporting to CSV:', error);
+      alert('Failed to export test cases to CSV. Please try again.');
+    }
   }
   
   async function addAnalysisToJira(analysis) {
