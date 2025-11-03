@@ -427,7 +427,7 @@
           </div>
           <div class="form-group">
             <label for="maxTokens">Max Tokens:</label>
-            <input type="number" id="maxTokens" value="4000" data-testid="max-tokens-input">
+            <input type="number" id="maxTokens" value="16000" data-testid="max-tokens-input">
           </div>
         </div>
         
@@ -671,7 +671,7 @@
       </div>
       
       <div class="section">
-        <h2>📄 Confluence Integration<span class="coming-soon-badge">Coming Soon</span></h2>
+        <h2>📄 Confluence Integration</h2>
         <p>Configure Confluence for requirement extraction.</p>
         
         <div class="form-group">
@@ -698,7 +698,7 @@
       </div>
       
       <div class="section">
-        <h2>🎨 Figma Integration<span class="coming-soon-badge">Coming Soon</span></h2>
+        <h2>🎨 Figma Integration</h2>
         <p>Configure Figma for design analysis.</p>
         
         <div class="form-group">
@@ -710,28 +710,186 @@
           <span id="figmaStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
         </div>
         
+        <!-- Image Extraction Mode -->
+        <div class="form-group" style="margin-top: 20px;">
+          <label>
+            <strong>Image Extraction Mode</strong>
+            <span class="info-icon">ⓘ
+              <span class="tooltip">Choose how to extract images from Figma nodes. Single node captures the entire design as one image. Child images extracts each frame/component separately.</span>
+            </span>
+          </label>
+          <div style="display: flex; gap: 24px; margin-top: 8px; flex-wrap: nowrap;">
+            <label style="display: flex; align-items: center; cursor: pointer; white-space: nowrap;">
+              <input type="radio" name="figmaImageMode" value="single" id="figmaImageSingle" checked style="margin-right: 8px;">
+              <span style="white-space: nowrap;">Single Node Image</span>
+            </label>
+            <label style="display: flex; align-items: center; cursor: pointer; white-space: nowrap;">
+              <input type="radio" name="figmaImageMode" value="children" id="figmaImageChildren" style="margin-right: 8px;">
+              <span style="white-space: nowrap;">All Child Images</span>
+            </label>
+          </div>
+          
+          <!-- Mode Descriptions -->
+          <div id="figmaSingleModeInfo" style="background: #f0f9ff; border-left: 4px solid #0ea5e9; padding: 12px; margin-top: 12px; border-radius: 4px;">
+            <p style="margin: 0; font-size: 13px; color: #334155;">
+              <strong>📸 Single Node Image:</strong> Captures the entire node as one screenshot. Faster and uses fewer tokens, ideal for overview analysis.
+            </p>
+          </div>
+          
+          <div id="figmaChildrenModeInfo" style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 12px; margin-top: 12px; border-radius: 4px; display: none;">
+            <p style="margin: 0 0 8px 0; font-size: 13px; color: #334155;">
+              <strong>🖼️ All Child Images:</strong> Extracts each child frame/component as a separate image. Provides more detail and better analysis of individual screens.
+            </p>
+            <ul style="margin: 0; padding-left: 20px; font-size: 12px; color: #475569;">
+              <li>Each screen/frame is captured separately</li>
+              <li>Better for detailed UI analysis</li>
+              <li>Uses more API calls and tokens</li>
+              <li>Recommended for complex designs with multiple screens</li>
+            </ul>
+          </div>
+        </div>
+        
         <a href="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens" target="_blank" class="help-link">📖 Get Figma Token</a>
       </div>
       
       <div class="section">
-        <h2>📝 Google Docs Integration<span class="coming-soon-badge">Coming Soon</span></h2>
-        <p>Configure Google API for document access.</p>
+        <h2>📝 Google Docs Integration</h2>
+        <p>Automatically extract content from Google Docs links in your Jira tickets.</p>
         
+        <!-- Authentication Mode Toggle -->
         <div class="form-group">
-          <label for="googleApiKey">
-            Google API Key
+          <label>
+            <strong>Authentication Mode</strong>
             <span class="info-icon">ⓘ
-                <span class="tooltip">This API key must have access to the Google Docs API (for reading linked documents) and the Google Custom Search API (for validating the key).</span>
+              <span class="tooltip">Choose between simple public export (no auth) or OAuth2 (for private documents)</span>
             </span>
           </label>
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <input type="password" id="googleApiKey" placeholder="Enter Google API key" data-testid="google-api-key" style="flex-grow: 1;">
-            <button type="button" class="btn secondary" id="testGoogle">Test</button>
+          <div style="display: flex; gap: 16px; margin-top: 8px;">
+            <label style="display: flex; align-items: center; cursor: pointer;">
+              <input type="radio" name="googleAuthMode" value="public" id="googleAuthPublic" checked style="margin-right: 8px;">
+              <span>Public Export (Recommended)</span>
+            </label>
+            <label style="display: flex; align-items: center; cursor: pointer;">
+              <input type="radio" name="googleAuthMode" value="oauth2" id="googleAuthOAuth2" style="margin-right: 8px;">
+              <span>OAuth2 (Advanced)</span>
+            </label>
           </div>
-          <span id="googleStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
         </div>
         
-        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="help-link">📖 Get Google API Key</a>
+        <!-- Public Export Mode Info (Default) -->
+        <div id="googlePublicMode" style="display: block;">
+          <div style="background: #f0f9ff; border: 1px solid #0ea5e9; border-radius: 8px; padding: 16px; margin: 16px 0;">
+            <h4 style="color: #0369a1; margin: 0 0 8px 0;">✅ No Setup Required!</h4>
+            <p style="margin: 0; font-size: 14px; color: #334155;">
+              Google Docs integration works automatically using public export URLs. 
+              Just make sure your documents are shared as <strong>"Anyone with the link can view"</strong>.
+            </p>
+          </div>
+          
+          <div class="form-group">
+            <label style="color: #64748b; font-size: 14px;">
+              <strong>How it works:</strong>
+            </label>
+            <ol style="margin: 8px 0; padding-left: 20px; color: #475569; font-size: 14px;">
+              <li>Add Google Docs links to your Jira ticket description</li>
+              <li>Make sure documents are shared publicly ("Anyone with the link")</li>
+              <li>QAtalyst will automatically fetch and include the content</li>
+            </ol>
+          </div>
+          
+          <a href="https://support.google.com/docs/answer/2494822" target="_blank" class="help-link">📖 How to Share Google Docs</a>
+        </div>
+        
+        <!-- OAuth2 Mode (Hidden by default) -->
+        <div id="googleOAuth2Mode" style="display: none;">
+          <div style="background: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; padding: 12px; margin: 16px 0;">
+            <p style="margin: 0; font-size: 13px; color: #92400e;">
+              <strong>⚠️ Advanced:</strong> OAuth2 allows access to private documents but requires Google Cloud setup.
+            </p>
+          </div>
+          
+          <div class="form-group">
+            <label for="googleClientId">
+              Client ID
+              <span class="info-icon">ⓘ
+                <span class="tooltip">OAuth2 Client ID from Google Cloud Console</span>
+              </span>
+            </label>
+            <input type="text" id="googleClientId" placeholder="xxxxx.apps.googleusercontent.com" data-testid="google-client-id">
+          </div>
+          
+          <div class="form-group">
+            <label for="googleClientSecret">
+              Client Secret
+              <span class="info-icon">ⓘ
+                <span class="tooltip">OAuth2 Client Secret from Google Cloud Console</span>
+              </span>
+            </label>
+            <input type="password" id="googleClientSecret" placeholder="GOCSPX-xxxxx" data-testid="google-client-secret">
+          </div>
+          
+          <div class="form-group">
+            <label for="googleProjectId">
+              Project ID (Optional)
+              <span class="info-icon">ⓘ
+                <span class="tooltip">Your Google Cloud Project ID</span>
+              </span>
+            </label>
+            <input type="text" id="googleProjectId" placeholder="my-project-123456" data-testid="google-project-id">
+          </div>
+          
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 16px;">
+            <button type="button" class="btn secondary" id="testGoogleOAuth">Test OAuth2</button>
+            <span id="googleOAuthStatus" style="font-size: 12px;"></span>
+          </div>
+          
+          <div style="background: #f0f9ff; border: 1px solid #0ea5e9; border-radius: 8px; padding: 16px; margin: 16px 0;">
+            <p style="margin: 0 0 12px 0; font-size: 14px; color: #0369a1;"><strong>📋 Setup Instructions:</strong></p>
+            <ol style="margin: 0; padding-left: 20px; font-size: 13px; color: #334155; line-height: 1.8;">
+              <li style="margin-bottom: 8px;">
+                <strong>Go to Google Cloud Console:</strong><br>
+                Visit <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color: #0ea5e9;">console.cloud.google.com/apis/credentials</a>
+              </li>
+              <li style="margin-bottom: 8px;">
+                <strong>Create or Select a Project:</strong><br>
+                Click the project dropdown at the top → "New Project" → Enter a name → "Create"
+              </li>
+              <li style="margin-bottom: 8px;">
+                <strong>Enable Google Docs API:</strong><br>
+                Go to "APIs & Services" → "Enable APIs and Services" → Search "Google Docs API" → Click "Enable"
+              </li>
+              <li style="margin-bottom: 8px;">
+                <strong>Create OAuth 2.0 Client ID:</strong><br>
+                • Go to "Credentials" tab → "Create Credentials" → "OAuth client ID"<br>
+                • Application type: Select <strong>"Web application"</strong> <br>
+                • Name: Enter "QAtalyst Extension"
+              </li>
+              <li style="margin-bottom: 8px;">
+                <strong>Configure Redirect URI:</strong><br>
+                • Click the button below to get your exact redirect URI:<br>
+                <button type="button" id="showRedirectUri" class="btn secondary" style="margin: 8px 0; font-size: 12px; padding: 6px 12px;">📋 Show My Redirect URI</button><br>
+                <code id="redirectUriDisplay" style="background: #e0f2fe; padding: 8px 12px; border-radius: 4px; display: none; word-break: break-all; font-size: 12px;"></code><br>
+                • Copy this URI and add it to "Authorized redirect URIs" in Google Cloud Console
+              </li>
+              <li style="margin-bottom: 8px;">
+                <strong>Get Your Credentials:</strong><br>
+                • After creating, you'll see a popup with Client ID and Client Secret<br>
+                • Copy both values and paste them in the fields above<br>
+                • Click "Test OAuth2" to verify the setup
+              </li>
+            </ol>
+            <div style="background: #fff3cd; border-left: 4px solid #fbbf24; padding: 10px; margin-top: 12px; border-radius: 4px;">
+              <p style="margin: 0; font-size: 12px; color: #92400e;">
+                <strong>⚠️ Important:</strong> Keep your Client Secret secure. Never share it publicly or commit it to version control.
+              </p>
+            </div>
+          </div>
+          
+          <a href="https://developers.google.com/identity/protocols/oauth2/web-server" target="_blank" class="help-link" style="display: inline-block; margin-top: 8px;">📖 Detailed OAuth2 Setup Guide</a>
+        </div>
+        
+        <!-- Hidden field for backward compatibility -->
+        <input type="hidden" id="googleApiKey" value="">
       </div>
     </div>
     

@@ -12,7 +12,7 @@ const CONFIG = {
   MAX_TEXT_EXTRACT_LENGTH: 30000, // 30,000 characters
 
   // Figma Image Extraction Limits
-  MAX_FIGMA_IMAGES: 20,
+  MAX_FIGMA_IMAGES: 50, // Increased from 20 to capture more screens
   MIN_FIGMA_IMAGE_SIZE_KB: 5, // 5 KB
 
   // Rate Limiting
@@ -21,7 +21,7 @@ const CONFIG = {
 
   // AI Provider Defaults
   DEFAULT_TEMPERATURE: 0.7,
-  DEFAULT_MAX_TOKENS: 4000,
+  DEFAULT_MAX_TOKENS: 16000,
   DEFAULT_TEST_COUNT: 30,
   MIN_TEST_COUNT: 20,
   MAX_TEST_COUNT: 100,

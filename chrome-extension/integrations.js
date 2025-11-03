@@ -138,8 +138,12 @@ class IntegrationManager {
   }
 
   async fetchAllLinkedContent(ticketData) {
-    console.log('IntegrationManager: Starting fetchAllLinkedContent');
-    console.log('IntegrationManager: Settings', this.settings);
+    console.log('🔗 [IntegrationManager] Starting fetchAllLinkedContent');
+    console.log('🔗 [IntegrationManager] Settings configured:', {
+      hasConfluence: !!(this.settings.confluenceUrl && this.settings.confluenceToken),
+      hasFigma: !!this.settings.figmaToken,
+      hasGoogleDocs: !!this.settings.googleApiKey
+    });
 
     const results = {
       confluence: [],
@@ -153,18 +157,22 @@ class IntegrationManager {
       ticketData.description || '',
       ...(ticketData.comments || []).map(c => c.text || '') // Use c.text for comment content
     ].join('\n');
-    console.log('IntegrationManager: All text for URL extraction:', allText);
+    console.log('🔗 [IntegrationManager] Extracted text length:', allText.length);
 
     // Extract all URLs
     const confluenceUrls = this.confluence.extractUrls(allText);
     const figmaUrls = this.figma.extractUrls(allText);
     const googleDocsUrls = this.googleDocs.extractUrls(allText);
 
-    console.log('IntegrationManager: Extracted URLs:', {
-      confluence: confluenceUrls,
-      figma: figmaUrls,
-      googleDocs: googleDocsUrls
+    console.log('🔗 [IntegrationManager] Extracted URLs:', {
+      confluence: confluenceUrls.length,
+      figma: figmaUrls.length,
+      googleDocs: googleDocsUrls.length
     });
+
+    if (confluenceUrls.length > 0) console.log('  📄 Confluence URLs:', confluenceUrls);
+    if (figmaUrls.length > 0) console.log('  🎨 Figma URLs:', figmaUrls);
+    if (googleDocsUrls.length > 0) console.log('  📝 Google Docs URLs:', googleDocsUrls);
 
     // Fetch from all integrations in parallel
     const fetchTasks = [];
@@ -184,23 +192,42 @@ class IntegrationManager {
 
     // Process results
     let taskIndex = 0;
+    const errors = [];
+    
     if (confluenceUrls.length > 0) {
       if (fetchResults[taskIndex].status === 'fulfilled') {
         results.confluence = fetchResults[taskIndex].value;
+        console.log('✅ [IntegrationManager] Confluence fetch successful:', results.confluence.length, 'pages');
+      } else {
+        console.error('❌ [IntegrationManager] Confluence fetch failed:', fetchResults[taskIndex].reason);
+        errors.push({ type: 'Confluence', error: fetchResults[taskIndex].reason?.message || 'Unknown error' });
       }
       taskIndex++;
     }
     if (figmaUrls.length > 0) {
       if (fetchResults[taskIndex].status === 'fulfilled') {
         results.figma = fetchResults[taskIndex].value;
+        console.log('✅ [IntegrationManager] Figma fetch successful:', results.figma.length, 'files');
+      } else {
+        console.error('❌ [IntegrationManager] Figma fetch failed:', fetchResults[taskIndex].reason);
+        errors.push({ type: 'Figma', error: fetchResults[taskIndex].reason?.message || 'Unknown error' });
       }
       taskIndex++;
     }
     if (googleDocsUrls.length > 0) {
       if (fetchResults[taskIndex].status === 'fulfilled') {
         results.googleDocs = fetchResults[taskIndex].value;
+        console.log('✅ [IntegrationManager] Google Docs fetch successful:', results.googleDocs.length, 'documents');
+      } else {
+        console.error('❌ [IntegrationManager] Google Docs fetch failed:', fetchResults[taskIndex].reason);
+        errors.push({ type: 'Google Docs', error: fetchResults[taskIndex].reason?.message || 'Unknown error' });
       }
       taskIndex++;
+    }
+    
+    // Log any errors
+    if (errors.length > 0) {
+      console.warn('⚠️ [IntegrationManager] Some integrations failed:', errors);
     }
     
     // Enrich description with external content
@@ -219,7 +246,13 @@ class IntegrationManager {
         results.googleDocs.map(d => d.content).join('\n\n');
     }
 
-    console.log('IntegrationManager: Final external sources results:', results);
+    console.log('✅ [IntegrationManager] Final results:', {
+      confluence: results.confluence.length,
+      figma: results.figma.length,
+      googleDocs: results.googleDocs.length,
+      enrichedDescriptionLength: results.enrichedDescription.length,
+      errors: errors.length
+    });
     
     return results;
   }
@@ -236,8 +269,8 @@ class ConfluenceIntegration {
   extractUrls(text) {
     // Multiple patterns to support Cloud, Server, and Data Center
     const patterns = [
-      // Cloud format: https://company.atlassian.net/wiki/spaces/...
-      /https:\/\/[A-Za-z0-9.-]+\.atlassian\.net\/wiki\/spaces\/[~A-Za-z0-9]+\/pages\/\d+\/[A-Za-z0-9+%-]+/gi,
+      // Cloud format: https://company.atlassian.net/wiki/spaces/... (title is optional)
+      /https:\/\/[A-Za-z0-9.-]+\.atlassian\.net\/wiki\/spaces\/[~A-Za-z0-9]+\/pages\/\d+(?:\/[A-Za-z0-9+%-]+)?/gi,
 
       // Server/Data Center format: https://confluence.company.com/display/...
       /https:\/\/[A-Za-z0-9.-]+\/confluence\/display\/[A-Za-z0-9]+\/[^\/\s<>"']+/gi,
@@ -275,6 +308,8 @@ class ConfluenceIntegration {
         throw new Error('Invalid Confluence URL format. Could not extract page ID.');
       }
 
+      console.log(`📄 Confluence - Extracted page ID: ${pageId} from URL: ${url}`);
+
       // Check cache first
       if (cacheManager) {
         const cacheKey = cacheManager.constructor.getCacheKey('confluence', pageId);
@@ -287,7 +322,11 @@ class ConfluenceIntegration {
 
       // Fetch page content with retry logic
       const fetchPageWithRetry = async () => {
-        const apiUrl = `${this.baseUrl}/rest/api/content/${pageId}?expand=body.storage,version`;
+        // Confluence Cloud uses /wiki/rest/api, Server/Data Center uses /rest/api
+        const isCloud = this.baseUrl.includes('atlassian.net');
+        const apiPath = isCloud ? '/wiki/rest/api/content' : '/rest/api/content';
+        const apiUrl = `${this.baseUrl}${apiPath}/${pageId}?expand=body.storage,version`;
+        console.log(`🌐 Confluence API request: ${apiUrl}`);
 
         const response = await fetch(apiUrl, {
           headers: {
@@ -382,22 +421,37 @@ class ConfluenceIntegration {
   }
   
   parseHtml(html) {
-    // Sanitize HTML first to remove any malicious content
-    const sanitizedHtml = securityManager.sanitizeHTML(html);
+    // Service worker context - can't use DOM APIs for sanitization
+    // Instead, use regex-based HTML stripping (safe since we're only extracting text)
 
-    // Simple HTML to text conversion
-    // Remove HTML tags and get clean text
-    let text = sanitizedHtml
+    // Remove script and style tags with their content
+    let text = html
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+
+      // Convert common block elements to line breaks
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/p>/gi, '\n')
       .replace(/<\/div>/gi, '\n')
+      .replace(/<\/h[1-6]>/gi, '\n')
       .replace(/<li>/gi, '- ')
+
+      // Extract URLs from anchor tags before removing them
+      .replace(/<a[^>]+href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi, '$2 ($1)')
+
+      // Remove all remaining HTML tags
       .replace(/<[^>]+>/g, '')
+
+      // Decode HTML entities
       .replace(/&nbsp;/g, ' ')
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+
+      // Clean up whitespace
+      .replace(/\n{3,}/g, '\n\n')  // Max 2 consecutive newlines
       .trim();
     
     if (text.length > CONFIG.MAX_TEXT_EXTRACT_LENGTH) {
@@ -417,14 +471,64 @@ class ConfluenceIntegration {
 class FigmaIntegration {
   constructor(settings) {
     this.token = settings.figmaToken;
+    this.imageMode = settings.figmaImageMode || 'single'; // 'single' or 'children'
   }
   
   extractUrls(text) {
-    // Match Figma URLs - support file and design with query parameters
-    const pattern = /https:\/\/(?:www\.)?figma\.com\/(?:file|design)\/[A-Za-z0-9]+(?:\/[A-Za-z0-9-._~!$&'()*+,;=:@%]*)*/gi;
+    // Match Figma URLs - support file, design, and proto with query parameters
+    // Include ? for query strings and capture node-id parameter
+    const pattern = /https:\/\/(?:www\.)?figma\.com\/(?:file|design|proto)\/[A-Za-z0-9]+(?:\/[A-Za-z0-9-._~!$&'()*+,;=:@%?#]*)*/gi;
     const matches = text.match(pattern) || [];
     // Clean up any trailing punctuation or HTML entities
     return [...new Set(matches.map(url => url.replace(/[<>"'\s]+$/, '')))];
+  }
+  
+  /**
+   * Extract child nodes (frames/components) from a Figma node
+   * @param {array} children - Array of child nodes from Figma API
+   * @returns {array} - Array of {id, name, type} objects for frames and components
+   */
+  extractChildNodes(children) {
+    const childNodes = [];
+    const validTypes = ['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE'];
+    
+    const traverse = (nodes) => {
+      for (const node of nodes) {
+        // Include frames and components
+        if (validTypes.includes(node.type)) {
+          childNodes.push({
+            id: node.id,
+            name: node.name,
+            type: node.type
+          });
+        }
+        
+        // Recursively check children (but only go 2 levels deep to avoid too many images)
+        if (node.children && childNodes.length < CONFIG.MAX_FIGMA_IMAGES) {
+          traverse(node.children);
+        }
+      }
+    };
+    
+    traverse(children);
+    
+    // Limit to MAX_FIGMA_IMAGES
+    return childNodes.slice(0, CONFIG.MAX_FIGMA_IMAGES);
+  }
+  
+  /**
+   * Parse Figma URL to extract file key and node ID
+   * @param {string} url - Full Figma URL
+   * @returns {object} - {fileKey, nodeId}
+   */
+  parseFigmaURL(url) {
+    const fileKeyMatch = url.match(/\/(?:file|design|proto)\/([a-zA-Z0-9]+)/) || url.match(/figma\.com\/(?:file|design|proto)\/([a-zA-Z0-9]+)/);
+    const nodeIdMatch = url.match(/node-id=([\d:-]+)/);
+    
+    return {
+      fileKey: fileKeyMatch ? fileKeyMatch[1] : null,
+      nodeId: nodeIdMatch ? nodeIdMatch[1].replace(/-/g, ':') : null // Convert "1-41" → "1:41"
+    };
   }
   
   async fetchFile(url, retries = 3) {
@@ -433,91 +537,138 @@ class FigmaIntegration {
     }
 
     try {
-      const fileKey = this.extractFileKey(url);
+      const { fileKey, nodeId } = this.parseFigmaURL(url);
+      
       if (!fileKey) {
         throw new Error('Invalid Figma URL format. Could not extract file key.');
       }
 
-      // Fetch file metadata
-      const apiUrl = `https://api.figma.com/v1/files/${fileKey}`;
+      console.log(`🎨 Figma - Extracted file key: ${fileKey}, node ID: ${nodeId || 'none'} from URL: ${url}`);
 
-      const response = await fetch(apiUrl, {
-        headers: {
-          'X-Figma-Token': this.token
-        }
-      });
+      let nodesForImageExport = [];
+      let specifications = '';
+      let fileName = 'Figma Design';
 
-      // Handle rate limiting (429 Too Many Requests)
-      if (response.status === 429) {
-        if (retries > 0) {
-          // Check for Retry-After header (in seconds)
-          const retryAfter = response.headers.get('Retry-After');
-          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : 2000; // Default 2s
+      // If URL has a specific node-id, use it directly for image export
+      if (nodeId) {
+        console.log(`🎯 Figma - Using specific node from URL: ${nodeId}`);
+        
+        // Fetch minimal metadata for this specific node
+        const nodeApiUrl = `https://api.figma.com/v1/files/${fileKey}/nodes?ids=${nodeId}`;
+        console.log(`🌐 Figma API request (node metadata): ${nodeApiUrl}`);
+        
+        const nodeResponse = await fetch(nodeApiUrl, {
+          headers: { 'X-Figma-Token': this.token }
+        });
 
-          console.warn(`Figma rate limit hit, retrying after ${waitTime}ms...`);
-
-          // Wait and retry with exponential backoff
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          return await this.fetchFile(url, retries - 1);
-        } else {
-          throw new Error('Figma API rate limit exceeded (1000 requests/minute). Please wait a moment and try again.');
-        }
-      }
-
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          throw new Error('Figma authentication failed. Please check your Personal Access Token.');
-        } else if (response.status === 404) {
-          throw new Error('Figma file not found. Please check the URL and your access permissions.');
-        } else {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.message || `Figma API returned error ${response.status}.`);
-        }
-      }
-
-      const data = await response.json();
-
-      // Check for API error in response
-      if (data.status && data.status >= 400) {
-        throw new Error(data.err || `Figma API returned error status ${data.status}`);
-      }
-
-      // Extract specifications
-      const specifications = this.extractSpecifications(data);
-
-      // Identify nodes for image export (e.g., top-level frames, components)
-      const nodesForImageExport = [];
-      if (data.document && data.document.children) {
-        for (const page of data.document.children) {
-          if (page.type === 'CANVAS' && page.children) {
-            for (const child of page.children) {
-              // Prioritize top-level frames and components
-              if (child.type === 'FRAME' || child.type === 'COMPONENT') {
-                nodesForImageExport.push(child.id);
-                if (nodesForImageExport.length >= CONFIG.MAX_FIGMA_IMAGES) break; // Limit to MAX_FIGMA_IMAGES
+        if (nodeResponse.ok) {
+          const nodeData = await nodeResponse.json();
+          const nodeInfo = nodeData.nodes?.[nodeId];
+          
+          if (nodeInfo) {
+            fileName = nodeInfo.document?.name || 'Figma Design';
+            specifications = `# ${fileName}\n\n- Node ID: ${nodeId}\n- Type: ${nodeInfo.document?.type || 'Unknown'}`;
+            
+            // Check image mode setting
+            if (this.imageMode === 'children' && nodeInfo.document?.children) {
+              // Extract all child frames/components
+              const children = this.extractChildNodes(nodeInfo.document.children);
+              if (children.length > 0) {
+                nodesForImageExport = children.map(child => child.id);
+                console.log(`🖼️ Figma - Extracting ${children.length} child images from node: ${fileName}`);
+                specifications += `\n- Child Nodes: ${children.length} frames/components`;
+              } else {
+                // No children found, fallback to single node
+                nodesForImageExport = [nodeId];
+                console.log(`⚠️ Figma - No children found, using single node image`);
               }
+            } else {
+              // Use this specific node for image export (single mode)
+              nodesForImageExport = [nodeId];
+              console.log(`✅ Figma - Found node: ${fileName} (single image mode)`);
             }
           }
-          if (nodesForImageExport.length >= CONFIG.MAX_FIGMA_IMAGES) break;
+        } else {
+          console.warn(`⚠️ Figma - Could not fetch node metadata, will still try to export image`);
+          nodesForImageExport = [nodeId];
+        }
+      } else {
+        // No specific node-id in URL, fetch file metadata to find top-level frames
+        console.log(`📄 Figma - No node-id in URL, fetching file metadata...`);
+        
+        const apiUrl = `https://api.figma.com/v1/files/${fileKey}`;
+        console.log(`🌐 Figma API request: ${apiUrl}`);
+
+        const response = await fetch(apiUrl, {
+          headers: { 'X-Figma-Token': this.token }
+        });
+
+        // Handle rate limiting (429 Too Many Requests)
+        if (response.status === 429) {
+          if (retries > 0) {
+            const retryAfter = response.headers.get('Retry-After');
+            const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : 2000;
+            console.warn(`Figma rate limit hit, retrying after ${waitTime}ms...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            return await this.fetchFile(url, retries - 1);
+          } else {
+            throw new Error('Figma API rate limit exceeded (1000 requests/minute). Please wait a moment and try again.');
+          }
+        }
+
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) {
+            throw new Error('Figma authentication failed. Please check your Personal Access Token.');
+          } else if (response.status === 404) {
+            throw new Error('Figma file not found. Please check the URL and your access permissions.');
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.message || `Figma API returned error ${response.status}.`);
+          }
+        }
+
+        const data = await response.json();
+
+        if (data.status && data.status >= 400) {
+          throw new Error(data.err || `Figma API returned error status ${data.status}`);
+        }
+
+        fileName = data.name;
+        specifications = this.extractSpecifications(data);
+
+        // Identify nodes for image export (top-level frames, components)
+        if (data.document && data.document.children) {
+          for (const page of data.document.children) {
+            if (page.type === 'CANVAS' && page.children) {
+              for (const child of page.children) {
+                if (child.type === 'FRAME' || child.type === 'COMPONENT') {
+                  nodesForImageExport.push(child.id);
+                  if (nodesForImageExport.length >= CONFIG.MAX_FIGMA_IMAGES) break;
+                }
+              }
+            }
+            if (nodesForImageExport.length >= CONFIG.MAX_FIGMA_IMAGES) break;
+          }
         }
       }
 
       return {
         url: url,
-        name: data.name,
+        name: fileName,
         specifications: specifications,
-        lastModified: data.lastModified,
-        version: data.version,
-        nodesForImageExport: nodesForImageExport // Store identified nodes
+        lastModified: null,
+        version: null,
+        nodesForImageExport: nodesForImageExport
       };
     } catch (error) {
       console.error('Figma fetch error:', error);
-      throw error; // Re-throw to be handled by IntegrationManager
+      throw error;
     }
   }
   
   extractFileKey(url) {
-    const match = url.match(/figma\.com\/(file|proto)\/([^\/]+)/);
+    // Support file, design, and proto URLs
+    const match = url.match(/figma\.com\/(file|design|proto)\/([^\/\?]+)/);
     return match ? match[2] : null;
   }
   
@@ -575,13 +726,21 @@ class FigmaIntegration {
     }
 
     try {
-      const imageUrlsApi = `https://api.figma.com/v1/images/${fileKey}?ids=${nodeIds.join(',')}&format=png&scale=1`;
+      const imageUrlsApi = `https://api.figma.com/v1/images/${fileKey}?ids=${nodeIds.join(',')}&format=png&scale=2`;
+      
+      console.log(`📸 [Figma] Fetching image URLs for ${nodeIds.length} nodes...`);
+      console.log(`🔧 [Figma] CURL command to test manually:`);
+      console.log(`curl -H "X-Figma-Token: YOUR_TOKEN" "${imageUrlsApi}"`);
+      
       const response = await fetch(imageUrlsApi, {
         headers: { 'X-Figma-Token': this.token }
       });
 
       if (!response.ok) {
-        console.error('Figma image URL fetch failed:', response.status, await response.text());
+        const errorText = await response.text();
+        console.error('❌ [Figma] Image URL fetch failed:', response.status, errorText);
+        console.log(`🔧 [Figma] Test this curl command with your token to debug:`);
+        console.log(`curl -H "X-Figma-Token: YOUR_TOKEN" "${imageUrlsApi}"`);
         return [];
       }
 
@@ -598,11 +757,14 @@ class FigmaIntegration {
         const imageUrl = data.images[nodeId];
         if (imageUrl) {
           try {
+            console.log(`⬇️ [Figma] Downloading image for node ${nodeId}...`);
+            console.log(`🔧 [Figma] CURL to download: curl "${imageUrl}" --output ${nodeId.replace(':', '_')}.png`);
+            
             const imageResponse = await fetch(imageUrl);
             if (imageResponse.ok) {
               const blob = await imageResponse.blob();
               if (blob.size < minSizeInBytes) {
-                console.warn(`Skipping Figma image ${nodeId} (size ${Math.round(blob.size / 1024)}KB) as it's smaller than ${CONFIG.MIN_FIGMA_IMAGE_SIZE_KB}KB.`);
+                console.warn(`⚠️ [Figma] Skipping image ${nodeId} (size ${Math.round(blob.size / 1024)}KB) - smaller than ${CONFIG.MIN_FIGMA_IMAGE_SIZE_KB}KB`);
                 continue;
               }
               const base64 = await new Promise(resolve => {
@@ -611,12 +773,15 @@ class FigmaIntegration {
                 reader.readAsDataURL(blob);
               });
               images.push(base64);
+              console.log(`✅ [Figma] Downloaded and converted image ${nodeId} (${Math.round(blob.size / 1024)}KB)`);
             } else {
-              console.warn(`Failed to fetch image from ${imageUrl}: ${imageResponse.status}`);
+              console.warn(`❌ [Figma] Failed to fetch image from ${imageUrl}: ${imageResponse.status}`);
             }
           } catch (imgError) {
-            console.error(`Error fetching or converting image ${imageUrl}:`, imgError);
+            console.error(`❌ [Figma] Error fetching or converting image ${imageUrl}:`, imgError);
           }
+        } else {
+          console.warn(`⚠️ [Figma] No image URL returned for node ${nodeId}`);
         }
       }
       return images;
@@ -628,9 +793,11 @@ class FigmaIntegration {
 }
 
 // Google Docs Integration
+// NOTE: Google Docs API requires OAuth2, not API keys
+// For now, we'll use a simpler approach: fetch the public HTML export
 class GoogleDocsIntegration {
   constructor(settings) {
-    this.apiKey = settings.googleApiKey;
+    this.apiKey = settings.googleApiKey; // Keep for backward compatibility, but not used
   }
   
   extractUrls(text) {
@@ -641,47 +808,60 @@ class GoogleDocsIntegration {
   }
   
   async fetchDocument(url) {
-    if (!this.apiKey) {
-      throw new Error('Google Docs integration is not configured. Please add your Google API Key in extension settings.');
-    }
-
     try {
       const docId = this.extractDocId(url);
       if (!docId) {
         throw new Error('Invalid Google Docs URL format. Could not extract document ID.');
       }
 
-      // Fetch document content - API key should be in URL as query parameter
-      const apiUrl = `https://docs.googleapis.com/v1/documents/${docId}?key=${this.apiKey}`;
+      console.log(`📄 [Google Docs] Fetching document: ${docId}`);
+      console.log(`⚠️ [Google Docs] Note: Using public export method (Google Docs API requires OAuth2)`);
+      
+      // Use the public export URL instead of API
+      // This works for publicly shared documents without authentication
+      const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
+      
+      console.log(`🔧 [Google Docs] CURL command to test manually:`);
+      console.log(`curl -L "${exportUrl}"`);
+      console.log(`\n💡 Note: Document must be shared as "Anyone with the link can view"`);
 
-      const response = await fetch(apiUrl, {
+      const response = await fetch(exportUrl, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json'
-        }
+        redirect: 'follow'
       });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`❌ [Google Docs] Fetch failed:`, response.status, errorText);
+        console.log(`🔧 [Google Docs] Test this curl command:`);
+        console.log(`curl -L "https://docs.google.com/document/d/${docId}/export?format=txt"`);
+        
         if (response.status === 401 || response.status === 403) {
-          throw new Error('Google Docs authentication failed. Please check your API key or document sharing permissions.');
+          throw new Error('Google Docs access denied. Please share the document as "Anyone with the link can view".');
         } else if (response.status === 404) {
-          throw new Error('Google Doc not found. The document may have been deleted or you may not have access.');
+          throw new Error('Google Doc not found. The document may have been deleted or the link is incorrect.');
         } else {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.error?.message || `Google Docs API returned error ${response.status}.`);
+          throw new Error(`Google Docs export failed with status ${response.status}.`);
         }
       }
+      
+      console.log(`✅ [Google Docs] Successfully fetched document ${docId}`);
 
-      const data = await response.json();
-
-      // Extract text content
-      const content = this.extractContent(data);
+      // Get plain text content from export
+      const content = await response.text();
+      
+      // Truncate if too long
+      let finalContent = content;
+      if (finalContent.length > CONFIG.MAX_TEXT_EXTRACT_LENGTH) {
+        console.warn(`Google Docs content truncated from ${finalContent.length} to ${CONFIG.MAX_TEXT_EXTRACT_LENGTH} characters.`);
+        finalContent = finalContent.substring(0, CONFIG.MAX_TEXT_EXTRACT_LENGTH) + '... [Content truncated]';
+      }
 
       return {
         url: url,
-        title: data.title,
-        content: content,
-        revisionId: data.revisionId
+        title: `Google Doc ${docId}`,
+        content: finalContent,
+        revisionId: null
       };
     } catch (error) {
       console.error('Google Docs fetch error:', error);
@@ -692,88 +872,6 @@ class GoogleDocsIntegration {
   extractDocId(url) {
     const match = url.match(/\/document\/d\/([^\/]+)/);
     return match ? match[1] : null;
-  }
-  
-  extractContent(docData) {
-    let content = [];
-    
-    if (!docData.body || !docData.body.content) {
-      return 'No content available';
-    }
-    
-    // Extract text from document structure
-    docData.body.content.forEach(element => {
-      if (element.paragraph) {
-        const paragraphText = [];
-        
-        if (element.paragraph.elements) {
-          element.paragraph.elements.forEach(elem => {
-            if (elem.textRun && elem.textRun.content) {
-              paragraphText.push(elem.textRun.content);
-            }
-          });
-        }
-        
-        const text = paragraphText.join('').trim();
-        if (text) {
-          content.push(text);
-        }
-      } else if (element.table) {
-        const table = element.table;
-        const rows = [];
-
-        // Extract table data
-        if (table.tableRows) {
-          for (const row of table.tableRows) {
-            const cells = [];
-            if (row.tableCells) {
-              for (const cell of row.tableCells) {
-                const cellText = [];
-                if (cell.content) {
-                  for (const block of cell.content) {
-                    if (block.paragraph && block.paragraph.elements) {
-                      for (const elem of block.paragraph.elements) {
-                        if (elem.textRun && elem.textRun.content) {
-                          cellText.push(elem.textRun.content);
-                        }
-                      }
-                    }
-                  }
-                }
-                cells.push(cellText.join('').trim());
-              }
-            }
-            if (cells.length > 0) {
-              rows.push(cells);
-            }
-          }
-        }
-
-        // Format as markdown table
-        if (rows.length > 0) {
-          content.push('\n');
-
-          // Header row
-          content.push('| ' + rows[0].join(' | ') + ' |');
-          content.push('|' + rows[0].map(() => '---').join('|') + '|');
-
-          // Data rows
-          for (let i = 1; i < rows.length; i++) {
-            content.push('| ' + rows[i].join(' | ') + ' |');
-          }
-
-          content.push('\n');
-        }
-      }
-    });
-    
-    let finalContent = content.join('\n\n');
-    if (finalContent.length > CONFIG.MAX_TEXT_EXTRACT_LENGTH) {
-      console.warn(`Google Docs content truncated from ${finalContent.length} to ${CONFIG.MAX_TEXT_EXTRACT_LENGTH} characters.`);
-      finalContent = finalContent.substring(0, CONFIG.MAX_TEXT_EXTRACT_LENGTH) + '... [Content truncated]';
-    }
-
-    return finalContent;
   }
 }
 

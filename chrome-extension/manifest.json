@@ -1,22 +1,27 @@
 {
   "manifest_version": 3,
   "name": "QAtalyst - AI Test Case Generator",
-  "version": "10.0.1",
+  "version": "10.1.0",
   "description": "AI-powered Jira assistant for intelligent test case generation.",
   "permissions": [
-    "storage"
+    "storage",
+    "identity"
   ],
   "host_permissions": [
     "https://*/*",
     "http://*/*",
     "https://*.atlassian.net/*",
     "https://*.jira.com/*",
+    "https://*.confluence.com/*",
     "https://api.openai.com/*",
-    "https://generativelanguage.googleapis.com/*",
     "https://api.anthropic.com/*",
     "https://api.figma.com/*",
+    "https://generativelanguage.googleapis.com/*",
     "https://docs.googleapis.com/*",
-    "https://*.confluence.com/*"
+    "https://accounts.google.com/*",
+    "https://oauth2.googleapis.com/*",
+    "https://www.googleapis.com/*",
+    "https://figma-alpha-api.s3.us-west-2.amazonaws.com/*"
   ],
   "background": {
     "service_worker": "background.js"

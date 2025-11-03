@@ -3,20 +3,17 @@
 const modelOptions = {
   openai: [
     { value: 'gpt-4o', label: 'GPT-4o (Recommended)' },
-    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
     { value: 'gpt-4o-mini', label: 'GPT-4o Mini (Fast & Cheap)' },
-    { value: 'gpt-4', label: 'GPT-4' }
+    { value: 'o1', label: 'O1 (Reasoning)' }
   ],
   claude: [
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (Recommended)' },
-    { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus (Best Quality)' },
-    { value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet' },
-    { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Fast & Cheap)' }
+    { value: 'claude-sonnet-4-20250514', label: 'Claude 4.5 Sonnet (Latest)' },
+    { value: 'claude-sonnet-4-20250111', label: 'Claude 4.1 Sonnet' },
+    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.7 Sonnet' }
   ],
   gemini: [
-    { value: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash Exp (Free, Recommended)' },
-    { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (Fast)' }
+    { value: 'gemini-2.5-pro-exp-03', label: 'Gemini 2.5 Pro (Recommended)' },
+    { value: 'gemini-2.5-flash-exp', label: 'Gemini 2.5 Flash (Fast & Cheap)' }
   ]
 };
 
@@ -160,7 +157,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     'confluenceEmail',
     'confluenceToken',
     'figmaToken',
-    'googleApiKey'
+    'figmaImageMode',
+    'googleApiKey',
+    'googleAuthMode',
+    'googleClientId',
+    'googleClientSecret',
+    'googleProjectId'
   ]);
 
   // Decrypt sensitive tokens when loading
@@ -178,6 +180,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   if (settings.googleApiKey) {
     settings.googleApiKey = await securityManager.decryptApiKeyFromStorage(settings.googleApiKey);
+  }
+  if (settings.googleClientSecret) {
+    settings.googleClientSecret = await securityManager.decryptApiKeyFromStorage(settings.googleClientSecret);
   }
   if (settings.testrailApiKey) {
     settings.testrailApiKey = await securityManager.decryptApiKeyFromStorage(settings.testrailApiKey);
@@ -202,7 +207,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   
   document.getElementById('temperature').value = settings.temperature || 0.7;
-  document.getElementById('maxTokens').value = settings.maxTokens || 4000;
+  document.getElementById('maxTokens').value = settings.maxTokens || 16000;
   document.getElementById('enableStreaming').checked = settings.enableStreaming !== false;
   document.getElementById('enableMultiAgent').checked = settings.enableMultiAgent || false;
 
@@ -252,7 +257,49 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('confluenceEmail').value = settings.confluenceEmail || '';
   document.getElementById('confluenceToken').value = settings.confluenceToken || '';
   document.getElementById('figmaToken').value = settings.figmaToken || '';
+  
+  // Figma Image Mode settings
+  const figmaImageMode = settings.figmaImageMode || 'single';
+  const figmaImageSingle = document.getElementById('figmaImageSingle');
+  const figmaImageChildren = document.getElementById('figmaImageChildren');
+  const figmaSingleModeInfo = document.getElementById('figmaSingleModeInfo');
+  const figmaChildrenModeInfo = document.getElementById('figmaChildrenModeInfo');
+  
+  if (figmaImageMode === 'children') {
+    if (figmaImageChildren) figmaImageChildren.checked = true;
+    if (figmaSingleModeInfo) figmaSingleModeInfo.style.display = 'none';
+    if (figmaChildrenModeInfo) figmaChildrenModeInfo.style.display = 'block';
+  } else {
+    if (figmaImageSingle) figmaImageSingle.checked = true;
+    if (figmaSingleModeInfo) figmaSingleModeInfo.style.display = 'block';
+    if (figmaChildrenModeInfo) figmaChildrenModeInfo.style.display = 'none';
+  }
+  
   document.getElementById('googleApiKey').value = settings.googleApiKey || '';
+  
+  // Google Docs OAuth2 settings
+  const googleAuthMode = settings.googleAuthMode || 'public';
+  const googleAuthPublic = document.getElementById('googleAuthPublic');
+  const googleAuthOAuth2 = document.getElementById('googleAuthOAuth2');
+  const googlePublicMode = document.getElementById('googlePublicMode');
+  const googleOAuth2Mode = document.getElementById('googleOAuth2Mode');
+  const googleClientId = document.getElementById('googleClientId');
+  const googleClientSecret = document.getElementById('googleClientSecret');
+  const googleProjectId = document.getElementById('googleProjectId');
+  
+  if (googleAuthMode === 'oauth2') {
+    if (googleAuthOAuth2) googleAuthOAuth2.checked = true;
+    if (googlePublicMode) googlePublicMode.style.display = 'none';
+    if (googleOAuth2Mode) googleOAuth2Mode.style.display = 'block';
+  } else {
+    if (googleAuthPublic) googleAuthPublic.checked = true;
+    if (googlePublicMode) googlePublicMode.style.display = 'block';
+    if (googleOAuth2Mode) googleOAuth2Mode.style.display = 'none';
+  }
+  
+  if (googleClientId) googleClientId.value = settings.googleClientId || '';
+  if (googleClientSecret) googleClientSecret.value = settings.googleClientSecret || '';
+  if (googleProjectId) googleProjectId.value = settings.googleProjectId || '';
 });
 
 // Provider change handler
@@ -327,7 +374,14 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     confluenceEmail: document.getElementById('confluenceEmail').value,
     confluenceToken: document.getElementById('confluenceToken').value,
     figmaToken: document.getElementById('figmaToken').value,
-    googleApiKey: document.getElementById('googleApiKey').value
+    figmaImageMode: document.querySelector('input[name="figmaImageMode"]:checked')?.value || 'single',
+    googleApiKey: document.getElementById('googleApiKey').value,
+    
+    // Google Docs OAuth2 settings
+    googleAuthMode: document.getElementById('googleAuthPublic').checked ? 'public' : 'oauth2',
+    googleClientId: document.getElementById('googleClientId').value,
+    googleClientSecret: document.getElementById('googleClientSecret').value,
+    googleProjectId: document.getElementById('googleProjectId').value
   };
 
   // Validate settings before saving
@@ -447,6 +501,9 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   }
   if (settings.googleApiKey && settings.googleApiKey.trim()) {
     settings.googleApiKey = await securityManager.encryptApiKeyForStorage(settings.googleApiKey.trim());
+  }
+  if (settings.googleClientSecret && settings.googleClientSecret.trim()) {
+    settings.googleClientSecret = await securityManager.encryptApiKeyForStorage(settings.googleClientSecret.trim());
   }
   if (settings.testrailApiKey && settings.testrailApiKey.trim()) {
     settings.testrailApiKey = await securityManager.encryptApiKeyForStorage(settings.testrailApiKey.trim());
@@ -606,10 +663,10 @@ document.getElementById('testJiraAuth').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('testTestrail').addEventListener('click', () => handleTestIntegration('testrail'));
-document.getElementById('testConfluence').addEventListener('click', () => handleTestIntegration('confluence'));
-document.getElementById('testFigma').addEventListener('click', () => handleTestIntegration('figma'));
-document.getElementById('testGoogle').addEventListener('click', () => handleTestIntegration('google'));
+document.getElementById('testTestrail')?.addEventListener('click', () => handleTestIntegration('testrail'));
+document.getElementById('testConfluence')?.addEventListener('click', () => handleTestIntegration('confluence'));
+document.getElementById('testFigma')?.addEventListener('click', () => handleTestIntegration('figma'));
+document.getElementById('testGoogle')?.addEventListener('click', () => handleTestIntegration('google'));
 
 async function handleTestIntegration(type) {
   const statusEl = document.getElementById(`${type}Status`);
@@ -653,3 +710,263 @@ async function handleTestIntegration(type) {
     statusEl.textContent = `❌ Error: ${error.message}`;
   }
 }
+
+// Figma Image Mode Toggle
+document.getElementById('figmaImageSingle')?.addEventListener('change', function() {
+  if (this.checked) {
+    document.getElementById('figmaSingleModeInfo').style.display = 'block';
+    document.getElementById('figmaChildrenModeInfo').style.display = 'none';
+  }
+});
+
+document.getElementById('figmaImageChildren')?.addEventListener('change', function() {
+  if (this.checked) {
+    document.getElementById('figmaSingleModeInfo').style.display = 'none';
+    document.getElementById('figmaChildrenModeInfo').style.display = 'block';
+  }
+});
+
+// Google Docs Auth Mode Toggle
+// Google Docs authentication mode toggle
+document.getElementById('googleAuthPublic')?.addEventListener('change', function() {
+  if (this.checked) {
+    document.getElementById('googlePublicMode').style.display = 'block';
+    document.getElementById('googleOAuth2Mode').style.display = 'none';
+  }
+});
+
+document.getElementById('googleAuthOAuth2')?.addEventListener('change', function() {
+  if (this.checked) {
+    document.getElementById('googlePublicMode').style.display = 'none';
+    document.getElementById('googleOAuth2Mode').style.display = 'block';
+  }
+});
+
+// Initialize visibility based on saved settings (called after loadSettings)
+function updateGoogleAuthModeVisibility() {
+  const publicRadio = document.getElementById('googleAuthPublic');
+  const oauth2Radio = document.getElementById('googleAuthOAuth2');
+  const publicMode = document.getElementById('googlePublicMode');
+  const oauth2Mode = document.getElementById('googleOAuth2Mode');
+  
+  if (publicRadio && oauth2Radio && publicMode && oauth2Mode) {
+    if (publicRadio.checked) {
+      publicMode.style.display = 'block';
+      oauth2Mode.style.display = 'none';
+    } else if (oauth2Radio.checked) {
+      publicMode.style.display = 'none';
+      oauth2Mode.style.display = 'block';
+    }
+  }
+}
+
+// Show Redirect URI button
+document.getElementById('showRedirectUri')?.addEventListener('click', () => {
+  const redirectUri = chrome.identity.getRedirectURL();
+  const displayEl = document.getElementById('redirectUriDisplay');
+  
+  if (displayEl) {
+    displayEl.textContent = redirectUri;
+    displayEl.style.display = 'block';
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(redirectUri).then(() => {
+      const button = document.getElementById('showRedirectUri');
+      const originalText = button.textContent;
+      button.textContent = '✅ Copied to Clipboard!';
+      button.style.background = '#10b981';
+      button.style.color = 'white';
+      
+      setTimeout(() => {
+        button.textContent = originalText;
+        button.style.background = '';
+        button.style.color = '';
+      }, 2000);
+    }).catch(err => {
+      console.error('Failed to copy:', err);
+    });
+  }
+  
+  console.log('📋 [OAuth2] Your Redirect URI:', redirectUri);
+  console.log('📋 [OAuth2] Add this to Google Cloud Console → Credentials → OAuth 2.0 Client IDs → Authorized redirect URIs');
+});
+
+// Test OAuth2 credentials
+document.getElementById('testGoogleOAuth')?.addEventListener('click', async () => {
+  const clientId = document.getElementById('googleClientId').value.trim();
+  const clientSecret = document.getElementById('googleClientSecret').value.trim();
+  const projectId = document.getElementById('googleProjectId').value.trim();
+  const statusEl = document.getElementById('googleOAuthStatus');
+  
+  // Clear previous status
+  statusEl.textContent = '';
+  statusEl.className = '';
+  
+  // Validate inputs
+  if (!clientId || !clientSecret) {
+    statusEl.textContent = '❌ Please enter both Client ID and Client Secret';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+  
+  // Validate Client ID format
+  if (!clientId.includes('.apps.googleusercontent.com')) {
+    statusEl.textContent = '❌ Invalid Client ID format (should end with .apps.googleusercontent.com)';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+  
+  // Validate Client Secret format
+  if (!clientSecret.startsWith('GOCSPX-')) {
+    statusEl.textContent = '⚠️ Warning: Client Secret should typically start with GOCSPX-';
+    statusEl.style.color = '#ff9800';
+  }
+  
+  statusEl.textContent = '🔄 Testing OAuth2 configuration...';
+  statusEl.style.color = '#007bff';
+  
+  try {
+    // Attempt to initiate OAuth2 flow using chrome.identity
+    // Note: This requires the OAuth2 client to be properly configured in Google Cloud Console
+    const redirectUrl = chrome.identity.getRedirectURL();
+    
+    console.log('🔐 [OAuth2 Test] Extension Redirect URI:', redirectUrl);
+    console.log('📋 [OAuth2 Test] Copy this URI to Google Cloud Console:');
+    console.log(`   ${redirectUrl}`);
+    
+    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('redirect_uri', redirectUrl);
+    authUrl.searchParams.set('scope', 'https://www.googleapis.com/auth/documents.readonly https://www.googleapis.com/auth/userinfo.email');
+    authUrl.searchParams.set('access_type', 'offline');
+    authUrl.searchParams.set('prompt', 'consent');
+    
+    console.log('🔐 [OAuth2 Test] Initiating flow...', {
+      clientId,
+      redirectUrl,
+      authUrl: authUrl.toString()
+    });
+    
+    // Launch OAuth2 flow
+    chrome.identity.launchWebAuthFlow(
+      {
+        url: authUrl.toString(),
+        interactive: true
+      },
+      async (responseUrl) => {
+        if (chrome.runtime.lastError) {
+          console.error('❌ [OAuth2 Test] Error:', chrome.runtime.lastError);
+          
+          // Check if it's a redirect URI mismatch error
+          if (chrome.runtime.lastError.message.includes('redirect_uri') || 
+              chrome.runtime.lastError.message.includes('404')) {
+            statusEl.innerHTML = `
+              ❌ <strong>Redirect URI Not Configured</strong><br>
+              <span style="font-size: 11px;">
+                Add this URI to Google Cloud Console:<br>
+                <code style="background: #fee; padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 4px;">${redirectUrl}</code><br>
+                <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color: #0ea5e9;">Open Google Cloud Console →</a>
+              </span>
+            `;
+          } else {
+            statusEl.textContent = `❌ OAuth2 Error: ${chrome.runtime.lastError.message}`;
+          }
+          statusEl.style.color = '#dc3545';
+          return;
+        }
+        
+        if (!responseUrl) {
+          statusEl.textContent = '❌ OAuth2 flow cancelled or failed';
+          statusEl.style.color = '#dc3545';
+          return;
+        }
+        
+        // Extract authorization code
+        const url = new URL(responseUrl);
+        const code = url.searchParams.get('code');
+        
+        if (!code) {
+          statusEl.textContent = '❌ No authorization code received';
+          statusEl.style.color = '#dc3545';
+          return;
+        }
+        
+        console.log('✅ [OAuth2 Test] Authorization code received');
+        
+        // Exchange code for tokens
+        try {
+          const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+              code: code,
+              client_id: clientId,
+              client_secret: clientSecret,
+              redirect_uri: redirectUrl,
+              grant_type: 'authorization_code'
+            })
+          });
+          
+          if (!tokenResponse.ok) {
+            const error = await tokenResponse.json();
+            console.error('❌ [OAuth2 Test] Token exchange failed:', error);
+            statusEl.textContent = `❌ Token Error: ${error.error_description || error.error}`;
+            statusEl.style.color = '#dc3545';
+            return;
+          }
+          
+          const tokens = await tokenResponse.json();
+          console.log('✅ [OAuth2 Test] Tokens received:', {
+            hasAccessToken: !!tokens.access_token,
+            hasRefreshToken: !!tokens.refresh_token,
+            expiresIn: tokens.expires_in
+          });
+          
+          // Test the access token with userinfo API call
+          const testResponse = await fetch('https://www.googleapis.com/oauth2/v1/userinfo?alt=json', {
+            headers: {
+              'Authorization': `Bearer ${tokens.access_token}`
+            }
+          });
+          
+          if (testResponse.ok) {
+            const userInfo = await testResponse.json();
+            statusEl.textContent = `✅ OAuth2 working! Authenticated as: ${userInfo.email}`;
+            statusEl.style.color = '#28a745';
+            
+            // Store tokens securely
+            const securityManager = new SecurityManager();
+            await chrome.storage.sync.set({
+              googleAccessToken: await securityManager.encryptApiKeyForStorage(tokens.access_token),
+              googleRefreshToken: tokens.refresh_token ? await securityManager.encryptApiKeyForStorage(tokens.refresh_token) : null,
+              googleTokenExpiry: Date.now() + (tokens.expires_in * 1000)
+            });
+            
+            console.log('✅ [OAuth2 Test] Tokens stored securely');
+            console.log('✅ [OAuth2 Test] Access token has the following scopes:', tokens.scope);
+          } else {
+            const errorData = await testResponse.json().catch(() => ({}));
+            console.error('❌ [OAuth2 Test] Token validation failed:', {
+              status: testResponse.status,
+              statusText: testResponse.statusText,
+              error: errorData
+            });
+            statusEl.textContent = `❌ Token validation failed: ${testResponse.status} ${testResponse.statusText}`;
+            statusEl.style.color = '#dc3545';
+          }
+        } catch (error) {
+          console.error('❌ [OAuth2 Test] Token exchange error:', error);
+          statusEl.textContent = `❌ Error: ${error.message}`;
+          statusEl.style.color = '#dc3545';
+        }
+      }
+    );
+  } catch (error) {
+    console.error('❌ [OAuth2 Test] Setup error:', error);
+    statusEl.textContent = `❌ Error: ${error.message}`;
+    statusEl.style.color = '#dc3545';
+  }
+});

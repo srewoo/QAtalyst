@@ -60,6 +60,167 @@
     return settings;
   }
 
+  // Fetch ticket data from Jira REST API
+  async function fetchTicketDataFromAPI(ticketKey) {
+    try {
+      // Load Jira credentials
+      const settings = await loadAndDecryptSettings(['jiraEmail', 'jiraApiToken']);
+
+      if (!settings.jiraEmail || !settings.jiraApiToken) {
+        console.log('🔑 Jira API credentials not configured, will use DOM scraping');
+        return null;
+      }
+
+      // Get Jira base URL from current page
+      const jiraBaseUrl = window.location.origin;
+
+      console.log('🌐 Fetching ticket data from Jira API:', ticketKey);
+
+      // Fetch ticket data
+      const response = await fetch(`${jiraBaseUrl}/rest/api/3/issue/${ticketKey}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': 'Basic ' + btoa(`${settings.jiraEmail}:${settings.jiraApiToken}`),
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        console.warn(`⚠️ Jira API request failed: ${response.status} ${response.statusText}`);
+        return null;
+      }
+
+      const issueData = await response.json();
+      console.log('✅ Successfully fetched ticket data from Jira API');
+
+      // Extract and format data
+      const data = {
+        key: issueData.key,
+        summary: issueData.fields.summary || '',
+        description: extractTextFromADF(issueData.fields.description) || '',
+        comments: [],
+        attachments: [],
+        linkedPages: []
+      };
+
+      // Extract comments
+      if (issueData.fields.comment && issueData.fields.comment.comments) {
+        data.comments = issueData.fields.comment.comments.map((comment, index) => ({
+          id: index + 1,
+          author: comment.author?.displayName || 'Unknown',
+          text: extractTextFromADF(comment.body) || '',
+          timestamp: comment.created || ''
+        }));
+      }
+
+      // Extract attachments
+      if (issueData.fields.attachment) {
+        data.attachments = issueData.fields.attachment.map((att, index) => ({
+          id: index + 1,
+          fileName: att.filename || 'Unknown',
+          url: att.content || '',
+          mimeType: att.mimeType || '',
+          size: att.size || 0
+        }));
+      }
+
+      return data;
+    } catch (error) {
+      console.error('❌ Error fetching from Jira API:', error);
+      return null;
+    }
+  }
+
+  // Extract all visible text from DOM using TreeWalker
+  function extractVisibleText(rootElement = document.body) {
+    const walker = document.createTreeWalker(rootElement, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(node) {
+        // Skip text nodes inside invisible elements
+        if (!node.parentElement) return NodeFilter.FILTER_REJECT;
+        const style = window.getComputedStyle(node.parentElement);
+        if (style.visibility === 'hidden' || style.display === 'none') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        // Skip empty or whitespace-only nodes
+        if (!node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    let node;
+    let text = '';
+
+    while ((node = walker.nextNode())) {
+      text += node.textContent.trim() + ' ';
+    }
+
+    return text.trim();
+  }
+
+  // Extract plain text with URLs from Jira's ADF (Atlassian Document Format)
+  function extractTextFromADF(adfContent) {
+    if (!adfContent) return '';
+    if (typeof adfContent === 'string') return adfContent;
+
+    let text = '';
+
+    function traverse(node) {
+      if (!node) return;
+
+      // Extract text content
+      if (node.type === 'text') {
+        text += node.text || '';
+      }
+
+      // Extract URLs from links
+      if (node.type === 'text' && node.marks) {
+        const linkMark = node.marks.find(m => m.type === 'link');
+        if (linkMark && linkMark.attrs && linkMark.attrs.href) {
+          // If text doesn't match URL, append URL in parentheses
+          if (node.text !== linkMark.attrs.href) {
+            text += ` (${linkMark.attrs.href})`;
+          }
+        }
+      }
+
+      // Handle media/images
+      if (node.type === 'media' || node.type === 'mediaInline') {
+        if (node.attrs && node.attrs.url) {
+          text += node.attrs.url + ' ';
+        }
+      }
+
+      // Handle code blocks
+      if (node.type === 'codeBlock' && node.content) {
+        text += '\n```\n';
+        node.content.forEach(traverse);
+        text += '\n```\n';
+        return;
+      }
+
+      // Add line breaks for paragraphs and headings
+      if (['paragraph', 'heading'].includes(node.type)) {
+        if (text && !text.endsWith('\n')) {
+          text += '\n';
+        }
+      }
+
+      // Recursively process child nodes
+      if (node.content && Array.isArray(node.content)) {
+        node.content.forEach(traverse);
+      }
+
+      // Add line break after paragraphs
+      if (['paragraph', 'heading'].includes(node.type)) {
+        text += '\n';
+      }
+    }
+
+    traverse(adfContent);
+    return text.trim();
+  }
+
   function handleStreamChunk(requestId, chunk) {
     if (requestId !== currentStreamingRequestId) return;
     
@@ -357,41 +518,125 @@
     const match = window.location.pathname.match(/\/browse\/([A-Z]+-\d+)/);
     return match ? match[1] : 'Unknown';
   }
+
+  // Debug helper: Find description element on page
+  window.debugDescriptionSelector = function() {
+    console.log('🔍 Searching for description element...');
+    const selectors = [
+      '[data-testid="issue.views.issue-base.foundation.description.description-content"]',
+      '#description-val',
+      '[data-test-id="issue.views.field.rich-text.description"]',
+      '.description-content',
+      '.user-content-block',
+      '[data-testid*="description"]',
+      '[id*="description"]',
+      '.ak-renderer-document'
+    ];
+
+    selectors.forEach(sel => {
+      const el = document.querySelector(sel);
+      if (el) {
+        console.log(`✅ Found with selector: "${sel}"`);
+        console.log('   Text preview:', el.innerText?.substring(0, 100) || el.textContent?.substring(0, 100));
+      } else {
+        console.log(`❌ Not found: "${sel}"`);
+      }
+    });
+
+    // Also search for any element with "description" in data attributes
+    const allWithDesc = document.querySelectorAll('[data-testid*="description"], [data-test-id*="description"]');
+    console.log(`\n📊 Found ${allWithDesc.length} elements with "description" in data attributes:`);
+    allWithDesc.forEach((el, i) => {
+      console.log(`  ${i + 1}. ${el.tagName} - testid: ${el.getAttribute('data-testid') || el.getAttribute('data-test-id')}`);
+    });
+  };
   
   // Extract ticket data
   async function extractTicketData() {
+    const ticketKey = extractTicketKey();
+
+    // Try Jira API first
+    console.log('🔄 Attempting to fetch ticket data from Jira API...');
+    const apiData = await fetchTicketDataFromAPI(ticketKey);
+
+    if (apiData) {
+      console.log('✅ Using data from Jira API');
+
+      // Debug logging
+      console.log('========== JIRA API DATA DEBUG ==========');
+      console.log('📝 Description from API:');
+      console.log(apiData.description);
+      console.log('\n💬 Comments from API:', apiData.comments.length);
+      if (apiData.comments.length > 0) {
+        apiData.comments.forEach((comment, index) => {
+          console.log(`\n--- Comment ${index + 1} ---`);
+          console.log(`Author: ${comment.author}`);
+          console.log(`Text:`);
+          console.log(comment.text);
+        });
+      }
+      console.log('========================================');
+
+      return apiData;
+    }
+
+    // Fallback to TreeWalker extraction (gets all visible text including URLs)
+    console.log('⚠️ Falling back to TreeWalker text extraction');
+
     const data = {
-      key: extractTicketKey(),
+      key: ticketKey,
       summary: '',
       description: '',
       comments: [],
       attachments: [],
       linkedPages: []
     };
-    
+
     // Extract summary
     const summaryEl = document.querySelector('[data-testid="issue.views.issue-base.foundation.summary.heading"]') ||
                      document.querySelector('#summary-val');
     if (summaryEl) {
       data.summary = summaryEl.textContent.trim();
     }
-    
-    // Extract description
-    const descEl = document.querySelector('[data-testid="issue.views.issue-base.foundation.description.description-content"]') ||
-                  document.querySelector('#description-val');
-    if (descEl) {
-      data.description = descEl.textContent.trim();
-    }
-    
-    // Extract comments
+
+    // Use TreeWalker to extract all visible text from the issue content area
+    const issueContent = document.querySelector('[data-testid="issue.views.issue-base.foundation.details.issue-base"]') ||
+                        document.querySelector('#issue-content') ||
+                        document.querySelector('.issue-container') ||
+                        document.querySelector('main') ||
+                        document.body;
+
+    console.log('📍 Extracting visible text from:', issueContent.tagName, issueContent.className);
+
+    const extractedText = extractVisibleText(issueContent);
+
+    data.description = extractedText;
+
+    console.log('========== TREEWALKER EXTRACTION DEBUG ==========');
+    console.log('📝 Extracted visible text:');
+    console.log(data.description);
+    console.log('\nText length:', data.description.length, 'characters');
+    console.log('========================================');
+
+    // Try to extract comments separately
     data.comments = extractComments();
-    
+
     // Extract attachments
     data.attachments = extractAttachments();
-    
-    // Extract linked pages (Confluence, external links)
+
+    // Extract linked pages
     data.linkedPages = extractLinkedPages();
-    
+
+    // Final summary
+    console.log('========== TICKET DATA SUMMARY ==========');
+    console.log('Ticket Key:', data.key);
+    console.log('Summary:', data.summary);
+    console.log('Description Length:', data.description.length, 'characters');
+    console.log('Comments Count:', data.comments.length);
+    console.log('Attachments Count:', data.attachments.length);
+    console.log('Linked Pages Count:', data.linkedPages.length);
+    console.log('========================================');
+
     return data;
   }
   
@@ -416,10 +661,12 @@
                     commentEl.querySelector('.action-body');
       
       if (bodyEl) {
+        // Use innerText to preserve URL format
+        const commentText = bodyEl.innerText || bodyEl.textContent.trim();
         comments.push({
           id: index + 1,
           author: authorEl ? authorEl.textContent.trim() : 'Unknown',
-          text: bodyEl.textContent.trim(),
+          text: commentText,
           timestamp: extractCommentTimestamp(commentEl)
         });
       }
@@ -1082,6 +1329,29 @@
 
     // Handle both 'scope' and 'testScope' properties for backward compatibility
     const scopeContent = data.scope || data.testScope || 'No scope generated';
+    
+    // Check if scope is undefined, null, empty, or the string "undefined"
+    if (!scopeContent || scopeContent === 'undefined' || scopeContent.trim() === '' || scopeContent === 'No scope generated') {
+      container.innerHTML = `
+        <div class="qatalyst-error">
+          <h4>❌ Test Scope Generation Failed</h4>
+          <p>The AI provider did not return a valid test scope. This may be due to:</p>
+          <ul style="text-align: left; margin: 15px 0; padding-left: 20px;">
+            <li><strong>Extension Cache Issue:</strong> Try reloading the extension
+              <br><small style="color: #666;">Go to <code>chrome://extensions</code> and click the reload button</small>
+            </li>
+            <li><strong>API Configuration:</strong> Verify your API key is valid and has sufficient quota</li>
+            <li><strong>Integration Errors:</strong> Check browser console for detailed error messages</li>
+            <li><strong>Ticket Data:</strong> Ensure the Jira ticket has sufficient description content</li>
+          </ul>
+          <button class="qatalyst-btn primary" onclick="location.reload();" style="margin-top: 10px;">
+            🔄 Reload Page
+          </button>
+        </div>
+      `;
+      return;
+    }
+    
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>📋 Test Scope</h4>
