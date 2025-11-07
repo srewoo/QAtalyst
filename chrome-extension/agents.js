@@ -20,19 +20,20 @@ class AgentOrchestrator {
     ];
   }
   
-  async executeAgents(ticketData, analysisContext = null) {
+  async executeAgents(ticketData, analysisContext = null, appContext = null) {
     const results = {
       analysis: analysisContext || null,
       testCases: [],
       agentResults: {},
-      statistics: {}
+      statistics: {},
+      appContext: appContext || null // Store app context in results
     };
-    
+
     const enabledAgents = this.agents.filter(agent => agent.isEnabled(this.settings));
-    
+
     for (let i = 0; i < enabledAgents.length; i++) {
       const agent = enabledAgents[i];
-      
+
       // Report progress
       if (this.onProgress) {
         this.onProgress({
@@ -43,7 +44,7 @@ class AgentOrchestrator {
           description: agent.description
         });
       }
-      
+
       try {
         const agentResult = await agent.execute(ticketData, results, this.settings);
         
@@ -147,6 +148,80 @@ class BaseAgent {
   // This will be set by background.js to use its callAI function
   async callAI(systemMessage, userMessage, settings) {
     throw new Error('callAI must be bound from background.js');
+  }
+
+  // Format app context for inclusion in prompts
+  formatAppContext(appContext) {
+    if (!appContext) {
+      return '';
+    }
+
+    let formatted = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    formatted += '📱 APPLICATION CONTEXT (From Crawled Knowledge Graph)\n';
+    formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+
+    formatted += `🌐 Application: ${appContext.appUrl}\n`;
+    formatted += `📄 Total Pages Crawled: ${appContext.totalPages}\n\n`;
+
+    // Add forms
+    if (appContext.forms && appContext.forms.length > 0) {
+      formatted += '📝 FORMS FOUND:\n';
+      appContext.forms.slice(0, 5).forEach((form, index) => {
+        formatted += `\n${index + 1}. Form on ${form.url}\n`;
+        formatted += `   • ID: ${form.id || 'N/A'}\n`;
+        formatted += `   • Action: ${form.action || 'N/A'}\n`;
+        formatted += `   • Method: ${form.method}\n`;
+        if (form.inputs && form.inputs.length > 0) {
+          formatted += `   • Fields:\n`;
+          form.inputs.slice(0, 10).forEach(input => {
+            const required = input.required ? ' (required)' : '';
+            formatted += `     - ${input.name || input.id}: ${input.type}${required}\n`;
+          });
+        }
+      });
+      if (appContext.forms.length > 5) {
+        formatted += `\n   ... and ${appContext.forms.length - 5} more forms\n`;
+      }
+      formatted += '\n';
+    }
+
+    // Add APIs
+    if (appContext.apis && appContext.apis.length > 0) {
+      formatted += '🔌 API ENDPOINTS DETECTED:\n';
+      appContext.apis.slice(0, 10).forEach((api, index) => {
+        formatted += `\n${index + 1}. ${api.method} ${api.endpoint}\n`;
+        formatted += `   • Page: ${api.url}\n`;
+        if (api.payload) {
+          formatted += `   • Payload: ${JSON.stringify(api.payload)}\n`;
+        }
+      });
+      if (appContext.apis.length > 10) {
+        formatted += `\n   ... and ${appContext.apis.length - 10} more API endpoints\n`;
+      }
+      formatted += '\n';
+    }
+
+    // Add buttons
+    if (appContext.features && appContext.features.length > 0) {
+      const buttons = appContext.features.filter(f => f.type === 'button');
+      if (buttons.length > 0) {
+        formatted += '🔘 BUTTONS FOUND:\n';
+        buttons.slice(0, 10).forEach((btn, index) => {
+          formatted += `   ${index + 1}. "${btn.text || btn.id}" on ${btn.url}\n`;
+        });
+        if (buttons.length > 10) {
+          formatted += `   ... and ${buttons.length - 10} more buttons\n`;
+        }
+        formatted += '\n';
+      }
+    }
+
+    formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    formatted += '💡 Use the above ACTUAL implementation details when generating test cases.\n';
+    formatted += 'Include real field names, API endpoints, and button labels in your tests.\n';
+    formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+
+    return formatted;
   }
 }
 
@@ -262,11 +337,14 @@ Return ONLY valid JSON, no markdown formatting.`;
     const existingTests = previousResults.testCases?.map(tc => `- ${tc.title}`).join('\n') || 'None yet';
     const keywords = this.extractKeywords(ticketData);
     const personas = this.inferPersonas(ticketData);
-    
+
+    // Format app context if available
+    const appContextSection = this.formatAppContext(previousResults.appContext);
+
     return `Based on this requirement analysis:
 
 ${previousResults.analysis || 'No prior analysis available'}
-
+${appContextSection}
 **Domain Context:**
 - Keywords: ${keywords.join(', ')}
 - User Personas: ${personas.join(', ')}
@@ -285,10 +363,11 @@ Generate ${testCount} UNIQUE positive test cases covering:
 - Expected user workflows for ${personas.join(' and ')}
 - Standard feature usage
 - Use domain-specific terminology: ${keywords.join(', ')}
+${appContextSection ? '\n**CRITICAL:** Use the ACTUAL field names, button labels, and API endpoints from the Application Context above. Do not make up field names or endpoints.' : ''}
 
 Return as JSON array.`;
   }
-  
+
   parseResponse(response) {
     try {
       const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);

@@ -1,17 +1,19 @@
 // Security utilities for QAtalyst
 // Handles API key encryption, XSS sanitization, and secure storage
 
-class SecurityManager {
-  constructor() {
-    this.encoder = new TextEncoder();
-    this.decoder = new TextDecoder();
-  }
+// Prevent redeclaration errors if script is injected multiple times
+if (typeof SecurityManager === 'undefined') {
+  class SecurityManager {
+    constructor() {
+      this.encoder = new TextEncoder();
+      this.decoder = new TextDecoder();
+    }
 
   /**
    * Generate a random salt for encryption
    */
   generateSalt() {
-    return crypto.getRandomValues(new Uint8Array(CONFIG.SECURITY.SALT_LENGTH));
+    return crypto.getRandomValues(new Uint8Array(APP_CONFIG.SECURITY.SALT_LENGTH));
   }
 
   /**
@@ -30,13 +32,13 @@ class SecurityManager {
       {
         name: 'PBKDF2',
         salt: salt,
-        iterations: CONFIG.SECURITY.PBKDF2_ITERATIONS,
+        iterations: APP_CONFIG.SECURITY.PBKDF2_ITERATIONS,
         hash: 'SHA-256'
       },
       passwordKey,
       {
-        name: CONFIG.SECURITY.ENCRYPTION_ALGORITHM,
-        length: CONFIG.SECURITY.KEY_LENGTH
+        name: APP_CONFIG.SECURITY.ENCRYPTION_ALGORITHM,
+        length: APP_CONFIG.SECURITY.KEY_LENGTH
       },
       false,
       ['encrypt', 'decrypt']
@@ -56,7 +58,7 @@ class SecurityManager {
 
       // Generate salt and IV
       const salt = this.generateSalt();
-      const iv = crypto.getRandomValues(new Uint8Array(CONFIG.SECURITY.IV_LENGTH));
+      const iv = crypto.getRandomValues(new Uint8Array(APP_CONFIG.SECURITY.IV_LENGTH));
 
       // Derive encryption key
       const key = await this.deriveKey(encryptionPassword, salt);
@@ -64,7 +66,7 @@ class SecurityManager {
       // Encrypt the API key
       const encryptedBuffer = await crypto.subtle.encrypt(
         {
-          name: CONFIG.SECURITY.ENCRYPTION_ALGORITHM,
+          name: APP_CONFIG.SECURITY.ENCRYPTION_ALGORITHM,
           iv: iv
         },
         key,
@@ -107,7 +109,7 @@ class SecurityManager {
       // Decrypt
       const decryptedBuffer = await crypto.subtle.decrypt(
         {
-          name: CONFIG.SECURITY.ENCRYPTION_ALGORITHM,
+          name: APP_CONFIG.SECURITY.ENCRYPTION_ALGORITHM,
           iv: iv
         },
         key,
@@ -250,7 +252,7 @@ class SecurityManager {
     const elements = node.querySelectorAll('*');
     elements.forEach(element => {
       // Remove elements not in allowed list
-      if (!CONFIG.SECURITY.ALLOWED_HTML_TAGS.includes(element.tagName.toLowerCase())) {
+      if (!APP_CONFIG.SECURITY.ALLOWED_HTML_TAGS.includes(element.tagName.toLowerCase())) {
         element.remove();
         return;
       }
@@ -273,7 +275,7 @@ class SecurityManager {
         }
 
         // Only keep allowed attributes
-        if (!CONFIG.SECURITY.ALLOWED_ATTRIBUTES.includes(attrName)) {
+        if (!APP_CONFIG.SECURITY.ALLOWED_ATTRIBUTES.includes(attrName)) {
           element.removeAttribute(attr.name);
         }
       });
@@ -329,8 +331,26 @@ class SecurityManager {
     }
     const lastFour = apiKey.slice(-4);
     return `${'*'.repeat(apiKey.length - 4)}${lastFour}`;
+    }
+  }
+
+  // Make globally available (works in both window and service worker contexts)
+  if (typeof window !== 'undefined') {
+    window.SecurityManager = SecurityManager;
+  }
+  if (typeof globalThis !== 'undefined') {
+    globalThis.SecurityManager = SecurityManager;
   }
 }
 
-// Create singleton instance
-const securityManager = new SecurityManager();
+// Create singleton instance (only if not already created)
+if (typeof securityManager === 'undefined') {
+  var securityManager = new SecurityManager();
+
+  if (typeof window !== 'undefined') {
+    window.securityManager = securityManager;
+  }
+  if (typeof globalThis !== 'undefined') {
+    globalThis.securityManager = securityManager;
+  }
+}

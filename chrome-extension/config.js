@@ -1,8 +1,11 @@
 // QAtalyst Configuration Constants
-// Centralized configuration for the extension
+// Application-level constants (legacy)
+// Note: For crawler/embedding config, see config.json and config-loader.js
 
-// API Request Configuration
-const CONFIG = {
+// Prevent redeclaration errors if script is injected multiple times
+if (typeof APP_CONFIG === 'undefined') {
+  // API Request Configuration
+  var APP_CONFIG = {
   // Timeouts
   REQUEST_TIMEOUT: 90000, // 90 seconds for AI responses
   RETRY_DELAY: 2000, // 2 seconds between retries
@@ -129,17 +132,26 @@ const CONFIG = {
     'Edge Cases',
     'User Experience'
   ]
-};
+  };
 
-// Freeze the config to prevent modifications
-Object.freeze(CONFIG);
-Object.freeze(CONFIG.EVOLUTION_INTENSITY);
-Object.freeze(CONFIG.TEST_DISTRIBUTION);
-Object.freeze(CONFIG.UI);
-Object.freeze(CONFIG.STORAGE_KEYS);
-Object.freeze(CONFIG.ERRORS);
-Object.freeze(CONFIG.SECURITY);
-Object.freeze(CONFIG.COMPLEXITY_THRESHOLDS);
-Object.freeze(CONFIG.GAP_CATEGORIES);
-Object.freeze(CONFIG.DEFAULT_MODELS);
-Object.freeze(CONFIG.ENDPOINTS);
+  // Freeze the config to prevent modifications
+  Object.freeze(APP_CONFIG);
+  Object.freeze(APP_CONFIG.EVOLUTION_INTENSITY);
+  Object.freeze(APP_CONFIG.TEST_DISTRIBUTION);
+  Object.freeze(APP_CONFIG.UI);
+  Object.freeze(APP_CONFIG.STORAGE_KEYS);
+  Object.freeze(APP_CONFIG.ERRORS);
+  Object.freeze(APP_CONFIG.SECURITY);
+  Object.freeze(APP_CONFIG.COMPLEXITY_THRESHOLDS);
+  Object.freeze(APP_CONFIG.GAP_CATEGORIES);
+  Object.freeze(APP_CONFIG.DEFAULT_MODELS);
+  Object.freeze(APP_CONFIG.ENDPOINTS);
+
+  // Make globally available (works in both window and service worker contexts)
+  if (typeof window !== 'undefined') {
+    window.APP_CONFIG = APP_CONFIG;
+  }
+  if (typeof globalThis !== 'undefined') {
+    globalThis.APP_CONFIG = APP_CONFIG;
+  }
+}
