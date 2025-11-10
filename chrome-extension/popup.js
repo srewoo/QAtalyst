@@ -323,12 +323,28 @@ document.getElementById('crawlAppBtn').addEventListener('click', async () => {
       }
     });
 
+    // Check if embeddings are enabled (from user settings, default: false for speed)
+    const userSettings = await chrome.storage.sync.get(['enableEmbeddings']);
+    const embeddingsEnabled = userSettings.enableEmbeddings === true; // Explicitly false by default
+    const shouldGenerateEmbeddings = embeddingsEnabled && !!embeddingApiKey;
+
+    console.log('🔮 Embedding settings:', {
+      userEnabled: embeddingsEnabled,
+      hasApiKey: !!embeddingApiKey,
+      willGenerate: shouldGenerateEmbeddings
+    });
+
+    if (!shouldGenerateEmbeddings) {
+      const reason = !embeddingsEnabled ? 'disabled in settings' : 'no API key';
+      console.log(`⏩ Skipping embeddings (${reason}) - crawling knowledge graph only (10x faster)`);
+    }
+
     // Start crawl with embedding settings (non-blocking)
     chrome.runtime.sendMessage({
       action: 'startCrawl',
       data: {
         startUrl: tab.url,
-        generateEmbeddings: !!embeddingApiKey,
+        generateEmbeddings: shouldGenerateEmbeddings,
         embeddingApiKey: embeddingApiKey,
         embeddingProvider: embeddingProvider || 'openai', // Default to openai for backwards compat
         progressWindowId: progressWindow.id
@@ -433,18 +449,18 @@ document.getElementById('importEmbeddingsBtn').addEventListener('click', async (
               return;
             }
 
-            // Import to storage
-            const response = await chrome.runtime.sendMessage({
-              action: 'importEmbeddings',
-              data: data
-            });
+            // Import directly to IndexedDB (bypasses message size limit)
+            showCrawlStatus('⏳ Importing large file...', 'success');
 
-            if (response.success) {
-              showCrawlStatus(`✅ Imported ${data.embeddings.length} embeddings for ${getCleanDomain(data.appUrl)}`, 'success');
-              await loadCrawledApps(); // Reload list
-            } else {
-              showCrawlStatus(`❌ Import failed: ${response.error}`, 'error');
-            }
+            // Ensure CONFIG is loaded
+            await CONFIG.load();
+
+            const storageManager = new StorageManager();
+            await storageManager.init();
+            await storageManager.saveEmbeddings(data.appUrl, data);
+
+            showCrawlStatus(`✅ Imported ${data.embeddings.length} embeddings for ${getCleanDomain(data.appUrl)}`, 'success');
+            await loadCrawledApps(); // Reload list
           } catch (error) {
             showCrawlStatus(`❌ Failed to parse file: ${error.message}`, 'error');
           }

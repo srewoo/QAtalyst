@@ -2,17 +2,17 @@
 
 **Advanced Chrome Extension with Multi-Agent System & Evolutionary Optimization**
 
-[![Version](https://img.shields.io/badge/version-9.2.2-blue.svg)](https://github.com/your-repo)
+[![Version](https://img.shields.io/badge/version-11.2.0-blue.svg)](https://github.com/your-repo)
 [![Chrome Extension](https://img.shields.io/badge/chrome-extension-green.svg)](https://chrome.google.com/webstore)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
 ## 📋 Overview
 
-QAtalyst is a production-ready Chrome extension that revolutionizes test case generation for Jira tickets using advanced AI technology. It features a sophisticated **7-agent system**, **genetic algorithm optimization**, and **external integrations** to create comprehensive, high-quality test cases directly within your Jira workflow.
+QAtalyst is a production-ready Chrome extension that revolutionizes test case generation for Jira tickets using advanced AI technology. It features a sophisticated **8-agent system**, **genetic algorithm optimization**, and **external integrations** to create comprehensive, high-quality test cases directly within your Jira workflow.
 
 ### ✨ Key Highlights
 
-- **🧬 7-Agent Multi-Agent System**: Specialized agents for different test types
+- **🧬 8-Agent Multi-Agent System**: Specialized agents for different test types (NEW: Context Analysis Agent)
 - **🔄 Response Streaming**: Real-time AI output with stop button
 - **🧬 Evolutionary Optimization**: Genetic algorithm for +50-150% coverage
 - **🎯 Enhanced Features**: Gap analysis, complexity scaling, context-aware generation
@@ -27,7 +27,7 @@ QAtalyst is a production-ready Chrome extension that revolutionizes test case ge
 ### Components
 - **Content Script** (`content.js`): Injects QAtalyst panel into Jira pages
 - **Background Service Worker** (`background.js`): Direct API calls to AI providers
-- **Multi-Agent System** (`agents.js`): 7 specialized AI agents
+- **Multi-Agent System** (`agents.js`): 8 specialized AI agents (Context Analysis, Requirement Analysis, Positive, Negative, Edge, Regression, Integration, Review)
 - **Evolutionary Optimizer** (`evolution.js`): Genetic algorithm for test enhancement
 - **External Integrations** (`integrations.js`): Confluence, Figma, Google Docs
 - **Enhanced Features** (`enhancements.js`): Gap analysis, complexity scaling

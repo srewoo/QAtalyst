@@ -6,7 +6,9 @@
 
 ## ✨ Features
 
-### 🧬 Multi-Agent Test Generation System
+### 🧬 Multi-Agent Test Generation System (8 Specialized Agents)
+- **Context Analysis Agent** (NEW): Analyzes crawled application data and creates intelligent 200-500 word feature summary (Main Purpose, How It Works, UI Components). Solves quota issues and improves test quality!
+- **Requirement Analysis Agent**: Extracts and structures requirements from Jira tickets
 - **Positive Test Agent**: Generates happy path scenarios
 - **Negative Test Agent**: Creates error handling and validation tests
 - **Edge Case Agent**: Identifies boundary conditions and corner cases

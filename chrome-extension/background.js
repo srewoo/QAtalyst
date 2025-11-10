@@ -8,6 +8,7 @@ importScripts('config-loader.js');
 // Import configuration and utilities
 importScripts('config.js');
 importScripts('security.js');
+importScripts('graph-filter.js');
 importScripts('agents.js');
 importScripts('evolution.js');
 importScripts('integrations.js');

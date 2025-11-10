@@ -130,6 +130,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'enableStreaming',
     'enableMultiAgent',
     'testCount',
+    'enableContextAnalysisAgent',
+    'enableRequirementAnalysisAgent',
     'enablePositiveAgent',
     'enableNegativeAgent',
     'enableEdgeAgent',
@@ -166,7 +168,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'enableDuplicateDetection',
     'detectParameterizedUrls',
     'maxSamplesPerPattern',
-    'useCrawledDataForTests'
+    'useCrawledDataForTests',
+    'enableEmbeddings'
   ]);
 
   // Decrypt sensitive tokens when loading
@@ -225,8 +228,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const testCount = settings.testCount || 30;
   document.getElementById('testCount').value = testCount;
   document.getElementById('testCountValue').textContent = testCount;
-  
+
   // Agent Configuration
+  document.getElementById('enableContextAnalysisAgent').checked = settings.enableContextAnalysisAgent !== false;
+  document.getElementById('enableRequirementAnalysisAgent').checked = settings.enableRequirementAnalysisAgent !== false;
   document.getElementById('enablePositiveAgent').checked = settings.enablePositiveAgent !== false;
   document.getElementById('enableNegativeAgent').checked = settings.enableNegativeAgent !== false;
   document.getElementById('enableEdgeAgent').checked = settings.enableEdgeAgent !== false;
@@ -310,6 +315,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('detectParameterizedUrls').checked = settings.detectParameterizedUrls !== false;
   document.getElementById('maxSamplesPerPattern').value = settings.maxSamplesPerPattern || 1;
   document.getElementById('useCrawledDataForTests').checked = settings.useCrawledDataForTests !== false;
+
+  // Embeddings Settings (disabled by default for speed)
+  document.getElementById('enableEmbeddings').checked = settings.enableEmbeddings === true;
 });
 
 // Provider change handler
@@ -350,6 +358,8 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     testCount: parseInt(document.getElementById('testCount').value),
 
     // Agent Configuration
+    enableContextAnalysisAgent: document.getElementById('enableContextAnalysisAgent').checked,
+    enableRequirementAnalysisAgent: document.getElementById('enableRequirementAnalysisAgent').checked,
     enablePositiveAgent: document.getElementById('enablePositiveAgent').checked,
     enableNegativeAgent: document.getElementById('enableNegativeAgent').checked,
     enableEdgeAgent: document.getElementById('enableEdgeAgent').checked,
@@ -397,7 +407,10 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     enableDuplicateDetection: document.getElementById('enableDuplicateDetection').checked,
     detectParameterizedUrls: document.getElementById('detectParameterizedUrls').checked,
     maxSamplesPerPattern: parseInt(document.getElementById('maxSamplesPerPattern').value),
-    useCrawledDataForTests: document.getElementById('useCrawledDataForTests').checked
+    useCrawledDataForTests: document.getElementById('useCrawledDataForTests').checked,
+
+    // Embeddings Settings (disabled by default for speed)
+    enableEmbeddings: document.getElementById('enableEmbeddings').checked
   };
 
   // Validate settings before saving
@@ -529,6 +542,8 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   console.log('💾 Saving QAtalyst Settings:', {
     enableMultiAgent: settings.enableMultiAgent,
     enableEvolution: settings.enableEvolution,
+    enableContextAnalysisAgent: settings.enableContextAnalysisAgent,
+    enableRequirementAnalysisAgent: settings.enableRequirementAnalysisAgent,
     enableRegressionAgent: settings.enableRegressionAgent,
     enablePositiveAgent: settings.enablePositiveAgent,
     enableNegativeAgent: settings.enableNegativeAgent,

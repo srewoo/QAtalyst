@@ -312,6 +312,7 @@ async function handlePauseCrawl() {
 
 /**
  * Handle load embeddings request
+ * Uses smart keyword-based filtering to send only relevant pages
  */
 async function handleLoadEmbeddings(data) {
   try {
@@ -327,15 +328,108 @@ async function handleLoadEmbeddings(data) {
     // Initialize vector search
     vectorSearch = new VectorSearch(embeddingData.embeddings);
 
+    // Calculate knowledge graph size
+    const fullPageCount = embeddingData.knowledgeGraph?.pages
+      ? Object.keys(embeddingData.knowledgeGraph.pages).length
+      : 0;
+
+    console.log(`[LOAD EMBEDDINGS] Full knowledge graph: ${fullPageCount} pages`);
+
+    // CRITICAL FIX: For large graphs, filter by ticket keywords before sending
+    // Only send the most relevant 30 pages instead of all 1097!
+    const MAX_PAGES_TO_SEND = 30; // Top 30 most relevant pages (safer for quota)
+    let knowledgeGraphToSend = embeddingData.knowledgeGraph;
+    let wasFiltered = false;
+
+    if (fullPageCount > MAX_PAGES_TO_SEND && data.ticketData) {
+      console.log(`[LOAD EMBEDDINGS] 🎯 Filtering by ticket keywords...`);
+
+      // Use GraphFilter to intelligently filter pages by relevance
+      knowledgeGraphToSend = GraphFilter.filterByRelevance(
+        embeddingData.knowledgeGraph,
+        data.ticketData,
+        MAX_PAGES_TO_SEND
+      );
+
+      wasFiltered = true;
+    } else if (fullPageCount > MAX_PAGES_TO_SEND) {
+      // Fallback: no ticket data, just take last N pages
+      console.log(`[LOAD EMBEDDINGS] ⚠️ No ticket data, taking last ${MAX_PAGES_TO_SEND} pages...`);
+
+      const pages = Object.entries(embeddingData.knowledgeGraph.pages || {});
+      const subsetPages = Object.fromEntries(pages.slice(-MAX_PAGES_TO_SEND));
+
+      knowledgeGraphToSend = {
+        ...embeddingData.knowledgeGraph,
+        pages: subsetPages,
+        totalPages: fullPageCount,
+        filteredForTransfer: true,
+        transferPageCount: MAX_PAGES_TO_SEND,
+        filterMethod: 'recent-pages'
+      };
+
+      wasFiltered = true;
+    }
+
+    // NEW v11.2.0: Create intelligent context summary using ContextAnalysisAgent
+    // This replaces sending raw JSON - creates 200-500 word summary (2-5 KB instead of 1-2 MB)
+    console.log(`[LOAD EMBEDDINGS] 🤖 Creating intelligent context summary...`);
+
+    let contextSummary = null;
+
+    if (data.ticketData && knowledgeGraphToSend) {
+      try {
+        // Create ContextAnalysisAgent instance
+        const contextAgent = new ContextAnalysisAgent();
+
+        // Bind callAI function
+        contextAgent.callAI = async (systemMessage, userMessage, settings) => {
+          return await callAI(systemMessage, userMessage, settings || {});
+        };
+
+        // Execute agent to create summary
+        const agentResult = await contextAgent.execute(
+          data.ticketData,
+          {}, // No previous results
+          await getSettings(), // Get current settings
+          knowledgeGraphToSend // Pass filtered graph
+        );
+
+        contextSummary = agentResult.summary;
+        console.log(`[LOAD EMBEDDINGS] ✅ Context summary created: ${contextSummary.length} chars`);
+      } catch (error) {
+        console.error('[LOAD EMBEDDINGS] ⚠️ Failed to create context summary:', error);
+        // Continue without summary - extension will still work
+      }
+    }
+
+    // Calculate summary size (much smaller than raw JSON!)
+    const summarySize = contextSummary ? JSON.stringify(contextSummary).length : 0;
+    const summarySizeKB = summarySize / 1024;
+
+    console.log(`[LOAD EMBEDDINGS] 📊 Size comparison:`);
+    console.log(`   Raw graph: ${(JSON.stringify(knowledgeGraphToSend).length / (1024 * 1024)).toFixed(2)} MB`);
+    console.log(`   Context summary: ${summarySizeKB.toFixed(2)} KB`);
+    console.log(`   Size reduction: ${((1 - summarySize / JSON.stringify(knowledgeGraphToSend).length) * 100).toFixed(1)}%`);
+
+    // Return summary directly (no storage bridge needed!)
+    console.log('[LOAD EMBEDDINGS] 📨 Sending context summary directly');
+
     return {
       success: true,
+      useBridge: false, // No storage bridge needed!
       result: {
         appUrl: embeddingData.appUrl,
-        embeddingCount: embeddingData.embeddings.length,
-        crawledAt: embeddingData.crawledAt
+        embeddingCount: embeddingData.embeddings?.length || 0,
+        crawledAt: embeddingData.crawledAt,
+        pageCount: fullPageCount,
+        transferPageCount: wasFiltered ? MAX_PAGES_TO_SEND : fullPageCount,
+        contextSummary: contextSummary, // NEW: Intelligent 200-500 word summary (2-5 KB)
+        hasContext: !!contextSummary // Flag to indicate if context is available
       }
     };
   } catch (error) {
+    console.error('[LOAD EMBEDDINGS] ❌ Error:', error);
     return {
       success: false,
       error: error.message

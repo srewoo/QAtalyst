@@ -1,5 +1,5 @@
 {
-  "version": "11.1.0",
+  "version": "11.2.0",
   "appName": "QAtalyst - AI Test Case Generator",
   "description": "Configuration file for QAtalyst extension",
 
@@ -278,8 +278,9 @@
   },
 
   "embeddings": {
-    "description": "Vector Embeddings Configuration - API-based only (BERT/TensorFlow.js blocked by CSP)",
+    "description": "Vector Embeddings Configuration - OPTIONAL for test generation. Embeddings enable semantic search but are NOT required. Knowledge graph alone is sufficient for generating test cases. Disable to speed up crawling 10x and avoid timeout issues.",
     "enabled": false,
+    "note": "Set to false (default) for faster crawling. Only enable if you need semantic search features (find similar pages without exact keywords).",
 
     "provider": {
       "default": "jina",

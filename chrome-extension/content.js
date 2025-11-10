@@ -1150,19 +1150,24 @@
       // Extract app context from crawled knowledge graphs (if enabled)
       let appContext = null;
       if (settings.useCrawledDataForTests !== false) { // Enabled by default
-        console.log('🔍 Extracting app context from crawled data...');
+        console.log('🔍 [CRAWL DATA] Feature enabled - extracting app context from crawled data...');
         appContext = await extractAppContext(ticketData);
         currentAppContext = appContext; // Store globally for UI display
         if (appContext) {
-          console.log(`✅ Found crawled data for: ${appContext.appUrl}`);
-          console.log(`   - ${appContext.forms.length} forms`);
-          console.log(`   - ${appContext.apis.length} API endpoints`);
-          console.log(`   - ${appContext.pages.length} pages`);
+          console.log(`✅ [CRAWL DATA] Successfully extracted app context:`);
+          console.log(`   📱 App URL: ${appContext.appUrl}`);
+          console.log(`   📄 Total Pages: ${appContext.totalPages || 0}`);
+          console.log(`   📝 Forms: ${appContext.forms?.length || 0}`);
+          console.log(`   🔌 APIs: ${appContext.apis?.length || 0}`);
+          console.log(`   📄 Page details: ${appContext.pages?.length || 0}`);
+          console.log(`   🔘 Features: ${appContext.features?.length || 0}`);
         } else {
-          console.log('ℹ️ No crawled app context found - proceeding without it');
+          console.log('⚠️ [CRAWL DATA] No crawled app context found - proceeding without it');
+          console.log('   💡 Tip: Crawl your app first using the popup or settings page');
         }
       } else {
-        console.log('ℹ️ Crawled data usage disabled in settings - skipping app context extraction');
+        console.log('❌ [CRAWL DATA] Feature disabled in settings - skipping app context extraction');
+        console.log('   💡 Enable in Settings → Crawler Settings → "Use Crawled Data in Test Generation"');
         currentAppContext = null;
       }
 
@@ -2249,7 +2254,7 @@ Expected Result: ${expectedResult}`;
   function showHelp() {
     const helpContent = `
 ╔══════════════════════════════════════════╗
-║        🚀 QAtalyst v10.0.1 - Help        ║
+║        🚀 QAtalyst v11.2.0 - Help        ║
 ╚══════════════════════════════════════════╝
 
 📋 CORE FEATURES:
@@ -2867,45 +2872,86 @@ Agent Selection:
    */
   async function extractAppContext(ticketData) {
     try {
-      console.log('🔍 Checking for crawled app context...');
+      console.log('🔍 [CRAWL DATA] Checking for crawled app context...');
 
-      // Get all crawled apps
+      // Get all crawled apps from background script (which has access to extension's IndexedDB)
+      console.log('[CRAWL DATA] 📡 Requesting app list from background script...');
       const response = await chrome.runtime.sendMessage({
         action: 'getAllApps'
       });
 
       if (!response || !response.success || !response.apps || response.apps.length === 0) {
-        console.log('ℹ️ No crawled apps found');
+        console.log('⚠️ [CRAWL DATA] No crawled apps found in database');
+        console.log('   💡 Use the popup or settings page to crawl your application first');
         return null;
       }
 
-      console.log(`📚 Found ${response.apps.length} crawled app(s)`);
+      console.log(`📚 [CRAWL DATA] Found ${response.apps.length} crawled app(s):`);
+      response.apps.forEach((app, i) => {
+        console.log(`   ${i + 1}. ${app.url} - ${app.pages} pages, ${app.features} features`);
+      });
 
-      // Try to match app URL with ticket content
+      // ALWAYS use crawled data if available (intelligent matching with fallback)
       const matchedApp = findMatchingApp(response.apps, ticketData);
 
       if (!matchedApp) {
-        console.log('ℹ️ No matching crawled app found for this ticket');
+        console.error('❌ [CRAWL DATA] ERROR: findMatchingApp returned null despite apps existing!');
+        console.error('   This should never happen. Please report this bug.');
         return null;
       }
 
       console.log(`✅ Matched crawled app: ${matchedApp.url}`);
 
-      // Load the knowledge graph for this app
+      // Load the knowledge graph from background script
+      // Pass ticketData for smart keyword-based filtering
+      console.log('[CRAWL DATA] 📡 Requesting knowledge graph with ticket context...');
+
       const kgResponse = await chrome.runtime.sendMessage({
         action: 'loadEmbeddings',
-        data: { appUrl: matchedApp.url }
+        data: {
+          appUrl: matchedApp.url,
+          ticketData: ticketData // Pass ticket for smart filtering
+        }
       });
 
       if (!kgResponse || !kgResponse.success) {
-        console.log('⚠️ Failed to load knowledge graph');
+        console.error('❌ [CRAWL DATA] Failed to load knowledge graph');
+        console.error('   Response:', kgResponse);
         return null;
       }
 
-      // Extract relevant context from knowledge graph
-      const context = extractRelevantContext(kgResponse, ticketData);
+      // NEW v11.2.0: Receive intelligent context summary directly (no storage bridge needed!)
+      const contextSummary = kgResponse.result.contextSummary;
+      const hasContext = kgResponse.result.hasContext;
 
-      console.log('✅ App context extracted successfully');
+      console.log('[CRAWL DATA] 📨 Received context summary directly');
+
+      if (hasContext) {
+        console.log(`✅ [CRAWL DATA] Context summary available: ${contextSummary.length} chars`);
+        console.log(`   App URL: ${kgResponse.result.appUrl}`);
+        console.log(`   Pages analyzed: ${kgResponse.result.transferPageCount} / ${kgResponse.result.pageCount}`);
+        console.log(`   Summary preview: ${contextSummary.substring(0, 100)}...`);
+      } else {
+        console.log('ℹ️ [CRAWL DATA] No context summary available (no crawled data or agent disabled)');
+      }
+
+      // NEW v11.2.0: Create app context directly from summary (no extraction needed!)
+      // The ContextAnalysisAgent already analyzed and summarized the data in the background
+      const context = {
+        appUrl: kgResponse.result.appUrl,
+        contextSummary: contextSummary,
+        hasContext: hasContext,
+        crawledAt: kgResponse.result.crawledAt,
+        embeddingCount: kgResponse.result.embeddingCount,
+        pageCount: kgResponse.result.pageCount,
+        transferPageCount: kgResponse.result.transferPageCount
+      };
+
+      console.log('✅ [CRAWL DATA] App context prepared successfully:');
+      console.log('   Context available:', hasContext);
+      console.log('   Summary length:', contextSummary ? contextSummary.length : 0);
+      console.log('   Pages:', context.pages?.length || 0);
+      console.log('   Features:', context.features?.length || 0);
       return context;
 
     } catch (error) {
@@ -2923,16 +2969,47 @@ Agent Selection:
 
     for (const app of apps) {
       try {
+        // Skip merged graphs for URL matching (they don't have real URLs)
+        if (app.url.startsWith('merged_')) {
+          continue;
+        }
+
         const appDomain = new URL(app.url).hostname.toLowerCase();
 
-        // Check if app domain is mentioned in ticket
+        // Check if exact domain is mentioned in ticket
         if (ticketText.includes(appDomain)) {
+          console.log(`✅ Matched app by exact domain: ${appDomain}`);
           return app;
         }
 
-        // Check for partial domain matches (e.g., "myapp" in "https://myapp.com")
-        const appName = appDomain.split('.')[0];
-        if (appName.length > 3 && ticketText.includes(appName)) {
+        // Extract base domain (e.g., "mindtickle.com" from "jellyvission.integration.mindtickle.com")
+        const domainParts = appDomain.split('.');
+        let baseDomain = appDomain;
+
+        // Handle cases like: subdomain.staging.example.com → example.com
+        if (domainParts.length >= 2) {
+          // Get last 2 parts (example.com)
+          baseDomain = domainParts.slice(-2).join('.');
+
+          // Check if base domain is mentioned (environment-agnostic)
+          if (ticketText.includes(baseDomain)) {
+            console.log(`✅ Matched app by base domain: ${baseDomain} (from ${appDomain})`);
+            return app;
+          }
+        }
+
+        // Extract product name from base domain (e.g., "mindtickle" from "mindtickle.com")
+        const productName = domainParts[domainParts.length - 2];
+        if (productName && productName.length > 3 && ticketText.includes(productName)) {
+          console.log(`✅ Matched app by product name: ${productName}`);
+          return app;
+        }
+
+        // Check first subdomain only if it's meaningful (not env names)
+        const firstPart = domainParts[0];
+        const envKeywords = ['staging', 'prod', 'dev', 'test', 'qa', 'integration', 'uat', 'demo', 'sandbox'];
+        if (firstPart.length > 3 && !envKeywords.includes(firstPart) && ticketText.includes(firstPart)) {
+          console.log(`✅ Matched app by subdomain: ${firstPart}`);
           return app;
         }
       } catch (e) {
@@ -2940,30 +3017,131 @@ Agent Selection:
       }
     }
 
-    // Strategy 2: If only one app crawled, use it
+    // Strategy 2: ALWAYS use crawled data when feature is enabled
+    // Prioritize based on data quality, not URL matching
+
+    // If only one app exists, use it
     if (apps.length === 1) {
-      console.log('📌 Using the only crawled app available');
+      console.log(`📌 Auto-using crawled app: ${apps[0].url} (${apps[0].pages} pages, ${apps[0].features} features)`);
       return apps[0];
     }
 
-    // Strategy 3: Prefer non-merged apps
-    const nonMergedApps = apps.filter(app => !app.url.startsWith('merged_'));
-    if (nonMergedApps.length === 1) {
-      console.log('📌 Using the only non-merged app available');
-      return nonMergedApps[0];
+    // Strategy 3: Prefer merged graphs (most comprehensive across environments)
+    const mergedApps = apps.filter(app => app.url.startsWith('merged_'));
+    if (mergedApps.length === 1) {
+      console.log(`📌 Auto-using merged graph: ${mergedApps[0].url} (${mergedApps[0].pages} pages, ${mergedApps[0].features} features)`);
+      return mergedApps[0];
     }
 
-    return null;
+    // Strategy 4: Use the largest merged app (most comprehensive)
+    if (mergedApps.length > 1) {
+      const largestMerged = mergedApps.reduce((prev, current) =>
+        (current.pages > prev.pages) ? current : prev
+      );
+      console.log(`📌 Auto-using largest merged graph: ${largestMerged.url} (${largestMerged.pages} pages, ${largestMerged.features} features)`);
+      return largestMerged;
+    }
+
+    // Strategy 5: Use the largest app by page count (most data = best context)
+    const largestApp = apps.reduce((prev, current) =>
+      (current.pages > prev.pages) ? current : prev
+    );
+    console.log(`📌 Auto-using largest crawled app: ${largestApp.url} (${largestApp.pages} pages, ${largestApp.features} features)`);
+    return largestApp;
   }
 
   /**
-   * Extract relevant context from knowledge graph
+   * Extract keywords from ticket for intelligent filtering
+   */
+  function extractTicketKeywords(ticketData) {
+    const text = `${ticketData.summary || ''} ${ticketData.description || ''}`.toLowerCase();
+
+    // Remove common words
+    const stopWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'error', 'issue', 'bug', 'problem', 'fix', 'update', 'add', 'remove', 'while', 'after', 'before'];
+
+    // Extract words (3+ chars, not stop words)
+    const words = text.match(/\b[a-z]{3,}\b/g) || [];
+    const keywords = [...new Set(words.filter(w => !stopWords.includes(w)))];
+
+    // Also extract quoted phrases and brackets
+    const phrases = text.match(/\[([^\]]+)\]/g) || [];
+    const quotedPhrases = text.match(/"([^"]+)"/g) || [];
+
+    const allKeywords = [
+      ...keywords,
+      ...phrases.map(p => p.replace(/[\[\]]/g, '').toLowerCase()),
+      ...quotedPhrases.map(p => p.replace(/"/g, '').toLowerCase())
+    ];
+
+    return [...new Set(allKeywords)];
+  }
+
+  /**
+   * Calculate relevance score for a page/URL based on keywords
+   */
+  function calculateRelevanceScore(url, title, description, keywords) {
+    let score = 0;
+    const searchText = `${url} ${title || ''} ${description || ''}`.toLowerCase();
+
+    keywords.forEach(keyword => {
+      if (searchText.includes(keyword)) {
+        // URL matches are most important
+        if (url.toLowerCase().includes(keyword)) {
+          score += 10;
+        }
+        // Title matches are very important
+        if (title && title.toLowerCase().includes(keyword)) {
+          score += 5;
+        }
+        // Description matches are somewhat important
+        if (description && description.toLowerCase().includes(keyword)) {
+          score += 2;
+        }
+      }
+    });
+
+    return score;
+  }
+
+  /**
+   * Extract relevant context from knowledge graph (SMART FILTERING)
    */
   function extractRelevantContext(kgData, ticketData) {
-    const knowledgeGraph = kgData.knowledgeGraph;
-    if (!knowledgeGraph || !knowledgeGraph.pages) {
+    console.log('[EXTRACT] Starting smart context extraction...');
+    console.log('[EXTRACT] kgData keys:', Object.keys(kgData));
+
+    // Handle different response formats
+    let knowledgeGraph;
+
+    if (kgData.result && kgData.result.knowledgeGraph) {
+      knowledgeGraph = kgData.result.knowledgeGraph;
+      console.log('[EXTRACT] Using kgData.result.knowledgeGraph');
+    } else if (kgData.knowledgeGraph) {
+      knowledgeGraph = kgData.knowledgeGraph;
+      console.log('[EXTRACT] Using kgData.knowledgeGraph');
+    } else if (kgData.result) {
+      knowledgeGraph = kgData.result;
+      console.log('[EXTRACT] Using kgData.result as knowledgeGraph');
+    } else {
+      console.error('[EXTRACT] ERROR: Cannot find knowledge graph in response!');
+      console.log('[EXTRACT] Available keys:', Object.keys(kgData));
       return null;
     }
+
+    console.log('[EXTRACT] knowledgeGraph keys:', Object.keys(knowledgeGraph));
+
+    if (!knowledgeGraph.pages) {
+      console.error('[EXTRACT] ERROR: knowledgeGraph.pages is missing!');
+      console.log('[EXTRACT] knowledgeGraph structure:', knowledgeGraph);
+      return null;
+    }
+
+    const totalPages = Object.keys(knowledgeGraph.pages).length;
+    console.log('[EXTRACT] ✅ Found pages object with', totalPages, 'pages');
+
+    // Extract keywords from ticket for smart filtering
+    const keywords = extractTicketKeywords(ticketData);
+    console.log('[EXTRACT] 🔍 Extracted keywords from ticket:', keywords.slice(0, 10));
 
     const context = {
       appUrl: knowledgeGraph.appUrl || kgData.appUrl,
@@ -2974,11 +3152,43 @@ Agent Selection:
       features: []
     };
 
-    // Extract forms, APIs, and features from all pages
+    // Score and filter pages by relevance
     const pages = Object.entries(knowledgeGraph.pages || {});
+    const scoredPages = pages.map(([url, page]) => {
+      const score = calculateRelevanceScore(
+        url,
+        page.metadata?.title,
+        page.metadata?.description,
+        keywords
+      );
+      return { url, page, score };
+    });
 
-    for (const [url, page] of pages) {
-      // Collect forms
+    // Sort by relevance (highest score first)
+    scoredPages.sort((a, b) => b.score - a.score);
+
+    // Log relevance distribution
+    const relevantPages = scoredPages.filter(p => p.score > 0);
+    console.log(`[EXTRACT] 📊 Relevance Analysis:`);
+    console.log(`   Total pages: ${totalPages}`);
+    console.log(`   Relevant pages (score > 0): ${relevantPages.length}`);
+    console.log(`   Irrelevant pages: ${totalPages - relevantPages.length}`);
+
+    if (relevantPages.length > 0) {
+      console.log(`[EXTRACT] 🎯 Top 5 most relevant pages:`);
+      relevantPages.slice(0, 5).forEach((p, i) => {
+        console.log(`   ${i + 1}. ${p.url} (score: ${p.score})`);
+      });
+    }
+
+    // Prioritize: Process relevant pages first, then fill with others if needed
+    const pagesToProcess = [
+      ...relevantPages,
+      ...scoredPages.filter(p => p.score === 0)
+    ];
+
+    for (const { url, page, score } of pagesToProcess) {
+      // Collect forms (with relevance score)
       if (page.features) {
         const forms = page.features.filter(f => f.type === 'form');
         forms.forEach(form => {
@@ -2987,7 +3197,8 @@ Agent Selection:
             id: form.id,
             action: form.action,
             method: form.method || 'POST',
-            inputs: form.inputs || []
+            inputs: form.inputs || [],
+            _relevanceScore: score // Track relevance
           });
         });
 
@@ -2997,19 +3208,21 @@ Agent Selection:
           context.features.push({
             url: url,
             type: feature.type,
-            ...feature
+            ...feature,
+            _relevanceScore: score // Track relevance
           });
         });
       }
 
-      // Collect APIs
+      // Collect APIs (with relevance score)
       if (page.apis && page.apis.length > 0) {
         page.apis.forEach(api => {
           context.apis.push({
             url: url,
             method: api.method,
             endpoint: api.endpoint,
-            payload: api.payload
+            payload: api.payload,
+            _relevanceScore: score // Track relevance
           });
         });
       }
@@ -3019,16 +3232,29 @@ Agent Selection:
         context.pages.push({
           url: url,
           title: page.metadata.title,
-          description: page.metadata.description
+          description: page.metadata.description,
+          _relevanceScore: score // Track relevance
         });
       }
     }
+
+    // Sort all collected data by relevance score (highest first)
+    context.forms.sort((a, b) => b._relevanceScore - a._relevanceScore);
+    context.apis.sort((a, b) => b._relevanceScore - a._relevanceScore);
+    context.features.sort((a, b) => b._relevanceScore - a._relevanceScore);
+    context.pages.sort((a, b) => b._relevanceScore - a._relevanceScore);
+
+    console.log('[EXTRACT] ✅ Context extraction complete:');
+    console.log(`   Forms: ${context.forms.length} (top score: ${context.forms[0]?._relevanceScore || 0})`);
+    console.log(`   APIs: ${context.apis.length} (top score: ${context.apis[0]?._relevanceScore || 0})`);
+    console.log(`   Features: ${context.features.length} (top score: ${context.features[0]?._relevanceScore || 0})`);
+    console.log(`   Pages: ${context.pages.length} (top score: ${context.pages[0]?._relevanceScore || 0})`);
 
     return context;
   }
 
   /**
-   * Format app context for LLM prompt
+   * Format app context for LLM prompt (with relevance indicators)
    */
   function formatAppContextForPrompt(appContext) {
     if (!appContext) {
@@ -3040,13 +3266,24 @@ Agent Selection:
     formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
 
     formatted += `🌐 Application: ${appContext.appUrl}\n`;
-    formatted += `📄 Total Pages Crawled: ${appContext.totalPages}\n\n`;
+    formatted += `📄 Total Pages Crawled: ${appContext.totalPages}\n`;
 
-    // Add forms
+    // Add relevance summary
+    const relevantForms = appContext.forms?.filter(f => f._relevanceScore > 0).length || 0;
+    const relevantAPIs = appContext.apis?.filter(a => a._relevanceScore > 0).length || 0;
+    if (relevantForms + relevantAPIs > 0) {
+      formatted += `\n🎯 SMART FILTERING: Showing most relevant data first based on ticket keywords\n`;
+      formatted += `   Relevant Forms: ${relevantForms}/${appContext.forms?.length || 0}\n`;
+      formatted += `   Relevant APIs: ${relevantAPIs}/${appContext.apis?.length || 0}\n`;
+    }
+    formatted += '\n';
+
+    // Add forms (with relevance indicators)
     if (appContext.forms && appContext.forms.length > 0) {
-      formatted += '📝 FORMS FOUND:\n';
+      formatted += '📝 FORMS FOUND (sorted by relevance):\n';
       appContext.forms.slice(0, 5).forEach((form, index) => {
-        formatted += `\n${index + 1}. Form on ${form.url}\n`;
+        const relevanceIndicator = form._relevanceScore > 0 ? '⭐ ' : '';
+        formatted += `\n${index + 1}. ${relevanceIndicator}Form on ${form.url}\n`;
         formatted += `   • ID: ${form.id || 'N/A'}\n`;
         formatted += `   • Action: ${form.action || 'N/A'}\n`;
         formatted += `   • Method: ${form.method}\n`;
@@ -3064,11 +3301,12 @@ Agent Selection:
       formatted += '\n';
     }
 
-    // Add APIs
+    // Add APIs (with relevance indicators)
     if (appContext.apis && appContext.apis.length > 0) {
-      formatted += '🔌 API ENDPOINTS DETECTED:\n';
+      formatted += '🔌 API ENDPOINTS DETECTED (sorted by relevance):\n';
       appContext.apis.slice(0, 10).forEach((api, index) => {
-        formatted += `\n${index + 1}. ${api.method} ${api.endpoint}\n`;
+        const relevanceIndicator = api._relevanceScore > 0 ? '⭐ ' : '';
+        formatted += `\n${index + 1}. ${relevanceIndicator}${api.method} ${api.endpoint}\n`;
         formatted += `   • Page: ${api.url}\n`;
         if (api.payload) {
           formatted += `   • Payload: ${JSON.stringify(api.payload)}\n`;

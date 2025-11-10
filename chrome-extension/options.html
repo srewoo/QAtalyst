@@ -455,11 +455,21 @@
       <div class="section">
         <h2>🧬 Multi-Agent System Configuration</h2>
         <p>Configure the specialized agents for comprehensive test generation.</p>
-        
+
         <div class="info-box">
-          ℹ️ QAtalyst uses multiple specialized agents: Positive Test Agent, Negative Test Agent, Edge Case Agent, Regression Agent, Integration Agent, and Review Agent.
+          ℹ️ QAtalyst uses 8 specialized agents: Context Analysis (analyzes crawled app data), Requirement Analysis, Positive Test, Negative Test, Edge Case, Regression, Integration, and Review Agent.
         </div>
-        
+
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableContextAnalysisAgent" checked data-testid="enable-context-analysis-agent">
+          <label for="enableContextAnalysisAgent">Enable Context Analysis Agent (Analyzes Crawled App Features)</label>
+        </div>
+
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableRequirementAnalysisAgent" checked data-testid="enable-requirement-analysis-agent">
+          <label for="enableRequirementAnalysisAgent">Enable Requirement Analysis Agent (Extracts & Structures Requirements)</label>
+        </div>
+
         <div class="checkbox-group">
           <input type="checkbox" id="enablePositiveAgent" checked data-testid="enable-positive-agent">
           <label for="enablePositiveAgent">Enable Positive Test Agent (Happy Path Scenarios)</label>
@@ -682,6 +692,25 @@
 
         <div class="info-box" style="margin-top: 12px;">
           <strong>ℹ️ How It Works:</strong> Extension automatically matches your Jira ticket to crawled apps by domain name. If a match is found, the LLM receives detailed information about your app's structure to generate more accurate test cases.
+        </div>
+
+        <h3 style="margin-top: 32px;">Vector Embeddings (Advanced) <span style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; letter-spacing: 0.5px; vertical-align: middle;">BETA</span></h3>
+        <p style="color: #64748b; margin-bottom: 16px;">Control whether vector embeddings are generated during crawling. Embeddings enable semantic search but are <strong>NOT required</strong> for test generation.</p>
+
+        <div class="checkbox-group">
+          <input type="checkbox" id="enableEmbeddings" data-testid="enable-embeddings">
+          <label for="enableEmbeddings">Generate Vector Embeddings During Crawl</label>
+        </div>
+        <p class="help-text">⚠️ <strong>Disabled by default for speed.</strong> When disabled, only the knowledge graph is stored (10x faster crawling, no timeout issues). Enable only if you need semantic search features (finding similar pages without exact keyword matches).</p>
+
+        <div class="info-box" style="margin-top: 12px; background-color: #fef3c7; border-left-color: #f59e0b;">
+          <strong>⚡ Performance Impact:</strong>
+          <ul style="margin-left: 20px; margin-top: 8px; line-height: 1.6;">
+            <li><strong>Embeddings OFF (default):</strong> 1097 pages crawled in ~2-3 minutes, 5-10 MB storage</li>
+            <li><strong>Embeddings ON:</strong> 1097 pages crawled in ~20-30 minutes, 50-100 MB storage, may timeout</li>
+            <li><strong>Test Generation:</strong> Works identically with or without embeddings</li>
+          </ul>
+          <p style="margin-top: 12px; margin-bottom: 0;"><strong>💡 Recommendation:</strong> Keep disabled unless you specifically need semantic search functionality.</p>
         </div>
       </div>
     </div>
@@ -953,11 +982,28 @@
     <div class="tab-content" id="help-tab">
       <div class="section">
         <h2>❓ Help & Documentation</h2>
-        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v10.0.1 - AI-powered test case generation with advanced features.</p>
+        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v11.2.0 - AI-powered test case generation with advanced features.</p>
 
         <!-- What's New -->
         <div class="help-card" style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border-color: #86efac;">
-          <h3 style="color: #16a34a;">✨ What's New in v10.0.1</h3>
+          <h3 style="color: #16a34a;">✨ What's New in v11.2.0</h3>
+
+          <h4 style="color: #15803d;">🎯 Context Analysis Agent (NEW - v11.2.0)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Intelligent Feature Summarization:</strong> Creates concise 200-500 word summaries of crawled app data</li>
+            <li><strong>500x Size Reduction:</strong> Replaces 1-2 MB of raw JSON with 2-5 KB summary - solves quota exceeded errors!</li>
+            <li><strong>Runs in Background:</strong> Summary created in background script BEFORE sending to content script - no storage bridge needed!</li>
+            <li><strong>Structured Analysis:</strong> Focuses on Main Purpose, How It Works, and UI Components</li>
+            <li><strong>Better Test Quality:</strong> Provides analyzed context instead of raw data dump to test agents</li>
+            <li><strong>Graceful Fallback:</strong> Extension works perfectly even without crawled data - agent is optional</li>
+          </ul>
+
+          <h4 style="color: #15803d;">🗑️ Storage Bridge Removed (v11.2.0)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>No More Quota Issues:</strong> Removed storage-bridge.js completely - context summary is small enough to send directly</li>
+            <li><strong>Simpler Architecture:</strong> Background creates summary → sends directly to content (2-5 KB) → no intermediate storage</li>
+            <li><strong>Faster & More Reliable:</strong> No storage.local read/write operations, no chunking, no cleanup needed</li>
+          </ul>
 
           <h4 style="color: #15803d;">🚀 Major Performance Improvements</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
@@ -1049,8 +1095,9 @@
           
           <div class="feature-section">
             <h4>🧬 Phase 2: Multi-Agent System</h4>
-            <p><strong>7 Specialized AI Agents:</strong></p>
+            <p><strong>8 Specialized AI Agents:</strong></p>
             <ul>
+              <li><strong>Context Analysis Agent (NEW):</strong> Analyzes crawled application data and creates intelligent feature summary (Main Purpose, How It Works, UI Components). Reduces context size by 500x while improving test quality!</li>
               <li><strong>Requirement Analysis Agent:</strong> Extracts and structures requirements</li>
               <li><strong>Positive Test Agent (40%):</strong> Happy path and valid input scenarios</li>
               <li><strong>Negative Test Agent (30%):</strong> Error handling and validation tests</li>
@@ -1060,6 +1107,9 @@
               <li><strong>Review Agent:</strong> Quality check and coverage gap analysis</li>
             </ul>
             <p style="margin-top: 12px;"><em>Enable in API Settings: "🧬 Enable Multi-Agent System"</em></p>
+            <p style="margin-top: 8px; background: #f0fdf4; padding: 12px; border-radius: 6px; font-size: 13px; border-left: 4px solid #10b981;">
+              <strong>💡 Context Analysis Agent:</strong> When you crawl an app, this agent runs FIRST to create a concise 200-500 word summary of the feature instead of sending raw JSON data. This solves the quota exceeded issue and provides better context to test generation agents!
+            </p>
           </div>
           
           <div class="feature-section">
@@ -1398,7 +1448,7 @@
           <h4>Panel Issues:</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>Panel doesn't appear:</strong> Refresh Jira page, ensure you're on a ticket page (not board)</li>
-            <li><strong>Settings button error:</strong> Update to v10.0.1+</li>
+            <li><strong>Settings button error:</strong> Update to v11.2.0+</li>
             <li><strong>Panel position wrong:</strong> Resize browser window</li>
           </ul>
           
@@ -1430,7 +1480,7 @@
             </li>
             <li><strong>"No historical bugs found":</strong> Try adjusting JQL filters - broaden date range or remove project filter</li>
             <li><strong>"Authentication failed":</strong> Generate new API token from Atlassian and update in settings</li>
-            <li><strong>"TypeError with description":</strong> Already fixed in v10.0.1 - reload the extension</li>
+            <li><strong>"TypeError with description":</strong> Already fixed in v11.2.0 - reload the extension</li>
           </ul>
 
           <h4>Requirement Analysis Issues:</h4>
@@ -1508,7 +1558,7 @@
             <li><strong>Taking too long:</strong> Disable evolution or use Light intensity (now 10-15s!)</li>
             <li><strong>Memory issues:</strong> Reduce test count, close other tabs</li>
             <li><strong>Streaming stops:</strong> Check network, reload extension</li>
-            <li><strong>Evolution slow:</strong> Ensure you're on v10.0.1+ with parallel processing optimization</li>
+            <li><strong>Evolution slow:</strong> Ensure you're on v11.2.0+ with parallel processing optimization</li>
           </ul>
 
           <h4>UI/Panel Issues:</h4>
@@ -1523,7 +1573,7 @@
         <div class="help-card">
           <h3>📞 Support & Resources</h3>
           <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Version:</strong> v10.0.1</li>
+            <li><strong>Version:</strong> v11.2.0</li>
             <li><strong>Privacy Policy:</strong> <a href="privacy.html" target="_blank" style="color: #0ea5e9; text-decoration: none;">View our Privacy Policy</a></li>
             <li><strong>API Key Setup:</strong>
               <ul style="margin-left: 20px; margin-top: 6px;">
