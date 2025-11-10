@@ -32,7 +32,6 @@ class ConfigLoader {
       console.log('✅ Configuration loaded successfully');
       console.log(`   Version: ${this.config.version}`);
       console.log(`   Crawler enabled: ${this.config.crawler.enabled}`);
-      console.log(`   Embeddings provider: ${this.config.embeddings.provider.default}`);
 
       return this.config;
     } catch (error) {

@@ -7,17 +7,12 @@ let crawlComplete = false;
 let totalPages = 0;
 let totalFeatures = 0;
 let totalApis = 0;
-let totalEmbeddings = 0;
 let userHasInteracted = false;
 
 // Listen for progress updates from background script
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'crawlProgress') {
     handleCrawlProgress(message.progress);
-  }
-
-  if (message.action === 'embeddingProgress') {
-    handleEmbeddingProgress(message.progress);
   }
 
   if (message.action === 'crawlComplete') {
@@ -75,25 +70,6 @@ function handleCrawlProgress(progress) {
   }
 }
 
-// Handle embedding progress updates
-function handleEmbeddingProgress(progress) {
-  const statusMessage = document.getElementById('statusMessage');
-  const progressFill = document.getElementById('progressFill');
-  const progressPercentage = document.getElementById('progressPercentage');
-  const embeddingsGenerated = document.getElementById('embeddingsGenerated');
-
-  if (progress.status === 'generating') {
-    statusMessage.className = 'status-message embedding';
-    statusMessage.innerHTML = '<span class="spinner"></span>Generating embeddings...';
-
-    progressFill.style.width = `${progress.percentage}%`;
-    progressPercentage.textContent = `${progress.percentage}%`;
-
-    document.getElementById('currentUrl').textContent =
-      `Processing batch ${progress.current} of ${progress.total}`;
-  }
-}
-
 // Handle crawl completion
 function handleCrawlComplete(result) {
   crawlComplete = true;
@@ -106,7 +82,6 @@ function handleCrawlComplete(result) {
   document.getElementById('pagesCrawled').textContent = `${result.pages} / ${result.pages}`;
   document.getElementById('featuresFound').textContent = result.features;
   document.getElementById('apisFound').textContent = result.apis;
-  document.getElementById('embeddingsGenerated').textContent = result.embeddings || 0;
 
   // Update progress bar to 100%
   document.getElementById('progressFill').style.width = '100%';
@@ -114,11 +89,6 @@ function handleCrawlComplete(result) {
 
   // Show success message
   let message = `✅ Crawl complete! ${result.pages} pages, ${result.features} features, ${result.apis} APIs`;
-
-  if (result.embeddings > 0) {
-    const costMsg = result.cost > 0 ? `($${result.cost.toFixed(4)})` : '(FREE)';
-    message += `, ${result.embeddings} embeddings ${costMsg}`;
-  }
 
   statusMessage.className = 'status-message complete';
   statusMessage.innerHTML = message;

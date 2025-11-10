@@ -277,60 +277,6 @@
     }
   },
 
-  "embeddings": {
-    "description": "Vector Embeddings Configuration - OPTIONAL for test generation. Embeddings enable semantic search but are NOT required. Knowledge graph alone is sufficient for generating test cases. Disable to speed up crawling 10x and avoid timeout issues.",
-    "enabled": false,
-    "note": "Set to false (default) for faster crawling. Only enable if you need semantic search features (find similar pages without exact keywords).",
-
-    "provider": {
-      "default": "jina",
-      "options": ["jina", "openai", "chrome-ai"],
-      "fallbackOrder": ["jina", "openai", "chrome-ai"],
-      "note": "Local ML libraries (Transformers.js, TensorFlow.js) cannot work in Chrome Manifest V3 extensions due to CSP restrictions. Use API-based embeddings (Jina AI, OpenAI) or wait for Chrome Built-in AI."
-    },
-
-    "models": {
-      "jina": {
-        "model": "jina-embeddings-v3",
-        "dimensions": 1024,
-        "batchSize": 2048,
-        "costPer1MTokens": 0,
-        "freeTier": "10 million tokens for new users",
-        "endpoint": "https://api.jina.ai/v1/embeddings",
-        "description": "RECOMMENDED - FREE tier, perfect for large-scale crawling (thousands of pages)"
-      },
-      "openai": {
-        "model": "text-embedding-3-small",
-        "dimensions": 1536,
-        "batchSize": 100,
-        "costPer1MTokens": 0.02,
-        "endpoint": "https://api.openai.com/v1/embeddings",
-        "description": "Production-ready, paid service, works in all Chrome versions"
-      },
-      "chromeAI": {
-        "model": "gemini-nano",
-        "dimensions": 768,
-        "enabled": false,
-        "description": "Free local embeddings, Chrome Canary/Dev only (experimental)"
-      }
-    },
-
-    "search": {
-      "topK": 5,
-      "minScore": 0.3,
-      "maxResults": 10,
-      "cacheEnabled": true,
-      "cacheSize": 100
-    },
-
-    "export": {
-      "formats": ["json", "binary"],
-      "defaultFormat": "json",
-      "compression": true,
-      "includeMetadata": true
-    }
-  },
-
   "network": {
     "description": "Network Monitoring Configuration",
     "enabled": true,

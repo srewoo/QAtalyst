@@ -1,7 +1,8 @@
 /**
- * Storage Manager - IndexedDB operations for embeddings
- * Version: 11.0.0
- * Manages persistent storage, export/import of app embeddings
+ * Storage Manager - IndexedDB operations for knowledge graphs
+ * Version: 11.2.0
+ * Manages persistent storage, export/import of crawled app data (pages, forms, APIs)
+ * Note: Method names reference "embeddings" for backward compatibility but primarily store knowledge graphs
  */
 
 class StorageManager {
@@ -38,7 +39,7 @@ class StorageManager {
         if (!db.objectStoreNames.contains(this.storeName)) {
           const objectStore = db.createObjectStore(this.storeName, { keyPath: 'appUrl' });
           objectStore.createIndex('crawledAt', 'crawledAt', { unique: false });
-          console.log('📦 Created embeddings object store');
+          console.log('📦 Created knowledge graph storage');
         }
 
         // Version 2: Add page batches store for streaming save (P0.1)
@@ -87,7 +88,7 @@ class StorageManager {
       const request = store.put(data);
 
       request.onsuccess = () => {
-        console.log(`💾 Saved ${data.embeddings.length} embeddings for ${data.appUrl}`);
+        console.log(`💾 Saved knowledge graph for ${data.appUrl}`);
         resolve();
       };
 
@@ -167,10 +168,10 @@ class StorageManager {
 
       request.onsuccess = () => {
         if (request.result) {
-          console.log(`📂 Loaded ${request.result.embeddings.length} embeddings for ${appUrl}`);
+          console.log(`📂 Loaded knowledge graph for ${appUrl}`);
           resolve(request.result);
         } else {
-          console.log(`ℹ️ No embeddings found for ${appUrl}`);
+          console.log(`ℹ️ No knowledge graph found for ${appUrl}`);
           resolve(null);
         }
       };
@@ -380,7 +381,7 @@ class StorageManager {
       const request = store.delete(appUrl);
 
       request.onsuccess = () => {
-        console.log(`🗑️ Deleted embeddings for ${appUrl}`);
+        console.log(`🗑️ Deleted knowledge graph for ${appUrl}`);
         resolve();
       };
 
@@ -406,7 +407,7 @@ class StorageManager {
       throw new Error(`No knowledge graph found for ${appUrl}`);
     }
 
-    console.log(`📤 Exporting crawl data: ${data.knowledgeGraph.totalPages || 0} pages, ${data.embeddings?.length || 0} embeddings`);
+    console.log(`📤 Exporting crawl data: ${data.knowledgeGraph.totalPages || 0} pages`);
 
     // CRITICAL FIX: Use data URL for service worker compatibility
     // URL.createObjectURL() is not available in service workers
@@ -616,7 +617,7 @@ class StorageManager {
         saveAs: true
       });
 
-      console.log(`📤 Exported embeddings to binary: ${filename} (downloadId: ${downloadId})`);
+      console.log(`📤 Exported knowledge graph to binary: ${filename} (downloadId: ${downloadId})`);
       return filename;
     } catch (error) {
       console.error('Binary export failed:', error);
@@ -644,7 +645,7 @@ class StorageManager {
           // Save to IndexedDB
           await this.saveEmbeddings(data);
 
-          console.log(`📥 Imported ${data.embeddings.length} embeddings from ${file.name}`);
+          console.log(`📥 Imported knowledge graph from ${file.name}`);
           resolve(data);
         } catch (error) {
           reject(new Error(`Import failed: ${error.message}`));
@@ -674,7 +675,7 @@ class StorageManager {
 
           await this.saveEmbeddings(data);
 
-          console.log(`📥 Imported ${data.embeddings.length} embeddings from binary file`);
+          console.log(`📥 Imported knowledge graph from binary file`);
           resolve(data);
         } catch (error) {
           reject(new Error(`Binary import failed: ${error.message}`));
@@ -834,7 +835,7 @@ class StorageManager {
       const request = store.clear();
 
       request.onsuccess = () => {
-        console.log('🗑️ Cleared all embeddings');
+        console.log('🗑️ Cleared all knowledge graphs');
         resolve();
       };
 

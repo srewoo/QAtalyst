@@ -230,80 +230,6 @@ document.getElementById('crawlAppBtn').addEventListener('click', async () => {
       return;
     }
 
-    // Ask user if they want to generate embeddings
-    let embeddingApiKey = null;
-    let embeddingProvider = null;
-
-    const useEmbeddings = confirm(
-      '🔍 Enable AI-powered semantic search?\n\n' +
-      'Generate embeddings for crawled pages.\n\n' +
-      'Click OK to choose an embedding provider\n' +
-      'Click Cancel to crawl without embeddings (free)'
-    );
-
-    if (useEmbeddings) {
-      // Ask user to choose provider
-      const providerChoice = confirm(
-        '🎯 Choose Embedding Provider:\n\n' +
-        '✅ Jina AI (RECOMMENDED for large crawls)\n' +
-        '   • FREE: 10 million tokens\n' +
-        '   • Perfect for thousands of pages\n' +
-        '   • 1024 dimensions\n' +
-        '   • Get key: https://jina.ai/embeddings/\n\n' +
-        '💰 OpenAI\n' +
-        '   • Paid: ~$0.02 per 1000 pages\n' +
-        '   • 1536 dimensions\n' +
-        '   • Get key: https://platform.openai.com/api-keys\n\n' +
-        'Click OK for Jina AI (FREE)\n' +
-        'Click Cancel for OpenAI (Paid)'
-      );
-
-      if (providerChoice) {
-        // User chose Jina AI
-        embeddingProvider = 'jina';
-        embeddingApiKey = prompt(
-          '🆓 Enter your Jina AI API Key:\n\n' +
-          'Get a FREE key at: https://jina.ai/embeddings/\n' +
-          '(10 million tokens FREE for new users)\n\n' +
-          'Note: Your key will NOT be saved and you will be asked again next time.'
-        );
-
-        if (!embeddingApiKey || embeddingApiKey.trim() === '') {
-          showCrawlStatus('⚠️ No API key provided. Crawling without embeddings.', 'success');
-          embeddingApiKey = null;
-          embeddingProvider = null;
-        } else {
-          embeddingApiKey = embeddingApiKey.trim();
-        }
-      } else {
-        // User chose OpenAI
-        embeddingProvider = 'openai';
-        embeddingApiKey = prompt(
-          '💳 Enter your OpenAI API Key:\n\n' +
-          'Get one at: https://platform.openai.com/api-keys\n' +
-          'Cost: ~$0.02 per 1000 pages\n\n' +
-          'Note: Your key will NOT be saved and you will be asked again next time.'
-        );
-
-        if (!embeddingApiKey || embeddingApiKey.trim() === '') {
-          showCrawlStatus('⚠️ No API key provided. Crawling without embeddings.', 'success');
-          embeddingApiKey = null;
-          embeddingProvider = null;
-        } else if (!embeddingApiKey.startsWith('sk-')) {
-          showCrawlStatus('❌ Invalid OpenAI API key format. Must start with "sk-". Crawling without embeddings.', 'error');
-          embeddingApiKey = null;
-          embeddingProvider = null;
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        } else {
-          embeddingApiKey = embeddingApiKey.trim();
-        }
-      }
-    } else {
-      // User clicked Cancel - crawl without embeddings
-      showCrawlStatus('ℹ️ Crawling without embeddings...', 'success');
-      await new Promise(resolve => setTimeout(resolve, 800));
-    }
-
     // Open persistent progress window
     const progressWindow = await chrome.windows.create({
       url: chrome.runtime.getURL('crawler-progress.html'),
@@ -323,30 +249,13 @@ document.getElementById('crawlAppBtn').addEventListener('click', async () => {
       }
     });
 
-    // Check if embeddings are enabled (from user settings, default: false for speed)
-    const userSettings = await chrome.storage.sync.get(['enableEmbeddings']);
-    const embeddingsEnabled = userSettings.enableEmbeddings === true; // Explicitly false by default
-    const shouldGenerateEmbeddings = embeddingsEnabled && !!embeddingApiKey;
+    console.log('🕷️ Starting crawler - knowledge graph only');
 
-    console.log('🔮 Embedding settings:', {
-      userEnabled: embeddingsEnabled,
-      hasApiKey: !!embeddingApiKey,
-      willGenerate: shouldGenerateEmbeddings
-    });
-
-    if (!shouldGenerateEmbeddings) {
-      const reason = !embeddingsEnabled ? 'disabled in settings' : 'no API key';
-      console.log(`⏩ Skipping embeddings (${reason}) - crawling knowledge graph only (10x faster)`);
-    }
-
-    // Start crawl with embedding settings (non-blocking)
+    // Start crawl (non-blocking)
     chrome.runtime.sendMessage({
       action: 'startCrawl',
       data: {
         startUrl: tab.url,
-        generateEmbeddings: shouldGenerateEmbeddings,
-        embeddingApiKey: embeddingApiKey,
-        embeddingProvider: embeddingProvider || 'openai', // Default to openai for backwards compat
         progressWindowId: progressWindow.id
       }
     });
@@ -410,19 +319,6 @@ chrome.runtime.onMessage.addListener((message) => {
     }
   }
 
-  if (message.action === 'embeddingProgress') {
-    const progress = message.progress;
-
-    if (progress.status === 'generating') {
-      const progressFill = document.getElementById('progressFill');
-      const progressText = document.getElementById('progressText');
-
-      if (progressFill && progressText) {
-        progressFill.style.width = `${progress.percentage}%`;
-        progressText.textContent = `🔮 Generating embeddings: ${progress.current}/${progress.total} batches (${progress.percentage}%)`;
-      }
-    }
-  }
 });
 
 // Import embeddings button handler

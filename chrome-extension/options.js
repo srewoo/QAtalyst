@@ -168,8 +168,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'enableDuplicateDetection',
     'detectParameterizedUrls',
     'maxSamplesPerPattern',
-    'useCrawledDataForTests',
-    'enableEmbeddings'
+    'useCrawledDataForTests'
   ]);
 
   // Decrypt sensitive tokens when loading
@@ -316,8 +315,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('maxSamplesPerPattern').value = settings.maxSamplesPerPattern || 1;
   document.getElementById('useCrawledDataForTests').checked = settings.useCrawledDataForTests !== false;
 
-  // Embeddings Settings (disabled by default for speed)
-  document.getElementById('enableEmbeddings').checked = settings.enableEmbeddings === true;
 });
 
 // Provider change handler
@@ -407,10 +404,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     enableDuplicateDetection: document.getElementById('enableDuplicateDetection').checked,
     detectParameterizedUrls: document.getElementById('detectParameterizedUrls').checked,
     maxSamplesPerPattern: parseInt(document.getElementById('maxSamplesPerPattern').value),
-    useCrawledDataForTests: document.getElementById('useCrawledDataForTests').checked,
-
-    // Embeddings Settings (disabled by default for speed)
-    enableEmbeddings: document.getElementById('enableEmbeddings').checked
+    useCrawledDataForTests: document.getElementById('useCrawledDataForTests').checked
   };
 
   // Validate settings before saving

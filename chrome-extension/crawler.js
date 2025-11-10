@@ -618,7 +618,7 @@ class WebAppCrawler {
       this.visited.add(url); // Mark both URLs as visited
     }
 
-    // Send page data immediately for incremental embedding generation
+    // Send page data immediately for incremental processing
     this.sendPageData(pageData);
 
     // P0.1: Streaming save - save batch and clear memory when threshold reached
@@ -1010,10 +1010,10 @@ class WebAppCrawler {
 
   /**
    * Send individual page data for incremental processing
-   * This allows background worker to generate embeddings and save data as we crawl
+   * This allows background worker to save data as we crawl
    */
   sendPageData(pageData) {
-    // Send to background worker for incremental embedding generation
+    // Send to background worker for incremental processing
     chrome.runtime.sendMessage({
       action: 'processPageIncremental',
       pageData: pageData,

@@ -24,10 +24,7 @@ importScripts('sitemap-parser.js');
 importScripts('resource-blocker.js');
 importScripts('spa-route-discoverer.js');
 importScripts('smart-wait.js');
-importScripts('vector-search.js');
 importScripts('storage-manager.js');
-importScripts('openai-embedding-service.js');
-importScripts('jina-embedding-service.js');
 importScripts('knowledge-graph-merger.js');
 importScripts('crawler-handlers.js');
 
@@ -42,13 +39,7 @@ const activeStreams = new Map();
 // Web Crawler state management - initialize AFTER config loads
 let activeCrawler = null;
 let storageManager = null; // Will be created after config loads
-let vectorSearch = null;
 const globalResourceBlocker = new ResourceBlocker();
-
-// Incremental crawl state - for progressive embedding generation
-// MEMORY OPTIMIZATION: Limit max entries and periodically cleanup
-let incrementalCrawlState = new Map(); // Map<crawlId, { embeddingService, pages, embeddings, metadata }>
-const MAX_INCREMENTAL_STATE_SIZE = 3; // Keep only 3 most recent crawls in memory
 
 // Promise that resolves when storage is ready
 let storageReady = null;
@@ -133,21 +124,6 @@ function stopCrawlHeartbeat() {
 
   // Clear checkpoint
   chrome.storage.local.remove('crawlCheckpoint').catch(() => {});
-}
-
-/**
- * MEMORY OPTIMIZATION: Clean up old incremental crawl states
- * Removes oldest entries when limit exceeded
- */
-function cleanupIncrementalStates() {
-  if (incrementalCrawlState.size > MAX_INCREMENTAL_STATE_SIZE) {
-    const entries = Array.from(incrementalCrawlState.entries());
-    // Keep only the most recent entries
-    const toKeep = entries.slice(-MAX_INCREMENTAL_STATE_SIZE);
-    incrementalCrawlState.clear();
-    toKeep.forEach(([key, value]) => incrementalCrawlState.set(key, value));
-    console.log(`🧹 Cleaned up old incremental crawl states (kept ${toKeep.length})`);
-  }
 }
 
 /**
@@ -343,7 +319,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // Incremental page processing for progressive embedding generation
+  // Incremental page processing for progressive crawling
   if (request.action === 'processPageIncremental') {
     handleProcessPageIncremental(request.pageData, request.crawlId, request.crawlStartTime)
       .then(sendResponse)
