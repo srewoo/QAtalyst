@@ -73,8 +73,9 @@ class WebAppCrawler {
 
     // Parameterized URL pattern tracking (e.g., /recording/123, /recording/456 = same pattern)
     this.parameterizedUrlTracking = new Map(); // Map<pattern, count> - tracks samples per URL pattern
+    this.urlTemplates = new Map(); // Map<template, [urls]> - for template-based learning
     this.detectParameterizedUrls = CONFIG.get('crawler.duplicateDetection.detectParameterizedUrls', true);
-    this.maxSamplesPerPattern = CONFIG.get('crawler.duplicateDetection.maxSamplesPerPattern', 2);
+    this.maxSamplesPerPattern = CONFIG.get('crawler.duplicateDetection.maxSamplesPerPattern', 1);
 
     // Caching (Week 4)
     this.cachingEnabled = CONFIG.get('crawler.caching.enabled', true);
@@ -88,6 +89,12 @@ class WebAppCrawler {
     // Incremental crawl: Load previously crawled pages if available
     this.previouslyCrawled = new Set();
     this.loadPreviousCrawl(config.startUrl);
+
+    // MEMORY OPTIMIZATION: Track cleanup intervals
+    this.lastMemoryCleanup = Date.now();
+    this.memoryCleanupInterval = 500; // Cleanup every 500 pages
+    this.lastCacheCleanup = Date.now();
+    this.cacheCleanupInterval = 100; // Clean cache every 100 pages
   }
 
   /**
@@ -288,8 +295,8 @@ class WebAppCrawler {
       if (batch.length === 0) break;
 
       // Crawl all pages in parallel
-      const promises = batch.map((item, index) => {
-        const tabId = tabIds[index];
+      const promises = batch.map(async (item, index) => {
+        let tabId = tabIds[index];
         const { url, depth } = item;
 
         // Skip if already visited or too deep
@@ -303,6 +310,26 @@ class WebAppCrawler {
           console.log(`⏩ Skipping previously crawled: ${url}`);
           this.visited.add(url);
           return Promise.resolve();
+        }
+
+        // CRITICAL FIX: Validate tab before crawling, recreate if invalid
+        const tabValid = await this.isTabValid(tabId);
+        if (!tabValid) {
+          console.warn(`⚠️ Tab ${tabId} invalid, recreating for: ${url}`);
+          try {
+            // Remove old tab ID from tracking
+            this.activeTabs.delete(tabId);
+            this.scriptInjectedTabs.delete(tabId);
+
+            // Create new tab
+            const newTabId = await this.createParallelTab();
+            tabIds[index] = newTabId; // Update the tabIds array
+            tabId = newTabId;
+            console.log(`✅ Created replacement tab ${newTabId}`);
+          } catch (error) {
+            console.error(`❌ Failed to recreate tab:`, error);
+            return this.handleCrawlError(url, depth, error);
+          }
         }
 
         // Crawl the page
@@ -377,6 +404,20 @@ class WebAppCrawler {
   }
 
   /**
+   * Validate that a tab still exists and is usable
+   * @param {number} tabId - Tab ID to validate
+   * @returns {Promise<boolean>} true if valid, false if not
+   */
+  async isTabValid(tabId) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      return tab && !tab.discarded;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Crawl a single page
    * @param {string} url - Page URL to crawl
    * @param {number} depth - Current crawl depth
@@ -384,6 +425,13 @@ class WebAppCrawler {
    */
   async crawlPage(url, depth, tabId) {
     console.log(`📄 Crawling: ${url} (depth: ${depth}, queue: ${this.queue.length}) [tab ${tabId}]`);
+
+    // CRITICAL FIX: Validate tab before using it
+    const tabValid = await this.isTabValid(tabId);
+    if (!tabValid) {
+      console.error(`❌ Tab ${tabId} is invalid or closed, skipping page: ${url}`);
+      throw new Error(`Tab ${tabId} no longer exists`);
+    }
 
     // Navigate to page
     await this.navigate(url, tabId);
@@ -418,7 +466,7 @@ class WebAppCrawler {
 
     // P2.8: Wait for SPA framework hydration (React, Vue, Angular)
     // Must be AFTER verifyContentScript since it sends messages to content script
-    await this.waitForSPAHydration(tabId);
+    const isSPA = await this.waitForSPAHydration(tabId);
 
     // Extract data from DOM
     const features = await this.extractPageData(tabId);
@@ -434,19 +482,36 @@ class WebAppCrawler {
     let spaDiscoveries = [];
     if (spaEnabled) {
       console.log('🔍 Starting SPA route discovery...');
-      spaDiscoveries = await this.spaDiscoverer.discoverRoutes(tabId);
 
-      // Extract unique routes from discoveries
-      const spaRoutes = this.spaDiscoverer.extractRoutes(spaDiscoveries);
-      console.log(`✅ SPA discovery found ${spaRoutes.length} new routes`);
+      // CRITICAL FIX: Validate tab before SPA discovery
+      const tabValidBeforeSPA = await this.isTabValid(tabId);
+      if (!tabValidBeforeSPA) {
+        console.warn(`⚠️ Tab ${tabId} closed before SPA discovery, skipping`);
+      } else {
+        try {
+          spaDiscoveries = await this.spaDiscoverer.discoverRoutes(tabId);
 
-      // Add SPA routes to links for crawling
-      links.push(...spaRoutes);
+          // Extract unique routes from discoveries
+          const spaRoutes = this.spaDiscoverer.extractRoutes(spaDiscoveries);
+          console.log(`✅ SPA discovery found ${spaRoutes.length} new routes`);
 
-      // Re-verify content script after SPA discovery (clicks may have disrupted it)
-      // Remove from set to force re-injection
-      this.scriptInjectedTabs.delete(tabId);
-      await this.verifyContentScript(tabId);
+          // Add SPA routes to links for crawling
+          links.push(...spaRoutes);
+
+          // Re-verify content script after SPA discovery (clicks may have disrupted it)
+          // Remove from set to force re-injection
+          this.scriptInjectedTabs.delete(tabId);
+
+          // Validate tab again before re-injection
+          const tabValidAfterSPA = await this.isTabValid(tabId);
+          if (tabValidAfterSPA) {
+            await this.verifyContentScript(tabId);
+          }
+        } catch (error) {
+          console.error(`❌ SPA discovery failed for tab ${tabId}:`, error.message);
+          // Continue without SPA routes
+        }
+      }
     }
 
     // Get page metadata
@@ -458,7 +523,7 @@ class WebAppCrawler {
 
     if (textContentEnabled) {
       // For SPAs, add extra wait for content to update after navigation
-      if (isSPA || url.includes('happytails')) {
+      if (isSPA) {
         console.log('⏳ Waiting for SPA content to update...');
 
         // Wait for title to change (good indicator of content load)
@@ -518,9 +583,10 @@ class WebAppCrawler {
       }
       // Still queue links for discovery
       for (const link of links) {
-        if (!this.visited.has(link) && !this.isInQueue(link)) {
-          const priority = this.calculatePriority(link, [], []);
-          this.queue.push({ url: link, depth: depth + 1, priority });
+        const normalizedLink = this.normalizeUrl(link);
+        if (!this.visited.has(normalizedLink) && !this.isInQueue(normalizedLink) && this.shouldQueueUrl(normalizedLink)) {
+          const priority = this.calculatePriority(normalizedLink, [], []);
+          this.queue.push({ url: normalizedLink, depth: depth + 1, priority });
         }
       }
       return;
@@ -537,9 +603,10 @@ class WebAppCrawler {
       }
       // Still queue links for discovery, but don't save this page
       for (const link of links) {
-        if (!this.visited.has(link) && !this.isInQueue(link)) {
-          const priority = this.calculatePriority(link, [], []);
-          this.queue.push({ url: link, depth: depth + 1, priority });
+        const normalizedLink = this.normalizeUrl(link);
+        if (!this.visited.has(normalizedLink) && !this.isInQueue(normalizedLink) && this.shouldQueueUrl(normalizedLink)) {
+          const priority = this.calculatePriority(normalizedLink, [], []);
+          this.queue.push({ url: normalizedLink, depth: depth + 1, priority });
         }
       }
       return;
@@ -557,12 +624,24 @@ class WebAppCrawler {
     // P0.1: Streaming save - save batch and clear memory when threshold reached
     await this.checkAndSaveBatch();
 
+    // MEMORY OPTIMIZATION: Periodic cleanup
+    this.performMemoryCleanup();
+    this.performCacheCleanup();
+
+    // MEMORY OPTIMIZATION: Check for memory pressure
+    const criticalMemory = await this.checkMemoryPressure();
+    if (criticalMemory) {
+      console.error('❌ CRITICAL MEMORY: Stopping crawl to prevent crash');
+      this.isStopped = true;
+      throw new Error('Memory limit exceeded - crawl stopped to prevent crash');
+    }
+
     // WEEK 3: Queue new links with priority scoring
     for (const link of links) {
       // P2.7: Normalize URL to prevent duplicate crawling (pagination, tracking params)
       const normalizedLink = this.normalizeUrl(link);
 
-      if (!this.visited.has(normalizedLink) && !this.isInQueue(normalizedLink)) {
+      if (!this.visited.has(normalizedLink) && !this.isInQueue(normalizedLink) && this.shouldQueueUrl(normalizedLink)) {
         const priority = this.calculatePriority(normalizedLink, features, apis);
         this.queue.push({ url: normalizedLink, depth: depth + 1, priority });
       }
@@ -656,6 +735,13 @@ class WebAppCrawler {
       return true;
     }
 
+    // CRITICAL FIX: Validate tab before injection
+    const tabValid = await this.isTabValid(tabId);
+    if (!tabValid) {
+      console.error(`Cannot inject content script: Tab ${tabId} is invalid`);
+      return false;
+    }
+
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tabId },
@@ -666,7 +752,7 @@ class WebAppCrawler {
       this.scriptInjectedTabs.add(tabId);
       return true;
     } catch (error) {
-      console.error(`Failed to inject content script in tab ${tabId}:`, error);
+      console.error(`Failed to inject content script in tab ${tabId}:`, error.message);
       return false;
     }
   }
@@ -1057,6 +1143,11 @@ class WebAppCrawler {
         'timestamp',
         'ts',
         '_t',
+        '_requestStartTime',   // SPA timestamp parameter
+        '_selfRouting',        // SPA routing parameter
+        '_timestamp',          // Generic timestamp
+        'cache',               // Cache busting
+        'v',                   // Version/cache busting
         'utm_source',
         'utm_medium',
         'utm_campaign',
@@ -1086,12 +1177,162 @@ class WebAppCrawler {
   }
 
   /**
+   * Check if URL should be added to queue
+   * Prevents parameterized URLs from being queued if we already have enough samples
+   * @returns {boolean} true if should queue, false if should skip
+   */
+  shouldQueueUrl(url) {
+    if (!this.detectParameterizedUrls) {
+      return true; // Detection disabled, queue everything
+    }
+
+    const detectedPattern = this.getParameterizedPattern(url);
+
+    if (!detectedPattern) {
+      return true; // Not parameterized, queue it
+    }
+
+    // Check if we already have enough samples of this pattern
+    const currentCount = this.parameterizedUrlTracking.get(detectedPattern) || 0;
+
+    if (currentCount >= this.maxSamplesPerPattern) {
+      // Already have enough samples - don't queue
+      console.log(`⏩ Not queuing parameterized URL (already have ${currentCount} samples of ${detectedPattern}): ${url}`);
+      return false;
+    }
+
+    // We need more samples of this pattern - queue it
+    return true;
+  }
+
+  /**
+   * HYBRID APPROACH: Dynamically detect parameterized URL patterns
+   * Part 1: Regex-based immediate detection
+   * @returns {string|null} Detected pattern or null
+   */
+  detectParameterizedPattern(url) {
+    try {
+      const urlObj = new URL(url);
+      const path = urlObj.pathname;
+
+      // Pattern 1: Ends with numeric ID (/recording/123, /session/456)
+      const numericIdPattern = /\/(\d+)$/;
+      if (numericIdPattern.test(path)) {
+        return path.replace(numericIdPattern, '/{id}');
+      }
+
+      // Pattern 2: Ends with UUID (/session/a1b2c3d4-e5f6-...)
+      const uuidPattern = /\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i;
+      if (uuidPattern.test(path)) {
+        return path.replace(uuidPattern, '/{uuid}');
+      }
+
+      // Pattern 3: Ends with long alphanumeric ID (/call/abc123xyz, /ticket/JIRA-1234)
+      const alphanumericPattern = /\/([a-zA-Z0-9_-]{8,})$/;
+      if (alphanumericPattern.test(path)) {
+        return path.replace(alphanumericPattern, '/{id}');
+      }
+
+      // Pattern 4: ID in middle (/user/123/profile, /recording/456/transcript)
+      // Only if the ID segment is purely numeric
+      const segments = path.split('/').filter(s => s.length > 0);
+      let hasIdSegment = false;
+      const normalizedSegments = segments.map(segment => {
+        if (/^\d+$/.test(segment) || /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(segment)) {
+          hasIdSegment = true;
+          return '{id}';
+        }
+        return segment;
+      });
+
+      if (hasIdSegment) {
+        return '/' + normalizedSegments.join('/');
+      }
+
+      return null; // Not a parameterized URL
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * HYBRID APPROACH Part 2: Template-based learning
+   * Build URL template by replacing variable segments with placeholders
+   * This learns patterns dynamically as it crawls
+   * @returns {string} URL template
+   */
+  buildUrlTemplate(url) {
+    try {
+      const urlObj = new URL(url);
+      const path = urlObj.pathname;
+      const segments = path.split('/').filter(s => s.length > 0);
+
+      const templateSegments = segments.map(segment => {
+        // Numeric segment → {num}
+        if (/^\d+$/.test(segment)) {
+          return '{num}';
+        }
+
+        // UUID segment → {uuid}
+        if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(segment)) {
+          return '{uuid}';
+        }
+
+        // Long alphanumeric (likely ID) → {id}
+        if (/^[a-zA-Z0-9_-]{8,}$/.test(segment) && /\d/.test(segment)) {
+          return '{id}';
+        }
+
+        // Keep as-is (static segment)
+        return segment;
+      });
+
+      return '/' + templateSegments.join('/');
+    } catch (e) {
+      return url;
+    }
+  }
+
+  /**
+   * HYBRID APPROACH Part 3: Check if URL matches a parameterized pattern
+   * Uses both regex detection and template learning
+   * @returns {string|null} Pattern if detected, null otherwise
+   */
+  getParameterizedPattern(url) {
+    // First: Try regex-based immediate detection (fast)
+    const regexPattern = this.detectParameterizedPattern(url);
+    if (regexPattern) {
+      return regexPattern;
+    }
+
+    // Second: Build template and check if we've seen similar URLs
+    const template = this.buildUrlTemplate(url);
+
+    // If template contains placeholders, it's potentially parameterized
+    if (template.includes('{')) {
+      // Check if we've seen other URLs with this template
+      const existingUrls = this.urlTemplates.get(template) || [];
+
+      if (existingUrls.length > 0) {
+        // We've seen this template before with different IDs → parameterized!
+        return template;
+      } else {
+        // First time seeing this template - store it
+        this.urlTemplates.set(template, [url]);
+        return null; // Not confirmed as parameterized yet (need more samples)
+      }
+    }
+
+    return null; // Not parameterized
+  }
+
+  /**
    * P2.8: Wait for SPA framework hydration
    * Detects React, Vue, Angular and waits for hydration to complete
    */
   async waitForSPAHydration(tabId) {
     if (!CONFIG.get('crawler.spaDetection.enabled', true)) {
-      return;
+      return false;
     }
 
     return new Promise((resolve) => {
@@ -1162,8 +1403,9 @@ class WebAppCrawler {
 
         // Add all URLs to queue with depth 1 (after start URL)
         for (const url of urls) {
-          if (url !== this.startUrl && !this.isInQueue(url)) {
-            this.queue.push({ url, depth: 1 });
+          const normalizedUrl = this.normalizeUrl(url);
+          if (normalizedUrl !== this.startUrl && !this.isInQueue(normalizedUrl) && this.shouldQueueUrl(normalizedUrl)) {
+            this.queue.push({ url: normalizedUrl, depth: 1 });
           }
         }
 
@@ -1426,30 +1668,28 @@ class WebAppCrawler {
       }
     }
 
-    // Check if URL matches a parameterized pattern (e.g., /recording/123, /recording/456)
-    // These should be treated as DUPLICATES - only crawl a few examples
+    // HYBRID DYNAMIC DETECTION: Check if URL matches a parameterized pattern
+    // Uses regex + template learning to automatically detect patterns
     if (this.detectParameterizedUrls) {
-      const paramPatterns = CONFIG.get('crawler.duplicateDetection.parameterizedUrlPatterns', []);
+      const detectedPattern = this.getParameterizedPattern(pageData.url);
 
-      for (const pattern of paramPatterns) {
-        if (pageData.url.includes(pattern)) {
-          // Get or initialize count for this pattern
-          const currentCount = this.parameterizedUrlTracking.get(pattern) || 0;
+      if (detectedPattern) {
+        // Get or initialize count for this pattern
+        const currentCount = this.parameterizedUrlTracking.get(detectedPattern) || 0;
 
-          if (currentCount >= this.maxSamplesPerPattern) {
-            // Already crawled enough samples of this pattern - skip as duplicate
-            console.log(`⏩ Skipping parameterized URL (already crawled ${currentCount} samples of ${pattern}): ${pageData.url}`);
-            return true;
-          } else {
-            // This is one of the first samples - crawl it and increment counter
-            this.parameterizedUrlTracking.set(pattern, currentCount + 1);
-            console.log(`✅ Crawling parameterized URL sample ${currentCount + 1}/${this.maxSamplesPerPattern} for pattern ${pattern}: ${pageData.url}`);
+        if (currentCount >= this.maxSamplesPerPattern) {
+          // Already crawled enough samples of this pattern - skip as duplicate
+          console.log(`⏩ Skipping parameterized URL (already crawled ${currentCount} samples of ${detectedPattern}): ${pageData.url}`);
+          return true;
+        } else {
+          // This is one of the first samples - crawl it and increment counter
+          this.parameterizedUrlTracking.set(detectedPattern, currentCount + 1);
+          console.log(`✅ Crawling parameterized URL sample ${currentCount + 1}/${this.maxSamplesPerPattern} for pattern ${detectedPattern}: ${pageData.url}`);
 
-            // Still store signature for comparison with non-parameterized pages
-            const signature = this.createPageSignature(pageData);
-            this.pageSignatures.set(pageData.url, signature);
-            return false;
-          }
+          // Still store signature for comparison with non-parameterized pages
+          const signature = this.createPageSignature(pageData);
+          this.pageSignatures.set(pageData.url, signature);
+          return false;
         }
       }
     }
@@ -1568,6 +1808,129 @@ class WebAppCrawler {
     const union = new Set([...set1, ...set2]);
 
     return union.size > 0 ? intersection.size / union.size : 0;
+  }
+
+  /**
+   * MEMORY OPTIMIZATION: Periodic memory cleanup
+   * Clears old entries from Maps to prevent unbounded growth
+   */
+  performMemoryCleanup() {
+    const visited = this.visited.size;
+
+    // Only cleanup every N pages
+    if (visited - this.lastMemoryCleanup < this.memoryCleanupInterval) {
+      return;
+    }
+
+    console.log(`🧹 Performing memory cleanup at ${visited} pages...`);
+    const startSize = this.pageSignatures.size + this.parameterizedUrlTracking.size + this.urlTemplates.size;
+
+    // Clear old page signatures if too many (keep last 500)
+    if (this.pageSignatures.size > 500) {
+      const entries = Array.from(this.pageSignatures.entries());
+      const toKeep = entries.slice(-500);
+      this.pageSignatures.clear();
+      toKeep.forEach(([url, sig]) => this.pageSignatures.set(url, sig));
+      console.log(`  🗑️ Cleared ${entries.length - 500} old page signatures`);
+    }
+
+    // Clear urlTemplates if too large (keep last 100)
+    if (this.urlTemplates.size > 100) {
+      const entries = Array.from(this.urlTemplates.entries());
+      const toKeep = entries.slice(-100);
+      this.urlTemplates.clear();
+      toKeep.forEach(([template, urls]) => this.urlTemplates.set(template, urls));
+      console.log(`  🗑️ Cleared ${entries.length - 100} old URL templates`);
+    }
+
+    // Clean up script injection tracking for closed tabs
+    this.cleanupClosedTabsFromTracking();
+
+    const endSize = this.pageSignatures.size + this.parameterizedUrlTracking.size + this.urlTemplates.size;
+    console.log(`  ✅ Memory cleanup complete: ${startSize} -> ${endSize} Map entries`);
+
+    this.lastMemoryCleanup = visited;
+  }
+
+  /**
+   * MEMORY OPTIMIZATION: Clean cache periodically
+   * Removes old cache entries when cache grows too large
+   */
+  performCacheCleanup() {
+    const visited = this.visited.size;
+
+    // Only cleanup every N pages
+    if (visited - this.lastCacheCleanup < this.cacheCleanupInterval) {
+      return;
+    }
+
+    const maxCacheSize = CONFIG.get('crawler.caching.maxCacheSize', 200);
+
+    // Clear feature cache if exceeding limit
+    if (this.featureCache.size > maxCacheSize) {
+      const excess = this.featureCache.size - maxCacheSize;
+      const entries = Array.from(this.featureCache.keys());
+      // Remove oldest entries (FIFO)
+      entries.slice(0, excess).forEach(key => this.featureCache.delete(key));
+      console.log(`🧹 Cleared ${excess} old feature cache entries`);
+    }
+
+    // Clear API cache if exceeding limit
+    if (this.apiCache.size > maxCacheSize) {
+      const excess = this.apiCache.size - maxCacheSize;
+      const entries = Array.from(this.apiCache.keys());
+      entries.slice(0, excess).forEach(key => this.apiCache.delete(key));
+      console.log(`🧹 Cleared ${excess} old API cache entries`);
+    }
+
+    this.lastCacheCleanup = visited;
+  }
+
+  /**
+   * MEMORY OPTIMIZATION: Clean up closed tabs from tracking
+   */
+  async cleanupClosedTabsFromTracking() {
+    const closedTabs = [];
+
+    for (const tabId of this.scriptInjectedTabs) {
+      try {
+        await chrome.tabs.get(tabId);
+        // Tab exists, keep it
+      } catch (error) {
+        // Tab doesn't exist anymore
+        closedTabs.push(tabId);
+      }
+    }
+
+    closedTabs.forEach(tabId => this.scriptInjectedTabs.delete(tabId));
+
+    if (closedTabs.length > 0) {
+      console.log(`  🗑️ Removed ${closedTabs.length} closed tabs from tracking`);
+    }
+  }
+
+  /**
+   * MEMORY OPTIMIZATION: Check memory usage and warn if high
+   * Returns true if memory is critically low
+   */
+  async checkMemoryPressure() {
+    // Use performance.memory if available (Chrome only)
+    if (performance.memory) {
+      const usedMB = performance.memory.usedJSHeapSize / (1024 * 1024);
+      const limitMB = performance.memory.jsHeapSizeLimit / (1024 * 1024);
+      const percentUsed = (usedMB / limitMB) * 100;
+
+      if (percentUsed > 90) {
+        console.error(`❌ CRITICAL: Memory usage at ${percentUsed.toFixed(1)}% (${usedMB.toFixed(0)}MB / ${limitMB.toFixed(0)}MB)`);
+        return true;
+      } else if (percentUsed > 75) {
+        console.warn(`⚠️ WARNING: Memory usage at ${percentUsed.toFixed(1)}% (${usedMB.toFixed(0)}MB / ${limitMB.toFixed(0)}MB)`);
+      } else if (this.visited.size % 100 === 0) {
+        console.log(`💾 Memory usage: ${percentUsed.toFixed(1)}% (${usedMB.toFixed(0)}MB / ${limitMB.toFixed(0)}MB)`);
+      }
+    }
+
+    return false;
   }
 
   /**

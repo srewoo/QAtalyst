@@ -116,6 +116,22 @@ async function loadCrawledApps() {
   }
 }
 
+// Helper function to extract clean domain name from URL
+function getCleanDomain(url) {
+  try {
+    const urlObj = new URL(url);
+    // Remove 'www.' prefix if present for cleaner display
+    let domain = urlObj.hostname;
+    if (domain.startsWith('www.')) {
+      domain = domain.substring(4);
+    }
+    return domain;
+  } catch (e) {
+    // If URL parsing fails, return the original URL
+    return url;
+  }
+}
+
 // Display crawled apps list
 function displayCrawledApps(apps) {
   const appsList = document.getElementById('crawledAppsList');
@@ -130,8 +146,8 @@ function displayCrawledApps(apps) {
   appsList.innerHTML = apps.map(app => `
     <div class="app-list-item">
       <div>
-        <div class="app-url" title="${app.url}">${app.url}</div>
-        <div class="app-meta">${app.embeddingCount} pages • ${app.crawledAt}</div>
+        <div class="app-url" title="${app.url}">${getCleanDomain(app.url)}</div>
+        <div class="app-meta">${app.pages || 0} pages • ${app.features || 0} features • ${app.crawledAt}</div>
       </div>
       <div>
         <button class="btn-crawl-action" data-url="${app.url}" data-action="export">Export</button>
@@ -149,7 +165,7 @@ function displayCrawledApps(apps) {
       if (action === 'export') {
         await exportEmbeddings(url);
       } else if (action === 'delete') {
-        if (confirm(`Delete embeddings for ${url}?`)) {
+        if (confirm(`Delete embeddings for ${getCleanDomain(url)}?`)) {
           await deleteEmbeddings(url);
         }
       }
@@ -424,7 +440,7 @@ document.getElementById('importEmbeddingsBtn').addEventListener('click', async (
             });
 
             if (response.success) {
-              showCrawlStatus(`✅ Imported ${data.embeddings.length} embeddings for ${data.appUrl}`, 'success');
+              showCrawlStatus(`✅ Imported ${data.embeddings.length} embeddings for ${getCleanDomain(data.appUrl)}`, 'success');
               await loadCrawledApps(); // Reload list
             } else {
               showCrawlStatus(`❌ Import failed: ${response.error}`, 'error');
@@ -580,11 +596,11 @@ function showMergeSelectionUI(apps) {
     </p>
     <div id="mergeAppsList" style="margin-bottom: 16px;">
       ${apps.map((app, index) => `
-        <label style="display: flex; align-items: center; padding: 8px; background: #f8fafc; border-radius: 4px; margin-bottom: 8px; cursor: pointer;">
-          <input type="checkbox" class="merge-app-checkbox" value="${app.url}" style="margin-right: 8px;">
-          <div style="flex: 1;">
-            <div style="font-size: 13px; font-weight: 500; color: #1e293b;">${app.url}${app.isMerged ? ' 🔀' : ''}</div>
-            <div style="font-size: 11px; color: #64748b;">${app.pages} pages • ${new Date(app.crawledAt).toLocaleDateString()}</div>
+        <label style="display: flex; align-items: flex-start; padding: 12px; background: #f8fafc; border-radius: 4px; margin-bottom: 8px; cursor: pointer; gap: 12px;">
+          <input type="checkbox" class="merge-app-checkbox" value="${app.url}" style="margin: 0; flex-shrink: 0;">
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 14px; font-weight: 500; color: #1e293b; margin-bottom: 4px;" title="${app.url}">${getCleanDomain(app.url)}${app.isMerged ? ' 🔀' : ''}</div>
+            <div style="font-size: 12px; color: #64748b;">${app.pages || 0} pages • ${app.features || 0} features</div>
           </div>
         </label>
       `).join('')}

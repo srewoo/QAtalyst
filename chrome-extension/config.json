@@ -1,5 +1,5 @@
 {
-  "version": "11.0.0",
+  "version": "11.1.0",
   "appName": "QAtalyst - AI Test Case Generator",
   "description": "Configuration file for QAtalyst extension",
 
@@ -8,10 +8,10 @@
     "enabled": true,
 
     "limits": {
-      "maxPages": 3000,
-      "maxDepth": 15,
-      "maxQueueSize": 8000,
-      "queueWarningThreshold": 10000,
+      "maxPages": 2000,
+      "maxDepth": 10,
+      "maxQueueSize": 2000,
+      "queueWarningThreshold": 1500,
       "timeout": 600000,
       "pageTimeout": 40000
     },
@@ -36,8 +36,8 @@
 
     "streamingSave": {
       "enabled": true,
-      "batchSize": 1000,
-      "description": "P0.1: Save pages to IndexedDB in batches of 1,000 to prevent memory exhaustion on large crawls (10,000+ pages). Memory is cleared after each batch save."
+      "batchSize": 250,
+      "description": "P0.1: Save pages to IndexedDB in batches of 250 to prevent memory exhaustion. Reduced from 1000 to lower memory footprint."
     },
 
     "authentication": {
@@ -79,9 +79,9 @@
 
     "spaDetection": {
       "enabled": true,
-      "hydrationWait": 2000,
+      "hydrationWait": 3000,
       "detectFrameworks": ["React", "Vue", "Angular", "Svelte"],
-      "description": "P2.8: Detect JavaScript frameworks and wait for hydration before extracting data. Prevents empty extractions on React/Vue apps."
+      "description": "P2.8: Detect JavaScript frameworks and wait for hydration before extracting data. Prevents empty extractions on React/Vue apps. Increased to 3s for complex SPAs like Hubspot/Mindtickle."
     },
 
     "retry": {
@@ -107,13 +107,13 @@
 
     "parallel": {
       "enabled": true,
-      "maxConcurrentTabs": 6,
+      "maxConcurrentTabs": 3,
       "adaptiveScaling": true,
-      "minTabs": 3,
-      "maxTabs": 10,
+      "minTabs": 2,
+      "maxTabs": 5,
       "scaleUpThreshold": 1.5,
       "scaleDownThreshold": 3.0,
-      "description": "OPTIMIZED: Adaptive parallel crawling. Starts with 6 tabs, scales up to 10 for fast sites, scales down to 3 for slow sites.",
+      "description": "MEMORY OPTIMIZED: Reduced parallel crawling from 10 to 5 max tabs to prevent memory exhaustion. Starts with 3 tabs.",
       "coordinationDelay": 50
     },
 
@@ -127,7 +127,7 @@
 
     "selective": {
       "enabled": true,
-      "skipNonInteractive": true,
+      "skipNonInteractive": false,
       "requiredFeatures": ["form", "button", "table", "navigation"],
       "minFeaturesRequired": 1,
       "description": "Skip pages without forms/APIs/buttons to focus on interactive pages only"
@@ -183,9 +183,9 @@
       "skipPagination": true,
       "paginationPatterns": ["page=", "/page/", "?p=", "&p=", "offset=", "skip="],
       "detectParameterizedUrls": true,
-      "parameterizedUrlPatterns": ["/recording/", "/session/", "/call/", "/conversation/", "/ticket/", "/case/", "/issue/", "/report/"],
-      "maxSamplesPerPattern": 2,
-      "description": "Week 3: Skip duplicate and paginated pages. Parameterized URLs (e.g., /recording/123, /recording/456) are treated as same page type - only crawls first 2 examples per pattern."
+      "parameterizedUrlPatterns": "DEPRECATED - Now uses dynamic hybrid detection (regex + template learning)",
+      "maxSamplesPerPattern": 1,
+      "description": "Week 3: Skip duplicate and paginated pages. HYBRID DYNAMIC DETECTION: Automatically detects parameterized URLs (e.g., /recording/123, /recording/456) using regex patterns + template learning. No hardcoding needed - works on ALL websites. Only crawls 1 sample per detected pattern."
     },
 
     "caching": {
@@ -193,8 +193,8 @@
       "cacheFeatures": true,
       "cacheAPIs": true,
       "cacheSimilarPages": true,
-      "maxCacheSize": 1000,
-      "description": "Week 4: Cache extracted features and API patterns to speed up processing of similar pages."
+      "maxCacheSize": 200,
+      "description": "MEMORY OPTIMIZED: Reduced from 1000 to 200 to prevent memory exhaustion. Cache extracted features and API patterns to speed up processing of similar pages."
     },
 
     "prefetching": {
@@ -246,23 +246,15 @@
       "maxQueryLength": 200
     },
 
-    "spaDetection": {
-      "enabled": true,
-      "frameworks": ["react", "vue", "angular", "nextjs", "nuxt"],
-      "detectDataAttributes": true,
-      "parseRouterCode": true,
-      "maxRouteDepth": 5
-    },
-
     "spaDiscovery": {
-      "enabled": true,
-      "maxClicksPerPage": 15,
+      "enabled": false,
+      "maxClicksPerPage": 10,
       "clickDelay": 500,
       "discoverTabs": true,
       "discoverModals": true,
       "discoverAccordions": true,
       "discoverDropdowns": true,
-      "description": "Click-based route discovery for SPAs. Discovers routes triggered by clicks without URL changes."
+      "description": "MEMORY OPTIMIZED: Disabled by default to prevent tab crashes. Click-based route discovery for SPAs. Enable only for SPA-heavy sites."
     },
 
     "smartWait": {
@@ -378,8 +370,8 @@
 
     "textContent": {
       "enabled": true,
-      "maxLength": 5000,
-      "description": "Extract main article/page text content for help sites and documentation. Useful for semantic search and context."
+      "maxLength": 4000,
+      "description": "MEMORY OPTIMIZED: Reduced from 5000 to 4000 chars to lower memory footprint. Extract main article/page text content for help sites and documentation."
     },
 
     "features": {

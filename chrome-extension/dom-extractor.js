@@ -40,8 +40,10 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract form features
    */
   extractForms() {
+    const maxForms = CONFIG.get('domExtraction.features.forms.maxForms', 10);
     const forms = document.querySelectorAll('form');
-    return Array.from(forms).map((form, index) => {
+    const formsArray = Array.from(forms).slice(0, maxForms); // MEMORY OPTIMIZATION: Limit forms processed
+    return formsArray.map((form, index) => {
       const fields = Array.from(form.querySelectorAll('input, select, textarea'))
         .map(field => ({
           name: field.name || field.id || field.placeholder || `field_${index}`,
@@ -72,8 +74,10 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract table features
    */
   extractTables() {
+    const maxTables = CONFIG.get('domExtraction.features.tables.maxTables', 10);
     const tables = document.querySelectorAll('table');
-    return Array.from(tables).map((table, index) => {
+    const tablesArray = Array.from(tables).slice(0, maxTables); // MEMORY OPTIMIZATION: Limit tables processed
+    return tablesArray.map((table, index) => {
       const headers = Array.from(table.querySelectorAll('th'))
         .map(th => th.textContent.trim())
         .filter(h => h.length > 0);
@@ -138,7 +142,8 @@ if (typeof DOMExtractor === 'undefined') {
    */
   extractNavigation() {
     const navs = document.querySelectorAll('nav, [role="navigation"], header, .navbar, .nav');
-    return Array.from(navs).map((nav, index) => {
+    const navsArray = Array.from(navs).slice(0, 5); // MEMORY OPTIMIZATION: Limit to 5 nav elements
+    return navsArray.map((nav, index) => {
       const links = Array.from(nav.querySelectorAll('a'))
         .map(a => ({
           text: a.textContent.trim(),
@@ -161,8 +166,10 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract modal/dialog features
    */
   extractModals() {
+    const maxModals = CONFIG.get('domExtraction.features.modals.maxModals', 5);
     const modals = document.querySelectorAll('[role="dialog"], .modal, [aria-modal="true"]');
-    return Array.from(modals).map((modal, index) => {
+    const modalsArray = Array.from(modals).slice(0, maxModals); // MEMORY OPTIMIZATION: Limit modals
+    return modalsArray.map((modal, index) => {
       const title = modal.querySelector('[role="heading"], .modal-title, h1, h2, h3');
 
       return {
@@ -319,10 +326,23 @@ if (typeof DOMExtractor === 'undefined') {
 
   /**
    * Extract main text content from page (for help articles, documentation, etc.)
+   * MEMORY OPTIMIZED: Default reduced to 2000 chars
    */
-  extractTextContent(maxLength = 5000) {
+  extractTextContent(maxLength = 2000) {
     const textParts = [];
     let totalLength = 0;
+
+    // Include page title and meta description at the top for context
+    const pageTitle = document.title?.trim() || '';
+    const metaDesc = document.querySelector('meta[name="description"]')?.content?.trim() || '';
+    if (pageTitle) {
+      textParts.push(`# ${pageTitle}\n\n`);
+      totalLength += pageTitle.length + 4;
+    }
+    if (metaDesc && totalLength < maxLength) {
+      textParts.push(`> ${metaDesc}\n\n`);
+      totalLength += metaDesc.length + 4;
+    }
 
     // Priority selectors for main content
     const contentSelectors = [
@@ -346,44 +366,80 @@ if (typeof DOMExtractor === 'undefined') {
 
     // Try to find main content container
     let contentContainer = null;
+    let contentSelectorUsed = null;
     for (const selector of contentSelectors) {
       contentContainer = document.querySelector(selector);
-      if (contentContainer) break;
+      if (contentContainer) {
+        contentSelectorUsed = selector;
+        break;
+      }
     }
 
     // Fallback to body if no main content found
     if (!contentContainer) {
       contentContainer = document.body;
+      contentSelectorUsed = 'body (fallback)';
     }
 
-    // Extract text from semantic elements
-    const textElements = [
-      ...contentContainer.querySelectorAll('h1, h2, h3, h4, h5, h6'),  // Headings
-      ...contentContainer.querySelectorAll('p'),                        // Paragraphs
-      ...contentContainer.querySelectorAll('li'),                       // List items
-      ...contentContainer.querySelectorAll('blockquote'),               // Quotes
-      ...contentContainer.querySelectorAll('pre'),                      // Code blocks
-      ...contentContainer.querySelectorAll('td')                        // Table cells
-    ];
+    console.log(`  📦 Content container: ${contentSelectorUsed}`);
+
+    // Extract text from semantic elements + common content divs (single query for performance)
+    // Added div, span, section, article, aside for better coverage of modern web apps
+    const textElements = contentContainer.querySelectorAll(
+      'h1, h2, h3, h4, h5, h6, p, li, blockquote, pre, td, div[class*="content"], div[class*="text"], div[class*="description"], div[class*="body"], section, article'
+    );
+
+    console.log(`  📊 Found ${textElements.length} text elements to process`);
+
+    // MEMORY OPTIMIZATION: Limit to first 500 elements to prevent processing huge DOMs
+    const limitedElements = Array.from(textElements).slice(0, 500);
+
+    let skippedHidden = 0;
+    let skippedNav = 0;
+    let skippedShort = 0;
+    let skippedDuplicate = 0;
+    const processedText = new Set(); // Track processed text to avoid duplicates from nested elements
 
     // Extract and clean text
-    for (const element of textElements) {
+    for (const element of limitedElements) {
       // Skip if inside hidden elements
-      if (!this.isVisible(element)) continue;
-
-      // Skip if inside navigation only (be less restrictive)
-      if (element.closest('nav, [role="navigation"]')) {
+      if (!this.isVisible(element)) {
+        skippedHidden++;
         continue;
       }
 
-      // Get text content
+      // Get text content first for filtering
       let text = element.textContent.trim();
 
       // Skip empty or very short text
-      if (text.length < 3) continue;
+      if (text.length < 3) {
+        skippedShort++;
+        continue;
+      }
 
       // Skip if it's just a number (likely from navigation)
-      if (/^\d+$/.test(text)) continue;
+      if (/^\d+$/.test(text)) {
+        skippedShort++;
+        continue;
+      }
+
+      // Skip duplicate text from nested elements
+      // Use first 100 chars as fingerprint to detect duplicates
+      const textFingerprint = text.substring(0, 100);
+      if (processedText.has(textFingerprint)) {
+        skippedDuplicate++;
+        continue;
+      }
+
+      // IMPROVED: More intelligent navigation filtering
+      // Only skip elements that are direct nav children AND have short text
+      const isInNav = element.closest('nav, [role="navigation"], header, .navbar, footer, .footer');
+      if (isInNav && text.length < 50) {
+        // Skip short nav items (links, buttons)
+        skippedNav++;
+        continue;
+      }
+      // But allow longer text in nav areas (might be actual content in SPAs)
 
       // Add separator for headings
       if (element.matches('h1, h2, h3, h4, h5, h6')) {
@@ -406,6 +462,9 @@ if (typeof DOMExtractor === 'undefined') {
 
       textParts.push(text);
       totalLength += text.length;
+
+      // Mark this text as processed
+      processedText.add(textFingerprint);
     }
 
     // Join and clean up
@@ -416,12 +475,25 @@ if (typeof DOMExtractor === 'undefined') {
     fullText = fullText.replace(/[ \t]+/g, ' ');     // Normalize spaces
     fullText = fullText.trim();
 
-    // Fallback: If structured extraction got very little text, try simple body extraction
-    if (fullText.length < 100) {
-      console.warn(`⚠️ Structured extraction only got ${fullText.length} chars, using fallback`);
+    console.log(`  📝 Extraction stats: ${textParts.length} parts, skipped: ${skippedHidden} hidden, ${skippedNav} nav, ${skippedShort} short, ${skippedDuplicate} duplicate`);
+    console.log(`  📏 Structured extraction result: ${fullText.length} chars`);
 
-      // Try innerText first (respects display: none, visibility: hidden)
-      let fallbackText = document.body.innerText || document.body.textContent || '';
+    // Fallback: If structured extraction got very little text, try simple body extraction
+    if (fullText.length < 200) {
+      console.warn(`⚠️ Structured extraction only got ${fullText.length} chars, using fallback (threshold: 200)`);
+
+      // Try to exclude navigation elements from fallback
+      let fallbackText = '';
+
+      // Try innerText directly (respects display: none, visibility: hidden)
+      // Don't remove nav elements as it might be too aggressive
+      fallbackText = document.body.innerText || document.body.textContent || '';
+
+      // If fallback text is still too short, try without filtering
+      if (fallbackText.length < 200) {
+        console.warn(`  ⚠️ innerText also short (${fallbackText.length} chars), trying textContent`);
+        fallbackText = document.body.textContent || '';
+      }
 
       // Basic cleanup: remove excessive whitespace
       fallbackText = fallbackText.replace(/\n{3,}/g, '\n\n');

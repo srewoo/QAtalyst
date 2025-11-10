@@ -162,7 +162,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     'googleAuthMode',
     'googleClientId',
     'googleClientSecret',
-    'googleProjectId'
+    'googleProjectId',
+    'enableDuplicateDetection',
+    'detectParameterizedUrls',
+    'maxSamplesPerPattern',
+    'useCrawledDataForTests'
   ]);
 
   // Decrypt sensitive tokens when loading
@@ -300,6 +304,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (googleClientId) googleClientId.value = settings.googleClientId || '';
   if (googleClientSecret) googleClientSecret.value = settings.googleClientSecret || '';
   if (googleProjectId) googleProjectId.value = settings.googleProjectId || '';
+
+  // Crawler Settings (enabled by default)
+  document.getElementById('enableDuplicateDetection').checked = settings.enableDuplicateDetection !== false;
+  document.getElementById('detectParameterizedUrls').checked = settings.detectParameterizedUrls !== false;
+  document.getElementById('maxSamplesPerPattern').value = settings.maxSamplesPerPattern || 1;
+  document.getElementById('useCrawledDataForTests').checked = settings.useCrawledDataForTests !== false;
 });
 
 // Provider change handler
@@ -381,7 +391,13 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     googleAuthMode: document.getElementById('googleAuthPublic').checked ? 'public' : 'oauth2',
     googleClientId: document.getElementById('googleClientId').value,
     googleClientSecret: document.getElementById('googleClientSecret').value,
-    googleProjectId: document.getElementById('googleProjectId').value
+    googleProjectId: document.getElementById('googleProjectId').value,
+
+    // Crawler Settings
+    enableDuplicateDetection: document.getElementById('enableDuplicateDetection').checked,
+    detectParameterizedUrls: document.getElementById('detectParameterizedUrls').checked,
+    maxSamplesPerPattern: parseInt(document.getElementById('maxSamplesPerPattern').value),
+    useCrawledDataForTests: document.getElementById('useCrawledDataForTests').checked
   };
 
   // Validate settings before saving

@@ -1147,16 +1147,23 @@
         ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
       }
 
-      // Extract app context from crawled knowledge graphs
-      console.log('🔍 Extracting app context from crawled data...');
-      const appContext = await extractAppContext(ticketData);
-      if (appContext) {
-        console.log(`✅ Found crawled data for: ${appContext.appUrl}`);
-        console.log(`   - ${appContext.forms.length} forms`);
-        console.log(`   - ${appContext.apis.length} API endpoints`);
-        console.log(`   - ${appContext.pages.length} pages`);
+      // Extract app context from crawled knowledge graphs (if enabled)
+      let appContext = null;
+      if (settings.useCrawledDataForTests !== false) { // Enabled by default
+        console.log('🔍 Extracting app context from crawled data...');
+        appContext = await extractAppContext(ticketData);
+        currentAppContext = appContext; // Store globally for UI display
+        if (appContext) {
+          console.log(`✅ Found crawled data for: ${appContext.appUrl}`);
+          console.log(`   - ${appContext.forms.length} forms`);
+          console.log(`   - ${appContext.apis.length} API endpoints`);
+          console.log(`   - ${appContext.pages.length} pages`);
+        } else {
+          console.log('ℹ️ No crawled app context found - proceeding without it');
+        }
       } else {
-        console.log('ℹ️ No crawled app context found - proceeding without it');
+        console.log('ℹ️ Crawled data usage disabled in settings - skipping app context extraction');
+        currentAppContext = null;
       }
 
       // Debug logging for settings
@@ -1308,6 +1315,7 @@
   let currentAnalysisData = null;
   let currentTestScopeData = null;
   let currentTestCasesData = null;
+  let currentAppContext = null; // Store crawled app context for UI display
 
   // Display functions
   function displayAnalysisResults(data) {
@@ -1315,7 +1323,7 @@
     currentAnalysisData = data; // Store for review
 
     // Render context summary box
-    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {});
+    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {}, currentAppContext);
 
     container.innerHTML = `
       <div class="qatalyst-result">
@@ -1447,7 +1455,7 @@
     currentTestCasesData = data; // Store for review
 
     // Render context summary box
-    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {});
+    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {}, currentAppContext);
 
     // Calculate statistics from test cases
     const stats = {
@@ -1608,29 +1616,40 @@
     });
   }
   
-  function renderContextSummaryBox(externalSources) {
+  function renderContextSummaryBox(externalSources, appContext = null) {
     const jiraStatus = '✅ Yes'; // Jira is always the primary context
     const confluenceStatus = externalSources.confluence > 0 ? '✅ Yes' : '❌ No';
     const figmaStatus = externalSources.figma > 0 ? '✅ Yes' : '❌ No';
     const googleDocsStatus = externalSources.googleDocs > 0 ? '✅ Yes' : '❌ No';
+    const knowledgeGraphStatus = appContext ? '✅ Yes' : '❌ No';
+
+    // Build details for knowledge graph tooltip
+    let kgDetails = '';
+    if (appContext) {
+      kgDetails = `${appContext.pages?.length || 0} pages, ${appContext.forms?.length || 0} forms, ${appContext.apis?.length || 0} APIs`;
+    }
 
     return `
       <div class="context-summary-box">
         <div class="context-summary-item">
-          <span class="status-icon">jira:</span> 
+          <span class="status-icon">jira:</span>
           <span class="status-text">${jiraStatus}</span>
         </div>
         <div class="context-summary-item">
-          <span class="status-icon">confluence:</span> 
+          <span class="status-icon">confluence:</span>
           <span class="status-text">${confluenceStatus}</span>
         </div>
         <div class="context-summary-item">
-          <span class="status-icon">figma:</span> 
+          <span class="status-icon">figma:</span>
           <span class="status-text">${figmaStatus}</span>
         </div>
         <div class="context-summary-item">
-          <span class="status-icon">google doc:</span> 
+          <span class="status-icon">google doc:</span>
           <span class="status-text">${googleDocsStatus}</span>
+        </div>
+        <div class="context-summary-item" ${appContext ? `title="${kgDetails}"` : ''}>
+          <span class="status-icon">🕷️ crawled app:</span>
+          <span class="status-text">${knowledgeGraphStatus}</span>
         </div>
       </div>
     `;

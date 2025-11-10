@@ -45,7 +45,9 @@ let vectorSearch = null;
 const globalResourceBlocker = new ResourceBlocker();
 
 // Incremental crawl state - for progressive embedding generation
+// MEMORY OPTIMIZATION: Limit max entries and periodically cleanup
 let incrementalCrawlState = new Map(); // Map<crawlId, { embeddingService, pages, embeddings, metadata }>
+const MAX_INCREMENTAL_STATE_SIZE = 3; // Keep only 3 most recent crawls in memory
 
 // Promise that resolves when storage is ready
 let storageReady = null;
@@ -105,22 +107,18 @@ function startCrawlHeartbeat() {
     }
 
     try {
-      // Save crawler checkpoint to chrome.storage.local
-      const checkpoint = {
-        crawlId: activeCrawler.crawlId,
-        startUrl: activeCrawler.startUrl,
-        startTime: activeCrawler.startTime,
-        visited: Array.from(activeCrawler.visited),
-        queue: activeCrawler.queue.slice(0, 100), // Save only first 100 queue items to avoid quota issues
-        pagesCount: activeCrawler.pages.length,
-        batchNumber: activeCrawler.batchNumber,
-        timestamp: Date.now()
-      };
+      // MEMORY OPTIMIZATION: Save minimal checkpoint to avoid quota issues
+      const checkpoint = createCheckpoint(activeCrawler);
 
       await chrome.storage.local.set({ crawlCheckpoint: checkpoint });
-      console.log(`💓 Heartbeat: checkpoint saved (${checkpoint.visited.length} visited, ${checkpoint.queue.length} queued)`);
+      console.log(`💓 Heartbeat: checkpoint saved (${checkpoint.visitedCount} visited, ${checkpoint.queueSize} queued)`);
     } catch (error) {
       console.error('❌ Failed to save heartbeat checkpoint:', error);
+      // If storage quota exceeded, try clearing old data
+      if (error.message?.includes('QUOTA')) {
+        console.warn('⚠️ Storage quota exceeded, clearing old checkpoints...');
+        chrome.storage.local.remove('crawlCheckpoint').catch(() => {});
+      }
     }
   }, 10000); // Every 10 seconds
 }
@@ -134,6 +132,38 @@ function stopCrawlHeartbeat() {
 
   // Clear checkpoint
   chrome.storage.local.remove('crawlCheckpoint').catch(() => {});
+}
+
+/**
+ * MEMORY OPTIMIZATION: Clean up old incremental crawl states
+ * Removes oldest entries when limit exceeded
+ */
+function cleanupIncrementalStates() {
+  if (incrementalCrawlState.size > MAX_INCREMENTAL_STATE_SIZE) {
+    const entries = Array.from(incrementalCrawlState.entries());
+    // Keep only the most recent entries
+    const toKeep = entries.slice(-MAX_INCREMENTAL_STATE_SIZE);
+    incrementalCrawlState.clear();
+    toKeep.forEach(([key, value]) => incrementalCrawlState.set(key, value));
+    console.log(`🧹 Cleaned up old incremental crawl states (kept ${toKeep.length})`);
+  }
+}
+
+/**
+ * MEMORY OPTIMIZATION: Reduce checkpoint size
+ * Only save essential data to prevent storage quota issues
+ */
+function createCheckpoint(crawler) {
+  return {
+    crawlId: crawler.crawlId,
+    startUrl: crawler.startUrl,
+    startTime: crawler.startTime,
+    visitedCount: crawler.visited.size,
+    queueSize: Math.min(crawler.queue.length, 50), // Only save first 50 queue items
+    pagesCount: crawler.pages.length,
+    batchNumber: crawler.batchNumber,
+    timestamp: Date.now()
+  };
 }
 
 // Diagnostic function for troubleshooting

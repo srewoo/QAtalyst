@@ -27,6 +27,30 @@ async function handleStartCrawl(data) {
       throw new Error('No active tab found');
     }
 
+    // Get crawler settings from chrome.storage (UI settings) to override config.json
+    const userSettings = await chrome.storage.sync.get([
+      'enableDuplicateDetection',
+      'detectParameterizedUrls',
+      'maxSamplesPerPattern'
+    ]);
+
+    // Apply user settings to CONFIG if they exist (use CONFIG.set() method)
+    if (userSettings.enableDuplicateDetection !== undefined) {
+      CONFIG.set('crawler.duplicateDetection.enabled', userSettings.enableDuplicateDetection);
+    }
+    if (userSettings.detectParameterizedUrls !== undefined) {
+      CONFIG.set('crawler.duplicateDetection.detectParameterizedUrls', userSettings.detectParameterizedUrls);
+    }
+    if (userSettings.maxSamplesPerPattern !== undefined) {
+      CONFIG.set('crawler.duplicateDetection.maxSamplesPerPattern', userSettings.maxSamplesPerPattern);
+    }
+
+    console.log('🎛️ Crawler Settings:', {
+      enableDuplicateDetection: CONFIG.get('crawler.duplicateDetection.enabled'),
+      detectParameterizedUrls: CONFIG.get('crawler.duplicateDetection.detectParameterizedUrls'),
+      maxSamplesPerPattern: CONFIG.get('crawler.duplicateDetection.maxSamplesPerPattern')
+    });
+
     // Get crawler settings from config.json
     const config = {
       startUrl: data.startUrl || tab.url,
@@ -905,6 +929,9 @@ async function handleProcessPageIncremental(pageData, crawlId, crawlStartTime) {
         });
 
         console.log(`💾 Saved ${state.embeddings.length} embeddings incrementally (${state.totalCost > 0 ? `$${state.totalCost.toFixed(4)}` : 'FREE'})`);
+
+        // MEMORY OPTIMIZATION: Clean up old incremental states
+        cleanupIncrementalStates();
       }
 
       // Broadcast embedding progress
