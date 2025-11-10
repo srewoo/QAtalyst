@@ -1626,12 +1626,17 @@
     const confluenceStatus = externalSources.confluence > 0 ? '✅ Yes' : '❌ No';
     const figmaStatus = externalSources.figma > 0 ? '✅ Yes' : '❌ No';
     const googleDocsStatus = externalSources.googleDocs > 0 ? '✅ Yes' : '❌ No';
-    const knowledgeGraphStatus = appContext ? '✅ Yes' : '❌ No';
+
+    // Check if knowledge graph is available (will be analyzed by ContextAnalysisAgent)
+    const knowledgeGraphStatus = (appContext && appContext.knowledgeGraph) ? '✅ Yes' : '❌ No';
 
     // Build details for knowledge graph tooltip
     let kgDetails = '';
-    if (appContext) {
-      kgDetails = `${appContext.pages?.length || 0} pages, ${appContext.forms?.length || 0} forms, ${appContext.apis?.length || 0} APIs`;
+    if (appContext && appContext.knowledgeGraph) {
+      const pages = Object.keys(appContext.knowledgeGraph.pages || {}).length;
+      const forms = appContext.knowledgeGraph.forms?.length || 0;
+      const apis = appContext.knowledgeGraph.apis?.length || 0;
+      kgDetails = `${pages} pages, ${forms} forms, ${apis} APIs`;
     }
 
     return `
@@ -2920,38 +2925,35 @@ Agent Selection:
         return null;
       }
 
-      // NEW v11.2.0: Receive intelligent context summary directly (no storage bridge needed!)
-      const contextSummary = kgResponse.result.contextSummary;
+      // Receive knowledge graph from background (will be analyzed by ContextAnalysisAgent in orchestrator)
+      const knowledgeGraph = kgResponse.result.knowledgeGraph;
       const hasContext = kgResponse.result.hasContext;
 
-      console.log('[CRAWL DATA] 📨 Received context summary directly');
+      console.log('[CRAWL DATA] 📨 Received knowledge graph from background');
 
       if (hasContext) {
-        console.log(`✅ [CRAWL DATA] Context summary available: ${contextSummary.length} chars`);
+        console.log(`✅ [CRAWL DATA] Knowledge graph available`);
         console.log(`   App URL: ${kgResponse.result.appUrl}`);
-        console.log(`   Pages analyzed: ${kgResponse.result.transferPageCount} / ${kgResponse.result.pageCount}`);
-        console.log(`   Summary preview: ${contextSummary.substring(0, 100)}...`);
+        console.log(`   Pages: ${kgResponse.result.transferPageCount} / ${kgResponse.result.pageCount}`);
+        console.log(`   Graph pages: ${Object.keys(knowledgeGraph.pages || {}).length}`);
       } else {
-        console.log('ℹ️ [CRAWL DATA] No context summary available (no crawled data or agent disabled)');
+        console.log('ℹ️ [CRAWL DATA] No knowledge graph available');
       }
 
-      // NEW v11.2.0: Create app context directly from summary (no extraction needed!)
-      // The ContextAnalysisAgent already analyzed and summarized the data in the background
+      // Create app context with raw knowledge graph
+      // ContextAnalysisAgent will analyze this in the orchestrator (Agent 1/8)
       const context = {
         appUrl: kgResponse.result.appUrl,
-        contextSummary: contextSummary,
+        knowledgeGraph: knowledgeGraph,
         hasContext: hasContext,
         crawledAt: kgResponse.result.crawledAt,
-        embeddingCount: kgResponse.result.embeddingCount,
         pageCount: kgResponse.result.pageCount,
         transferPageCount: kgResponse.result.transferPageCount
       };
 
       console.log('✅ [CRAWL DATA] App context prepared successfully:');
       console.log('   Context available:', hasContext);
-      console.log('   Summary length:', contextSummary ? contextSummary.length : 0);
-      console.log('   Pages:', context.pages?.length || 0);
-      console.log('   Features:', context.features?.length || 0);
+      console.log('   Pages:', context.pageCount || 0);
       return context;
 
     } catch (error) {

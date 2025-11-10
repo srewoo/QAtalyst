@@ -1,6 +1,47 @@
 // Multi-Agent Test Generation System
 // Client-side agent orchestration for QAtalyst
 
+/**
+ * Robust JSON parser that handles common AI-generated JSON errors
+ */
+function parseRobustJSON(jsonString) {
+  // Try direct parse first
+  try {
+    return JSON.parse(jsonString);
+  } catch (e) {
+    // Attempt to fix common issues
+    let fixed = jsonString;
+
+    // Remove trailing commas before } or ]
+    fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
+
+    // Add missing commas between properties (common error)
+    fixed = fixed.replace(/"\s*\n\s*"/g, '",\n"');
+
+    // Fix missing commas after closing arrays/objects
+    fixed = fixed.replace(/(\]|\})\s*\n\s*"/g, '$1,\n"');
+
+    // Remove comments (if AI added them)
+    fixed = fixed.replace(/\/\/.*/g, '');
+    fixed = fixed.replace(/\/\*[\s\S]*?\*\//g, '');
+
+    try {
+      return JSON.parse(fixed);
+    } catch (e2) {
+      // Last resort: try to extract valid JSON portion
+      const match = fixed.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          return JSON.parse(match[0]);
+        } catch (e3) {
+          throw new Error(`JSON parsing failed: ${e.message} at ${e2.message}`);
+        }
+      }
+      throw e2;
+    }
+  }
+}
+
 class AgentOrchestrator {
   constructor(settings, onProgress) {
     this.settings = settings;
@@ -10,8 +51,7 @@ class AgentOrchestrator {
   
   initializeAgents() {
     return [
-      // NOTE: ContextAnalysisAgent runs in BACKGROUND script (not here!)
-      // It creates the summary before data reaches content script
+      new ContextAnalysisAgent(),
       new RequirementAnalysisAgent(),
       new PositiveTestAgent(),
       new NegativeTestAgent(),
@@ -31,12 +71,11 @@ class AgentOrchestrator {
       appContext: appContext || null // Store app context in results
     };
 
-    // NEW v11.2.0: If appContext has contextSummary (from background), store it
-    if (appContext && appContext.contextSummary) {
-      results.contextSummary = appContext.contextSummary;
-      console.log(`[ORCHESTRATOR] 📝 Context summary available: ${appContext.contextSummary.length} chars`);
+    // Check if we have knowledge graph to analyze
+    if (appContext && appContext.knowledgeGraph) {
+      console.log(`[ORCHESTRATOR] 📊 Knowledge graph available with ${Object.keys(appContext.knowledgeGraph.pages || {}).length} pages`);
     } else {
-      console.log(`[ORCHESTRATOR] ℹ️ No context summary available (running without crawled data)`);
+      console.log(`[ORCHESTRATOR] ℹ️ No knowledge graph available (running without crawled data)`);
     }
 
     const enabledAgents = this.agents.filter(agent => agent.isEnabled(this.settings));
@@ -61,8 +100,13 @@ class AgentOrchestrator {
         // Store agent results
         results.agentResults[agent.name] = agentResult;
 
+        // Context Analysis stores context summary
+        if (agent instanceof ContextAnalysisAgent) {
+          results.contextSummary = agentResult.summary;
+          console.log(`[ORCHESTRATOR] 📝 Context summary created: ${agentResult.summary?.length || 0} chars`);
+        }
         // Requirement Analysis stores analysis
-        if (agent instanceof RequirementAnalysisAgent) {
+        else if (agent instanceof RequirementAnalysisAgent) {
           results.analysis = agentResult;
         }
         // Review Agent stores review
@@ -291,13 +335,16 @@ Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and cre
   }
 
   getUserMessage(ticketData, previousResults, appContext) {
-    if (!appContext || !appContext.pages) {
+    // Extract knowledge graph from appContext
+    const knowledgeGraph = appContext?.knowledgeGraph;
+
+    if (!knowledgeGraph || !knowledgeGraph.pages) {
       return 'No application context available. Skip this analysis.';
     }
 
-    const pageCount = Object.keys(appContext.pages).length;
-    const formCount = appContext.forms?.length || 0;
-    const apiCount = appContext.apis?.length || 0;
+    const pageCount = Object.keys(knowledgeGraph.pages).length;
+    const formCount = knowledgeGraph.forms?.length || 0;
+    const apiCount = knowledgeGraph.apis?.length || 0;
 
     // Build concise context representation
     let contextStr = `**JIRA TICKET TO ANALYZE**\n`;
@@ -310,7 +357,7 @@ Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and cre
     // Forms with detailed field information
     if (formCount > 0) {
       contextStr += `📝 **FORMS DETECTED** (${formCount} forms):\n`;
-      appContext.forms.slice(0, 10).forEach((form, i) => {
+      knowledgeGraph.forms.slice(0, 10).forEach((form, i) => {
         contextStr += `\n${i + 1}. Page: ${form.url}\n`;
         contextStr += `   Form ID: ${form.id || 'N/A'}\n`;
         contextStr += `   Action: ${form.action || 'N/A'}\n`;
@@ -329,7 +376,7 @@ Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and cre
     // API endpoints with payload information
     if (apiCount > 0) {
       contextStr += `🔌 **API ENDPOINTS DETECTED** (${apiCount} endpoints):\n`;
-      appContext.apis.slice(0, 15).forEach((api, i) => {
+      knowledgeGraph.apis.slice(0, 15).forEach((api, i) => {
         contextStr += `\n${i + 1}. ${api.method} ${api.endpoint}\n`;
         contextStr += `   Called from: ${api.url}\n`;
         if (api.payload) {
@@ -517,12 +564,13 @@ Return as JSON array.`;
   parseResponse(response) {
     try {
       const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found');
-      
-      const parsed = JSON.parse(jsonMatch[0]);
+      if (!jsonMatch) throw new Error('No JSON found in response');
+
+      const parsed = parseRobustJSON(jsonMatch[0]);
       return parsed.testCases || [];
     } catch (error) {
       console.error('Failed to parse positive test cases:', error);
+      console.error('Response preview:', response.substring(0, 500));
       return [];
     }
   }
@@ -653,12 +701,13 @@ Return as JSON array.`;
   parseResponse(response) {
     try {
       const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found');
-      
-      const parsed = JSON.parse(jsonMatch[0]);
+      if (!jsonMatch) throw new Error('No JSON found in response');
+
+      const parsed = parseRobustJSON(jsonMatch[0]);
       return parsed.testCases || [];
     } catch (error) {
       console.error('Failed to parse negative test cases:', error);
+      console.error('Response preview:', response.substring(0, 500));
       return [];
     }
   }
@@ -771,12 +820,13 @@ Return as JSON array.`;
   parseResponse(response) {
     try {
       const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found');
-      
-      const parsed = JSON.parse(jsonMatch[0]);
+      if (!jsonMatch) throw new Error('No JSON found in response');
+
+      const parsed = parseRobustJSON(jsonMatch[0]);
       return parsed.testCases || [];
     } catch (error) {
       console.error('Failed to parse edge case test cases:', error);
+      console.error('Response preview:', response.substring(0, 500));
       return [];
     }
   }
@@ -844,12 +894,13 @@ Return as JSON array.`;
   parseResponse(response) {
     try {
       const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found');
-      
-      const parsed = JSON.parse(jsonMatch[0]);
+      if (!jsonMatch) throw new Error('No JSON found in response');
+
+      const parsed = parseRobustJSON(jsonMatch[0]);
       return parsed.testCases || [];
     } catch (error) {
       console.error('Failed to parse regression test cases:', error);
+      console.error('Response preview:', response.substring(0, 500));
       return [];
     }
   }
@@ -920,12 +971,13 @@ Return as JSON array.`;
   parseResponse(response) {
     try {
       const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found');
-      
-      const parsed = JSON.parse(jsonMatch[0]);
+      if (!jsonMatch) throw new Error('No JSON found in response');
+
+      const parsed = parseRobustJSON(jsonMatch[0]);
       return parsed.testCases || [];
     } catch (error) {
       console.error('Failed to parse integration test cases:', error);
+      console.error('Response preview:', response.substring(0, 500));
       return [];
     }
   }

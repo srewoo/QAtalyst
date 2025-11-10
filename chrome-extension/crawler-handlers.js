@@ -271,61 +271,21 @@ async function handleLoadEmbeddings(data) {
       wasFiltered = true;
     }
 
-    // NEW v11.2.0: Create intelligent context summary using ContextAnalysisAgent
-    // This replaces sending raw JSON - creates 200-500 word summary (2-5 KB instead of 1-2 MB)
-    console.log(`[LOAD GRAPH] 🤖 Creating intelligent context summary...`);
-
-    let contextSummary = null;
-
-    if (data.ticketData && knowledgeGraphToSend) {
-      try {
-        // Create ContextAnalysisAgent instance
-        const contextAgent = new ContextAnalysisAgent();
-
-        // Bind callAI function
-        contextAgent.callAI = async (systemMessage, userMessage, settings) => {
-          return await callAI(systemMessage, userMessage, settings || {});
-        };
-
-        // Execute agent to create summary
-        const agentResult = await contextAgent.execute(
-          data.ticketData,
-          {}, // No previous results
-          await getSettings(), // Get current settings
-          knowledgeGraphToSend // Pass filtered graph
-        );
-
-        contextSummary = agentResult.summary;
-        console.log(`[LOAD GRAPH] ✅ Context summary created: ${contextSummary.length} chars`);
-      } catch (error) {
-        console.error('[LOAD GRAPH] ⚠️ Failed to create context summary:', error);
-        // Continue without summary - extension will still work
-      }
-    }
-
-    // Calculate summary size (much smaller than raw JSON!)
-    const summarySize = contextSummary ? JSON.stringify(contextSummary).length : 0;
-    const summarySizeKB = summarySize / 1024;
-
-    console.log(`[LOAD GRAPH] 📊 Size comparison:`);
-    console.log(`   Raw graph: ${(JSON.stringify(knowledgeGraphToSend).length / (1024 * 1024)).toFixed(2)} MB`);
-    console.log(`   Context summary: ${summarySizeKB.toFixed(2)} KB`);
-    console.log(`   Size reduction: ${((1 - summarySize / JSON.stringify(knowledgeGraphToSend).length) * 100).toFixed(1)}%`);
-
-    // Return summary directly (no storage bridge needed!)
-    console.log('[LOAD GRAPH] 📨 Sending context summary directly');
+    // Send filtered knowledge graph to content script
+    // ContextAnalysisAgent will run in orchestrator (every time tests are generated)
+    console.log(`[LOAD GRAPH] 📨 Sending filtered knowledge graph to content script`);
+    console.log(`   Pages: ${wasFiltered ? MAX_PAGES_TO_SEND : fullPageCount} / ${fullPageCount}`);
 
     return {
       success: true,
-      useBridge: false, // No storage bridge needed!
+      useBridge: false,
       result: {
         appUrl: embeddingData.appUrl,
-        embeddingCount: embeddingData.embeddings?.length || 0,
         crawledAt: embeddingData.crawledAt,
         pageCount: fullPageCount,
         transferPageCount: wasFiltered ? MAX_PAGES_TO_SEND : fullPageCount,
-        contextSummary: contextSummary, // NEW: Intelligent 200-500 word summary (2-5 KB)
-        hasContext: !!contextSummary // Flag to indicate if context is available
+        knowledgeGraph: knowledgeGraphToSend, // Send full filtered graph (will be analyzed by orchestrator)
+        hasContext: !!knowledgeGraphToSend
       }
     };
   } catch (error) {
