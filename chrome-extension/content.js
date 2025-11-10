@@ -2,7 +2,7 @@
 
 (function() {
   'use strict';
-  
+
   // Streaming state
   let currentStreamingRequestId = null;
   let streamingContent = '';
@@ -30,6 +30,34 @@
     }
     if (request.action === 'evolutionError') {
       handleEvolutionError(request.error);
+    }
+
+    // Web Crawler handlers
+    if (request.action === 'extractDOM') {
+      handleExtractDOM(sendResponse);
+      return true; // Keep message channel open for async response
+    }
+    if (request.action === 'discoverLinks') {
+      handleDiscoverLinks(request.baseUrl, sendResponse);
+      return true; // Keep message channel open for async response
+    }
+    if (request.action === 'getMetadata') {
+      handleGetMetadata(sendResponse);
+      return true; // Keep message channel open for async response
+    }
+    if (request.action === 'extractTextContent') {
+      console.log(`📩 Received extractTextContent request (maxLength: ${request.maxLength})`);
+      handleExtractTextContent(request.maxLength, sendResponse);
+      return true; // Keep message channel open for async response
+    }
+    if (request.action === 'showCrawlCompleteModal') {
+      showCrawlCompleteModal(request.result);
+      return true;
+    }
+    // P2.8: SPA framework detection
+    if (request.action === 'detectSPAFramework') {
+      handleDetectSPAFramework(sendResponse);
+      return true;
     }
   });
 
@@ -1119,6 +1147,25 @@
         ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
       }
 
+      // Extract app context from crawled knowledge graphs (if enabled)
+      let appContext = null;
+      if (settings.useCrawledDataForTests !== false) { // Enabled by default
+        console.log('🔍 Extracting app context from crawled data...');
+        appContext = await extractAppContext(ticketData);
+        currentAppContext = appContext; // Store globally for UI display
+        if (appContext) {
+          console.log(`✅ Found crawled data for: ${appContext.appUrl}`);
+          console.log(`   - ${appContext.forms.length} forms`);
+          console.log(`   - ${appContext.apis.length} API endpoints`);
+          console.log(`   - ${appContext.pages.length} pages`);
+        } else {
+          console.log('ℹ️ No crawled app context found - proceeding without it');
+        }
+      } else {
+        console.log('ℹ️ Crawled data usage disabled in settings - skipping app context extraction');
+        currentAppContext = null;
+      }
+
       // Debug logging for settings
       console.log('🔍 QAtalyst Settings Loaded:', {
         enableMultiAgent: settings.enableMultiAgent,
@@ -1169,7 +1216,8 @@
               ticketData,
               settings,
               baseUrl: window.location.origin,
-              externalSources: currentAnalysisData?.externalSources // Pass external sources if available
+              externalSources: currentAnalysisData?.externalSources, // Pass external sources if available
+              appContext: appContext // Add crawled app context
             }
           }, response => {
             console.log('📥 Received response from background script:', response);
@@ -1205,7 +1253,8 @@
             data: {
               ticketKey,
               ticketData,
-              settings
+              settings,
+              appContext: appContext // Add crawled app context
             }
           }, response => {
             if (chrome.runtime.lastError) {
@@ -1234,7 +1283,8 @@
             data: {
               ticketKey,
               ticketData,
-              settings
+              settings,
+              appContext: appContext // Add crawled app context
             }
           }, response => {
             if (chrome.runtime.lastError) {
@@ -1265,6 +1315,7 @@
   let currentAnalysisData = null;
   let currentTestScopeData = null;
   let currentTestCasesData = null;
+  let currentAppContext = null; // Store crawled app context for UI display
 
   // Display functions
   function displayAnalysisResults(data) {
@@ -1272,7 +1323,7 @@
     currentAnalysisData = data; // Store for review
 
     // Render context summary box
-    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {});
+    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {}, currentAppContext);
 
     container.innerHTML = `
       <div class="qatalyst-result">
@@ -1404,7 +1455,7 @@
     currentTestCasesData = data; // Store for review
 
     // Render context summary box
-    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {});
+    const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {}, currentAppContext);
 
     // Calculate statistics from test cases
     const stats = {
@@ -1565,29 +1616,40 @@
     });
   }
   
-  function renderContextSummaryBox(externalSources) {
+  function renderContextSummaryBox(externalSources, appContext = null) {
     const jiraStatus = '✅ Yes'; // Jira is always the primary context
     const confluenceStatus = externalSources.confluence > 0 ? '✅ Yes' : '❌ No';
     const figmaStatus = externalSources.figma > 0 ? '✅ Yes' : '❌ No';
     const googleDocsStatus = externalSources.googleDocs > 0 ? '✅ Yes' : '❌ No';
+    const knowledgeGraphStatus = appContext ? '✅ Yes' : '❌ No';
+
+    // Build details for knowledge graph tooltip
+    let kgDetails = '';
+    if (appContext) {
+      kgDetails = `${appContext.pages?.length || 0} pages, ${appContext.forms?.length || 0} forms, ${appContext.apis?.length || 0} APIs`;
+    }
 
     return `
       <div class="context-summary-box">
         <div class="context-summary-item">
-          <span class="status-icon">jira:</span> 
+          <span class="status-icon">jira:</span>
           <span class="status-text">${jiraStatus}</span>
         </div>
         <div class="context-summary-item">
-          <span class="status-icon">confluence:</span> 
+          <span class="status-icon">confluence:</span>
           <span class="status-text">${confluenceStatus}</span>
         </div>
         <div class="context-summary-item">
-          <span class="status-icon">figma:</span> 
+          <span class="status-icon">figma:</span>
           <span class="status-text">${figmaStatus}</span>
         </div>
         <div class="context-summary-item">
-          <span class="status-icon">google doc:</span> 
+          <span class="status-icon">google doc:</span>
           <span class="status-text">${googleDocsStatus}</span>
+        </div>
+        <div class="context-summary-item" ${appContext ? `title="${kgDetails}"` : ''}>
+          <span class="status-icon">🕷️ crawled app:</span>
+          <span class="status-text">${knowledgeGraphStatus}</span>
         </div>
       </div>
     `;
@@ -2414,6 +2476,677 @@ Agent Selection:
     injectPanel();
   }
   
+  // ============ WEB CRAWLER HANDLERS ============
+
+  /**
+   * Extract DOM features from current page
+   */
+  function handleExtractDOM(sendResponse) {
+    try {
+      const features = [];
+
+      // Extract forms
+      document.querySelectorAll('form').forEach((form, index) => {
+        const inputs = Array.from(form.querySelectorAll('input, textarea, select')).map(input => ({
+          type: input.type || input.tagName.toLowerCase(),
+          name: input.name || input.id || `unnamed-${index}`,
+          required: input.required || input.hasAttribute('required'),
+          placeholder: input.placeholder || ''
+        }));
+
+        features.push({
+          type: 'form',
+          id: form.id || form.name || `form-${index}`,
+          action: form.action || '',
+          method: form.method || 'get',
+          inputs: inputs,
+          buttonCount: form.querySelectorAll('button, input[type="submit"]').length
+        });
+      });
+
+      // Extract tables
+      document.querySelectorAll('table').forEach((table, index) => {
+        const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent.trim());
+        const rowCount = table.querySelectorAll('tr').length;
+
+        features.push({
+          type: 'table',
+          id: table.id || `table-${index}`,
+          headers: headers,
+          rowCount: rowCount,
+          columnCount: headers.length || table.querySelectorAll('td').length
+        });
+      });
+
+      // Extract buttons
+      document.querySelectorAll('button, input[type="button"], input[type="submit"], a[role="button"]').forEach((button, index) => {
+        features.push({
+          type: 'button',
+          id: button.id || `button-${index}`,
+          text: button.textContent.trim() || button.value || '',
+          classes: button.className || ''
+        });
+      });
+
+      // Extract navigation
+      document.querySelectorAll('nav, [role="navigation"]').forEach((nav, index) => {
+        const links = Array.from(nav.querySelectorAll('a')).map(a => ({
+          text: a.textContent.trim(),
+          href: a.href
+        }));
+
+        features.push({
+          type: 'navigation',
+          id: nav.id || `nav-${index}`,
+          linkCount: links.length,
+          links: links.slice(0, 20) // Limit to first 20 links
+        });
+      });
+
+      // Extract modals/dialogs
+      document.querySelectorAll('[role="dialog"], .modal, .dialog').forEach((modal, index) => {
+        features.push({
+          type: 'modal',
+          id: modal.id || `modal-${index}`,
+          visible: modal.style.display !== 'none' && !modal.hasAttribute('hidden'),
+          classes: modal.className || ''
+        });
+      });
+
+      sendResponse({ features });
+    } catch (error) {
+      console.error('Error extracting DOM:', error);
+      sendResponse({ features: [], error: error.message });
+    }
+  }
+
+  /**
+   * Discover links on current page
+   */
+  function handleDiscoverLinks(baseUrl, sendResponse) {
+    try {
+      const links = new Set();
+      const baseOrigin = new URL(baseUrl).origin;
+
+      document.querySelectorAll('a[href]').forEach(anchor => {
+        try {
+          const href = anchor.href;
+
+          // Skip non-http(s) links
+          if (!href.startsWith('http://') && !href.startsWith('https://')) {
+            return;
+          }
+
+          const url = new URL(href);
+
+          // Only include same-origin links
+          if (url.origin !== baseOrigin) {
+            return;
+          }
+
+          // Skip common non-page URLs
+          if (
+            href.includes('#') ||
+            href.match(/\.(pdf|jpg|jpeg|png|gif|svg|ico|css|js|zip|tar|gz)$/i) ||
+            href.includes('logout') ||
+            href.includes('signout')
+          ) {
+            return;
+          }
+
+          // Clean URL (remove hash and query parameters for deduplication)
+          const cleanUrl = `${url.origin}${url.pathname}`;
+          links.add(cleanUrl);
+        } catch (e) {
+          // Skip invalid URLs
+        }
+      });
+
+      sendResponse({ links: Array.from(links) });
+    } catch (error) {
+      console.error('Error discovering links:', error);
+      sendResponse({ links: [], error: error.message });
+    }
+  }
+
+  /**
+   * Get page metadata
+   */
+  function handleGetMetadata(sendResponse) {
+    try {
+      const metadata = {
+        title: document.title || '',
+        description: document.querySelector('meta[name="description"]')?.content || '',
+        url: window.location.href,
+        loadTime: performance.timing.loadEventEnd - performance.timing.navigationStart || 0
+      };
+
+      sendResponse(metadata);
+    } catch (error) {
+      console.error('Error getting metadata:', error);
+      sendResponse({ title: '', description: '', url: window.location.href, loadTime: 0 });
+    }
+  }
+
+  /**
+   * Extract main text content from page
+   */
+  function handleExtractTextContent(maxLength, sendResponse) {
+    console.log('🔧 handleExtractTextContent called');
+
+    try {
+      // Check if DOMExtractor is available
+      if (typeof DOMExtractor === 'undefined') {
+        console.error('❌ DOMExtractor is not defined!');
+        sendResponse({ textContent: null, error: 'DOMExtractor not loaded' });
+        return;
+      }
+
+      const extractor = new DOMExtractor();
+      const textContent = extractor.extractTextContent(maxLength || 5000);
+
+      console.log(`📝 Extracted ${textContent ? textContent.length : 0} chars of text content`);
+
+      sendResponse({ textContent: textContent });
+    } catch (error) {
+      console.error('❌ Error extracting text content:', error);
+      console.error('Stack:', error.stack);
+      sendResponse({ textContent: null, error: error.message });
+    }
+  }
+
+  /**
+   * Show crawl complete modal notification
+   */
+  function showCrawlCompleteModal(result) {
+    // Remove any existing modal
+    const existingModal = document.getElementById('qatalyst-crawl-complete-modal');
+    if (existingModal) {
+      existingModal.remove();
+    }
+
+    // Create modal HTML
+    const modal = document.createElement('div');
+    modal.id = 'qatalyst-crawl-complete-modal';
+    modal.innerHTML = `
+      <div class="qatalyst-modal-content">
+        <div class="qatalyst-modal-header">
+          <span class="qatalyst-modal-icon">✅</span>
+          <h3>Crawl Complete!</h3>
+          <button class="qatalyst-modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="qatalyst-modal-body">
+          <div class="qatalyst-modal-stat">
+            <strong>${result.pages}</strong> pages
+          </div>
+          <div class="qatalyst-modal-stat">
+            <strong>${result.features}</strong> features
+          </div>
+          <div class="qatalyst-modal-stat">
+            <strong>${result.apis}</strong> APIs
+          </div>
+          ${result.embeddings > 0 ? `
+            <div class="qatalyst-modal-stat">
+              <strong>${result.embeddings}</strong> embeddings ${result.cost > 0 ? '($' + result.cost.toFixed(4) + ')' : '(FREE)'}
+            </div>
+          ` : ''}
+        </div>
+        <div class="qatalyst-modal-footer">
+          <button class="qatalyst-modal-button">View Results</button>
+        </div>
+      </div>
+    `;
+
+    // Add styles
+    const style = document.createElement('style');
+    style.textContent = `
+      #qatalyst-crawl-complete-modal {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 999999;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        animation: qatalystSlideIn 0.3s ease-out;
+      }
+
+      @keyframes qatalystSlideIn {
+        from {
+          transform: translateX(400px);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
+      @keyframes qatalystSlideOut {
+        from {
+          transform: translateX(0);
+          opacity: 1;
+        }
+        to {
+          transform: translateX(400px);
+          opacity: 0;
+        }
+      }
+
+      .qatalyst-modal-content {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+        min-width: 320px;
+        max-width: 400px;
+        overflow: hidden;
+      }
+
+      .qatalyst-modal-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 16px 20px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        position: relative;
+      }
+
+      .qatalyst-modal-icon {
+        font-size: 24px;
+      }
+
+      .qatalyst-modal-header h3 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+        flex: 1;
+      }
+
+      .qatalyst-modal-close {
+        background: none;
+        border: none;
+        color: white;
+        font-size: 28px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0;
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        transition: background 0.2s;
+      }
+
+      .qatalyst-modal-close:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
+
+      .qatalyst-modal-body {
+        padding: 20px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .qatalyst-modal-stat {
+        flex: 1 1 calc(50% - 6px);
+        background: #f7fafc;
+        padding: 12px;
+        border-radius: 8px;
+        text-align: center;
+        font-size: 14px;
+        color: #4a5568;
+      }
+
+      .qatalyst-modal-stat strong {
+        display: block;
+        font-size: 24px;
+        font-weight: 700;
+        color: #2d3748;
+        margin-bottom: 4px;
+      }
+
+      .qatalyst-modal-footer {
+        padding: 0 20px 20px;
+      }
+
+      .qatalyst-modal-button {
+        width: 100%;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 12px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.2s, box-shadow 0.2s;
+      }
+
+      .qatalyst-modal-button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      }
+
+      .qatalyst-modal-button:active {
+        transform: translateY(0);
+      }
+    `;
+
+    // Append to page
+    document.body.appendChild(style);
+    document.body.appendChild(modal);
+
+    // Add event listeners
+    const closeBtn = modal.querySelector('.qatalyst-modal-close');
+    const viewBtn = modal.querySelector('.qatalyst-modal-button');
+
+    const closeModal = () => {
+      modal.style.animation = 'qatalystSlideOut 0.3s ease-out';
+      setTimeout(() => {
+        modal.remove();
+        style.remove();
+      }, 300);
+    };
+
+    closeBtn.addEventListener('click', closeModal);
+    viewBtn.addEventListener('click', () => {
+      // Open extension popup
+      chrome.runtime.sendMessage({ action: 'openPopup' });
+      closeModal();
+    });
+
+    // Auto-close after 10 seconds
+    setTimeout(closeModal, 10000);
+  }
+
+  /**
+   * Extract app context from crawled knowledge graphs
+   * This enriches test case generation with real implementation details
+   */
+  async function extractAppContext(ticketData) {
+    try {
+      console.log('🔍 Checking for crawled app context...');
+
+      // Get all crawled apps
+      const response = await chrome.runtime.sendMessage({
+        action: 'getAllApps'
+      });
+
+      if (!response || !response.success || !response.apps || response.apps.length === 0) {
+        console.log('ℹ️ No crawled apps found');
+        return null;
+      }
+
+      console.log(`📚 Found ${response.apps.length} crawled app(s)`);
+
+      // Try to match app URL with ticket content
+      const matchedApp = findMatchingApp(response.apps, ticketData);
+
+      if (!matchedApp) {
+        console.log('ℹ️ No matching crawled app found for this ticket');
+        return null;
+      }
+
+      console.log(`✅ Matched crawled app: ${matchedApp.url}`);
+
+      // Load the knowledge graph for this app
+      const kgResponse = await chrome.runtime.sendMessage({
+        action: 'loadEmbeddings',
+        data: { appUrl: matchedApp.url }
+      });
+
+      if (!kgResponse || !kgResponse.success) {
+        console.log('⚠️ Failed to load knowledge graph');
+        return null;
+      }
+
+      // Extract relevant context from knowledge graph
+      const context = extractRelevantContext(kgResponse, ticketData);
+
+      console.log('✅ App context extracted successfully');
+      return context;
+
+    } catch (error) {
+      console.error('❌ Error extracting app context:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Find matching crawled app based on ticket content
+   */
+  function findMatchingApp(apps, ticketData) {
+    // Strategy 1: Look for URLs in ticket description
+    const ticketText = `${ticketData.summary} ${ticketData.description}`.toLowerCase();
+
+    for (const app of apps) {
+      try {
+        const appDomain = new URL(app.url).hostname.toLowerCase();
+
+        // Check if app domain is mentioned in ticket
+        if (ticketText.includes(appDomain)) {
+          return app;
+        }
+
+        // Check for partial domain matches (e.g., "myapp" in "https://myapp.com")
+        const appName = appDomain.split('.')[0];
+        if (appName.length > 3 && ticketText.includes(appName)) {
+          return app;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    // Strategy 2: If only one app crawled, use it
+    if (apps.length === 1) {
+      console.log('📌 Using the only crawled app available');
+      return apps[0];
+    }
+
+    // Strategy 3: Prefer non-merged apps
+    const nonMergedApps = apps.filter(app => !app.url.startsWith('merged_'));
+    if (nonMergedApps.length === 1) {
+      console.log('📌 Using the only non-merged app available');
+      return nonMergedApps[0];
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract relevant context from knowledge graph
+   */
+  function extractRelevantContext(kgData, ticketData) {
+    const knowledgeGraph = kgData.knowledgeGraph;
+    if (!knowledgeGraph || !knowledgeGraph.pages) {
+      return null;
+    }
+
+    const context = {
+      appUrl: knowledgeGraph.appUrl || kgData.appUrl,
+      totalPages: knowledgeGraph.totalPages || 0,
+      forms: [],
+      apis: [],
+      pages: [],
+      features: []
+    };
+
+    // Extract forms, APIs, and features from all pages
+    const pages = Object.entries(knowledgeGraph.pages || {});
+
+    for (const [url, page] of pages) {
+      // Collect forms
+      if (page.features) {
+        const forms = page.features.filter(f => f.type === 'form');
+        forms.forEach(form => {
+          context.forms.push({
+            url: url,
+            id: form.id,
+            action: form.action,
+            method: form.method || 'POST',
+            inputs: form.inputs || []
+          });
+        });
+
+        // Collect other features
+        const otherFeatures = page.features.filter(f => f.type !== 'form');
+        otherFeatures.forEach(feature => {
+          context.features.push({
+            url: url,
+            type: feature.type,
+            ...feature
+          });
+        });
+      }
+
+      // Collect APIs
+      if (page.apis && page.apis.length > 0) {
+        page.apis.forEach(api => {
+          context.apis.push({
+            url: url,
+            method: api.method,
+            endpoint: api.endpoint,
+            payload: api.payload
+          });
+        });
+      }
+
+      // Collect page metadata
+      if (page.metadata) {
+        context.pages.push({
+          url: url,
+          title: page.metadata.title,
+          description: page.metadata.description
+        });
+      }
+    }
+
+    return context;
+  }
+
+  /**
+   * Format app context for LLM prompt
+   */
+  function formatAppContextForPrompt(appContext) {
+    if (!appContext) {
+      return '';
+    }
+
+    let formatted = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    formatted += '📱 APPLICATION CONTEXT (From Crawled Knowledge Graph)\n';
+    formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+
+    formatted += `🌐 Application: ${appContext.appUrl}\n`;
+    formatted += `📄 Total Pages Crawled: ${appContext.totalPages}\n\n`;
+
+    // Add forms
+    if (appContext.forms && appContext.forms.length > 0) {
+      formatted += '📝 FORMS FOUND:\n';
+      appContext.forms.slice(0, 5).forEach((form, index) => {
+        formatted += `\n${index + 1}. Form on ${form.url}\n`;
+        formatted += `   • ID: ${form.id || 'N/A'}\n`;
+        formatted += `   • Action: ${form.action || 'N/A'}\n`;
+        formatted += `   • Method: ${form.method}\n`;
+        if (form.inputs && form.inputs.length > 0) {
+          formatted += `   • Fields:\n`;
+          form.inputs.slice(0, 10).forEach(input => {
+            const required = input.required ? ' (required)' : '';
+            formatted += `     - ${input.name || input.id}: ${input.type}${required}\n`;
+          });
+        }
+      });
+      if (appContext.forms.length > 5) {
+        formatted += `\n   ... and ${appContext.forms.length - 5} more forms\n`;
+      }
+      formatted += '\n';
+    }
+
+    // Add APIs
+    if (appContext.apis && appContext.apis.length > 0) {
+      formatted += '🔌 API ENDPOINTS DETECTED:\n';
+      appContext.apis.slice(0, 10).forEach((api, index) => {
+        formatted += `\n${index + 1}. ${api.method} ${api.endpoint}\n`;
+        formatted += `   • Page: ${api.url}\n`;
+        if (api.payload) {
+          formatted += `   • Payload: ${JSON.stringify(api.payload)}\n`;
+        }
+      });
+      if (appContext.apis.length > 10) {
+        formatted += `\n   ... and ${appContext.apis.length - 10} more API endpoints\n`;
+      }
+      formatted += '\n';
+    }
+
+    // Add buttons and other features
+    if (appContext.features && appContext.features.length > 0) {
+      const buttons = appContext.features.filter(f => f.type === 'button');
+      if (buttons.length > 0) {
+        formatted += '🔘 BUTTONS FOUND:\n';
+        buttons.slice(0, 10).forEach((btn, index) => {
+          formatted += `   ${index + 1}. "${btn.text || btn.id}" on ${btn.url}\n`;
+        });
+        if (buttons.length > 10) {
+          formatted += `   ... and ${buttons.length - 10} more buttons\n`;
+        }
+        formatted += '\n';
+      }
+    }
+
+    // Add page titles
+    if (appContext.pages && appContext.pages.length > 0) {
+      formatted += '📄 KEY PAGES:\n';
+      appContext.pages.slice(0, 5).forEach((page, index) => {
+        formatted += `   ${index + 1}. ${page.title || 'Untitled'}\n`;
+        formatted += `      URL: ${page.url}\n`;
+        if (page.description) {
+          formatted += `      ${page.description.substring(0, 100)}...\n`;
+        }
+      });
+      if (appContext.pages.length > 5) {
+        formatted += `   ... and ${appContext.pages.length - 5} more pages\n`;
+      }
+    }
+
+    formatted += '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    formatted += '💡 Use the above ACTUAL implementation details when generating test cases.\n';
+    formatted += 'Include real field names, API endpoints, and button labels in your tests.\n';
+    formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+
+    return formatted;
+  }
+
+  /**
+   * P2.8: Detect SPA framework (React, Vue, Angular)
+   * Used to wait for hydration before extracting data
+   */
+  function handleDetectSPAFramework(sendResponse) {
+    let framework = null;
+
+    // Detect React
+    if (window.React || window.__REACT_DEVTOOLS_GLOBAL_HOOK__ || document.querySelector('[data-reactroot], [data-reactid]')) {
+      framework = 'React';
+    }
+    // Detect Vue
+    else if (window.Vue || window.__VUE__ || document.querySelector('[data-v-app], [data-v-]')) {
+      framework = 'Vue';
+    }
+    // Detect Angular
+    else if (window.angular || window.ng || document.querySelector('[ng-version], [ng-app]')) {
+      framework = 'Angular';
+    }
+    // Detect Svelte
+    else if (window.__SVELTE__ || document.querySelector('[svelte-]')) {
+      framework = 'Svelte';
+    }
+
+    sendResponse({ framework: framework });
+  }
+
+  // ============ END WEB CRAWLER HANDLERS ============
+
   // Handle Jira SPA navigation
   let lastUrl = window.location.href;
   new MutationObserver(() => {
@@ -2425,5 +3158,5 @@ Agent Selection:
       }
     }
   }).observe(document, { subtree: true, childList: true });
-  
+
 })();

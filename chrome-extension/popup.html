@@ -115,6 +115,16 @@
       background: #f8fafc;
       border-color: #94a3b8;
     }
+    .btn-secondary.danger {
+      background: white;
+      color: #dc2626;
+      border-color: #fecaca;
+    }
+    .btn-secondary.danger:hover {
+      background: #fef2f2;
+      border-color: #ef4444;
+      color: #991b1b;
+    }
     .link-btn {
       background: transparent;
       color: #0ea5e9;
@@ -159,6 +169,93 @@
       background: white;
       border-top: 1px solid #e2e8f0;
     }
+    .crawl-progress {
+      margin-top: 12px;
+      padding: 12px;
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #e0f2fe;
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 8px 0;
+    }
+    .progress-fill {
+      height: 100%;
+      background: #0ea5e9;
+      transition: width 0.3s ease;
+    }
+    .progress-text {
+      color: #0369a1;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    .app-list-item {
+      padding: 12px;
+      background: #f8fafc;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .app-list-item:last-child {
+      margin-bottom: 0;
+    }
+    .app-list-item > div:first-child {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .app-list-item > div:last-child {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .app-url {
+      color: #1e293b;
+      font-weight: 500;
+      font-size: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .app-meta {
+      color: #64748b;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .btn-crawl-action {
+      background: #0ea5e9;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-crawl-action:hover {
+      background: #0284c7;
+    }
+    .btn-crawl-action.danger {
+      background: #ef4444;
+    }
+    .btn-crawl-action.danger:hover {
+      background: #dc2626;
+    }
   </style>
 </head>
 <body>
@@ -190,7 +287,78 @@
         <div class="help-text">Configure your AI provider to generate test cases. <a href="#" id="getKeyLink" class="link-btn" target="_blank">Get API key →</a></div>
       </div>
     </div>
-    
+
+    <div class="section">
+      <div class="section-title">🕷️ Web App Crawler</div>
+
+      <!-- Last Crawl Summary -->
+      <div id="lastCrawlSummary" style="display: none; background: #f0fdf4; padding: 12px; border-radius: 6px; border: 1px solid #bbf7d0; margin-bottom: 16px;">
+        <div style="font-size: 13px; font-weight: 600; color: #16a34a; margin-bottom: 6px;">
+          ✅ Last Crawl Summary
+        </div>
+        <div style="font-size: 12px; color: #15803d; line-height: 1.6;">
+          <div id="lastCrawlDetails"></div>
+          <div style="font-size: 11px; color: #16a34a; margin-top: 4px;" id="lastCrawlTime"></div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Crawl Entire Web Application:</label>
+        <button class="btn-primary" id="crawlAppBtn" data-testid="crawl-app-btn">
+          Start Full Application Crawl
+        </button>
+        <div class="help-text">Recursively crawls the entire web application starting from the current tab (up to 3,000 pages, 15 levels deep). Discovers all pages, features, and API endpoints.</div>
+
+        <!-- Crawl Status - shown during/after crawl -->
+        <div id="crawlStatus" style="display: none; margin-top: 12px;"></div>
+      </div>
+
+      <!-- Active Crawl Status -->
+      <div id="activeCrawlStatus" style="display: none; background: #f0f9ff; padding: 12px; border-radius: 6px; border: 1px solid #bae6fd; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <div style="font-size: 13px; font-weight: 600; color: #0369a1;">
+            🕷️ Crawling in progress...
+          </div>
+          <button id="stopCrawlBtn" class="btn-crawl-action danger" style="margin: 0; padding: 6px 12px; font-size: 12px;" title="Stop active crawl or clear stale status">
+            ⏹️ Stop / Clear
+          </button>
+        </div>
+        <div style="font-size: 12px; color: #075985; line-height: 1.6;">
+          <div id="activeCrawlDetails">A progress window has been opened. Switch to it to see real-time crawl progress.</div>
+        </div>
+      </div>
+
+      <div class="form-group" id="crawledAppsGroup" style="display: none;">
+        <label>Crawled Applications:</label>
+        <div id="crawledAppsList" style="font-size: 13px; color: #64748b;">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Manage Crawl Data:</label>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-secondary" id="importEmbeddingsBtn" style="margin-top: 0; flex: 1;">
+            📥 Import Data
+          </button>
+          <button class="btn-secondary" id="exportAllEmbeddingsBtn" style="margin-top: 0; flex: 1;">
+            📤 Export All
+          </button>
+          <button class="btn-secondary danger" id="deleteAllDataBtn" style="margin-top: 0; flex: 1;">
+            🗑️ Delete All
+          </button>
+        </div>
+        <div class="help-text">Import/export crawl data (pages, features, APIs, embeddings) as JSON for backup or transfer. Delete all stored data.</div>
+      </div>
+
+      <div class="form-group">
+        <label>🔀 Merge Knowledge Graphs:</label>
+        <button class="btn-secondary" id="mergeGraphsBtn" style="margin-top: 0;">
+          Merge Multiple Crawls
+        </button>
+        <div class="help-text">Combine knowledge from help site + actual app, or merge multiple crawls together for enhanced test generation.</div>
+      </div>
+    </div>
+
     <div class="section">
       <div class="section-title">External Integrations (Optional)</div>
       <div class="form-group">
@@ -211,7 +379,35 @@
     <button class="btn-secondary" id="openOptionsBtn">Open Advanced Settings</button>
     <div id="status"></div>
   </div>
-  
+
+  <!-- Delete Confirmation Modal -->
+  <div id="deleteConfirmModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.6); z-index: 10000; align-items: center; justify-content: center;">
+    <div style="background: white; border-radius: 12px; padding: 24px; max-width: 450px; width: 90%; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);">
+      <div style="font-size: 20px; font-weight: 600; color: #dc2626; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 28px;">⚠️</span>
+        Delete All Data?
+      </div>
+      <div style="font-size: 14px; color: #475569; line-height: 1.6; margin-bottom: 20px;">
+        <p style="margin: 0 0 12px 0;"><strong>This will permanently delete:</strong></p>
+        <ul style="margin: 0 0 12px 20px; padding: 0;">
+          <li>All crawled web applications</li>
+          <li>All knowledge graphs and page data</li>
+          <li>All vector embeddings</li>
+          <li>All indexed features, forms, and APIs</li>
+        </ul>
+        <p style="margin: 0; color: #dc2626; font-weight: 500;">⚠️ This action cannot be undone!</p>
+      </div>
+      <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <button id="cancelDeleteBtn" style="background: white; color: #475569; border: 1px solid #cbd5e1; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">
+          Cancel
+        </button>
+        <button id="confirmDeleteBtn" style="background: #dc2626; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;">
+          Delete Everything
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>

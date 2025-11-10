@@ -2,6 +2,9 @@
 // Direct API calls to OpenAI, Claude, and Gemini with streaming support
 // Multi-agent test generation system
 
+// Import configuration loader (must be first)
+importScripts('config-loader.js');
+
 // Import configuration and utilities
 importScripts('config.js');
 importScripts('security.js');
@@ -11,13 +14,157 @@ importScripts('integrations.js');
 importScripts('enhancements.js');
 importScripts('historical-mining.js');
 
-// Use constants from config
-const REQUEST_TIMEOUT = CONFIG.REQUEST_TIMEOUT;
-const MAX_RETRIES = CONFIG.MAX_RETRIES;
-const RETRY_DELAY = CONFIG.RETRY_DELAY;
+// Import web crawler modules
+importScripts('crawler.js');
+importScripts('dom-extractor.js');
+importScripts('link-discoverer.js');
+importScripts('network-monitor.js');
+importScripts('sitemap-parser.js');
+importScripts('resource-blocker.js');
+importScripts('spa-route-discoverer.js');
+importScripts('smart-wait.js');
+importScripts('vector-search.js');
+importScripts('storage-manager.js');
+importScripts('openai-embedding-service.js');
+importScripts('jina-embedding-service.js');
+importScripts('knowledge-graph-merger.js');
+importScripts('crawler-handlers.js');
+
+// Use constants from legacy config
+const REQUEST_TIMEOUT = APP_CONFIG.REQUEST_TIMEOUT;
+const MAX_RETRIES = APP_CONFIG.MAX_RETRIES;
+const RETRY_DELAY = APP_CONFIG.RETRY_DELAY;
 
 // Active streaming controllers for cancellation
 const activeStreams = new Map();
+
+// Web Crawler state management - initialize AFTER config loads
+let activeCrawler = null;
+let storageManager = null; // Will be created after config loads
+let vectorSearch = null;
+const globalResourceBlocker = new ResourceBlocker();
+
+// Incremental crawl state - for progressive embedding generation
+// MEMORY OPTIMIZATION: Limit max entries and periodically cleanup
+let incrementalCrawlState = new Map(); // Map<crawlId, { embeddingService, pages, embeddings, metadata }>
+const MAX_INCREMENTAL_STATE_SIZE = 3; // Keep only 3 most recent crawls in memory
+
+// Promise that resolves when storage is ready
+let storageReady = null;
+
+// Load configuration on startup, THEN initialize storage
+storageReady = CONFIG.load().then(() => {
+  console.log('✅ QAtalyst configuration loaded');
+
+  // NOW create and initialize storage manager (after config is loaded)
+  storageManager = new StorageManager();
+  return storageManager.init();
+}).then(() => {
+  console.log('✅ Storage manager initialized');
+  return true;
+}).catch(err => {
+  console.error('❌ Failed to load configuration or initialize storage:', err);
+  throw err;
+});
+
+// Helper to ensure storage is ready before use
+async function ensureStorageReady() {
+  await storageReady;
+  if (!storageManager) {
+    throw new Error('Storage manager failed to initialize');
+  }
+  return storageManager;
+}
+
+// Initialize resource blocker and cleanup any leftover rules
+globalResourceBlocker.initialize().catch(err => console.error('Resource blocker init failed:', err));
+
+// Clear any stale crawl flags on startup
+// This handles cases where extension was reloaded during a crawl
+chrome.storage.local.get(['activeCrawl'], (result) => {
+  if (result.activeCrawl) {
+    console.warn('⚠️ Found stale crawl flag on startup, clearing...');
+    chrome.storage.local.remove('activeCrawl').catch(() => {});
+  }
+});
+
+// P0.3: Service Worker Heartbeat - Prevent service worker crashes during long crawls
+// Persists crawl state every 10 seconds to allow auto-resume if service worker restarts
+let heartbeatInterval = null;
+
+function startCrawlHeartbeat() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+  }
+
+  console.log('💓 Starting crawl heartbeat (checkpoint every 10s)');
+
+  heartbeatInterval = setInterval(async () => {
+    if (!activeCrawler) {
+      console.log('💓 No active crawler, stopping heartbeat');
+      stopCrawlHeartbeat();
+      return;
+    }
+
+    try {
+      // MEMORY OPTIMIZATION: Save minimal checkpoint to avoid quota issues
+      const checkpoint = createCheckpoint(activeCrawler);
+
+      await chrome.storage.local.set({ crawlCheckpoint: checkpoint });
+      console.log(`💓 Heartbeat: checkpoint saved (${checkpoint.visitedCount} visited, ${checkpoint.queueSize} queued)`);
+    } catch (error) {
+      console.error('❌ Failed to save heartbeat checkpoint:', error);
+      // If storage quota exceeded, try clearing old data
+      if (error.message?.includes('QUOTA')) {
+        console.warn('⚠️ Storage quota exceeded, clearing old checkpoints...');
+        chrome.storage.local.remove('crawlCheckpoint').catch(() => {});
+      }
+    }
+  }, 10000); // Every 10 seconds
+}
+
+function stopCrawlHeartbeat() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+    console.log('💓 Stopped crawl heartbeat');
+  }
+
+  // Clear checkpoint
+  chrome.storage.local.remove('crawlCheckpoint').catch(() => {});
+}
+
+/**
+ * MEMORY OPTIMIZATION: Clean up old incremental crawl states
+ * Removes oldest entries when limit exceeded
+ */
+function cleanupIncrementalStates() {
+  if (incrementalCrawlState.size > MAX_INCREMENTAL_STATE_SIZE) {
+    const entries = Array.from(incrementalCrawlState.entries());
+    // Keep only the most recent entries
+    const toKeep = entries.slice(-MAX_INCREMENTAL_STATE_SIZE);
+    incrementalCrawlState.clear();
+    toKeep.forEach(([key, value]) => incrementalCrawlState.set(key, value));
+    console.log(`🧹 Cleaned up old incremental crawl states (kept ${toKeep.length})`);
+  }
+}
+
+/**
+ * MEMORY OPTIMIZATION: Reduce checkpoint size
+ * Only save essential data to prevent storage quota issues
+ */
+function createCheckpoint(crawler) {
+  return {
+    crawlId: crawler.crawlId,
+    startUrl: crawler.startUrl,
+    startTime: crawler.startTime,
+    visitedCount: crawler.visited.size,
+    queueSize: Math.min(crawler.queue.length, 50), // Only save first 50 queue items
+    pagesCount: crawler.pages.length,
+    batchNumber: crawler.batchNumber,
+    timestamp: Date.now()
+  };
+}
 
 // Diagnostic function for troubleshooting
 async function runDiagnostics() {
@@ -80,6 +227,16 @@ async function runDiagnostics() {
 
 // Make diagnostics available globally for console access
 globalThis.QAtalystDiagnostics = runDiagnostics;
+
+// Helper function to safely send messages to tabs (ignores if tab/content script doesn't exist)
+function safeSendMessageToTab(tabId, message) {
+  chrome.tabs.sendMessage(tabId, message).catch(error => {
+    // Silently ignore "Receiving end does not exist" errors
+    if (!error.message?.includes('Receiving end does not exist')) {
+      console.error('Error sending message to tab:', error);
+    }
+  });
+}
 
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -163,6 +320,127 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // Web Crawler actions
+  if (request.action === 'startCrawl') {
+    handleStartCrawl(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'stopCrawl') {
+    handleStopCrawl()
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'checkCrawlerStatus') {
+    // Check if crawler is actually running
+    const isRunning = activeCrawler !== null;
+    sendResponse({ isRunning: isRunning });
+    return true;
+  }
+
+  // Incremental page processing for progressive embedding generation
+  if (request.action === 'processPageIncremental') {
+    handleProcessPageIncremental(request.pageData, request.crawlId, request.crawlStartTime)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'pauseCrawl') {
+    handlePauseCrawl()
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'loadEmbeddings') {
+    handleLoadEmbeddings(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'searchEmbeddings') {
+    handleSearchEmbeddings(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'getAppContext') {
+    handleGetAppContext(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'exportEmbeddings') {
+    handleExportEmbeddings(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'getAllApps') {
+    handleGetAllApps()
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'deleteEmbeddings') {
+    handleDeleteEmbeddings(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'importEmbeddings') {
+    handleImportEmbeddings(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'exportAllEmbeddings') {
+    handleExportAllEmbeddings()
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'deleteAllEmbeddings') {
+    handleDeleteAllEmbeddings()
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'getCrawlerStats') {
+    handleGetCrawlerStats()
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'mergeKnowledgeGraphs') {
+    handleMergeKnowledgeGraphs(request.data)
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'getMergeableApps') {
+    handleGetMergeableApps()
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
   if (request.action === 'testIntegration') {
     (async () => {
       try {
@@ -173,6 +451,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
     })();
     return true; // Keep the message channel open for async response
+  }
+
+  if (request.action === 'stopResourceBlocker') {
+    (async () => {
+      try {
+        await globalResourceBlocker.stop();
+        sendResponse({ success: true, message: 'Resource blocker stopped' });
+      } catch (error) {
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
   }
 
   return false;
@@ -322,15 +612,15 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     if (error.name === 'AbortError') {
-      throw new Error(CONFIG.ERRORS.TIMEOUT);
+      throw new Error(APP_CONFIG.ERRORS.TIMEOUT);
     }
 
     // Better error messages
     if (error.message.includes('Rate limit')) {
-      throw new Error(CONFIG.ERRORS.RATE_LIMIT);
+      throw new Error(APP_CONFIG.ERRORS.RATE_LIMIT);
     }
     if (error.message.includes('network') || error.message.includes('fetch')) {
-      throw new Error(CONFIG.ERRORS.NETWORK_ERROR);
+      throw new Error(APP_CONFIG.ERRORS.NETWORK_ERROR);
     }
 
     throw error;
@@ -395,15 +685,15 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     if (error.name === 'AbortError') {
-      throw new Error(CONFIG.ERRORS.TIMEOUT);
+      throw new Error(APP_CONFIG.ERRORS.TIMEOUT);
     }
 
     // Better error messages
     if (error.message.includes('Rate limit')) {
-      throw new Error(CONFIG.ERRORS.RATE_LIMIT);
+      throw new Error(APP_CONFIG.ERRORS.RATE_LIMIT);
     }
     if (error.message.includes('network') || error.message.includes('fetch')) {
-      throw new Error(CONFIG.ERRORS.NETWORK_ERROR);
+      throw new Error(APP_CONFIG.ERRORS.NETWORK_ERROR);
     }
 
     throw error;
@@ -474,15 +764,15 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     if (error.name === 'AbortError') {
-      throw new Error(CONFIG.ERRORS.TIMEOUT);
+      throw new Error(APP_CONFIG.ERRORS.TIMEOUT);
     }
 
     // Better error messages
     if (error.message.includes('Rate limit')) {
-      throw new Error(CONFIG.ERRORS.RATE_LIMIT);
+      throw new Error(APP_CONFIG.ERRORS.RATE_LIMIT);
     }
     if (error.message.includes('network') || error.message.includes('fetch')) {
-      throw new Error(CONFIG.ERRORS.NETWORK_ERROR);
+      throw new Error(APP_CONFIG.ERRORS.NETWORK_ERROR);
     }
 
     throw error;
@@ -501,18 +791,18 @@ async function callOpenAIStream(contentParts, settings, onChunk, requestId) {
       { role: 'user', content: contentParts }
     ];
 
-    const response = await fetch(CONFIG.ENDPOINTS.openai, {
+    const response = await fetch(APP_CONFIG.ENDPOINTS.openai, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${settings.apiKey}`
       },
       body: JSON.stringify({
-        model: settings.llmModel || CONFIG.DEFAULT_MODELS.openai,
+        model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.openai,
         messages: messages,
         stream: true,
-        temperature: settings.temperature || CONFIG.DEFAULT_TEMPERATURE,
-        max_tokens: settings.maxTokens || CONFIG.DEFAULT_MAX_TOKENS
+        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
+        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
       }),
       signal: controller.signal
     });
@@ -603,7 +893,7 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
       }
     }
 
-    const response = await fetch(CONFIG.ENDPOINTS.claude, {
+    const response = await fetch(APP_CONFIG.ENDPOINTS.claude, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -611,10 +901,10 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: settings.llmModel || CONFIG.DEFAULT_MODELS.claude,
-        max_tokens: settings.maxTokens || CONFIG.DEFAULT_MAX_TOKENS,
+        model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.claude,
+        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
         messages: claudeMessages,
-        temperature: settings.temperature || CONFIG.DEFAULT_TEMPERATURE,
+        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
         stream: true
       }),
       signal: controller.signal
@@ -684,8 +974,8 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
   let reader = null;
 
   try {
-    const model = settings.llmModel || CONFIG.DEFAULT_MODELS.gemini;
-    const url = `${CONFIG.ENDPOINTS.gemini}/${model}:streamGenerateContent?key=${settings.apiKey}&alt=sse`;
+    const model = settings.llmModel || APP_CONFIG.DEFAULT_MODELS.gemini;
+    const url = `${APP_CONFIG.ENDPOINTS.gemini}/${model}:streamGenerateContent?key=${settings.apiKey}&alt=sse`;
 
     const geminiContent = contentParts.map(part => {
       if (typeof part === 'string') {
@@ -708,8 +998,8 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
           parts: geminiContent
         }],
         generationConfig: {
-          temperature: settings.temperature || CONFIG.DEFAULT_TEMPERATURE,
-          maxOutputTokens: settings.maxTokens || CONFIG.DEFAULT_MAX_TOKENS
+          temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
+          maxOutputTokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
         }
       }),
       signal: controller.signal
@@ -864,7 +1154,7 @@ function validateSettings(settings) {
   const errors = [];
 
   if (!settings.apiKey || settings.apiKey.trim() === '') {
-    errors.push(CONFIG.ERRORS.NO_API_KEY);
+    errors.push(APP_CONFIG.ERRORS.NO_API_KEY);
   } else {
     // Validate API key format
     if (!securityManager.validateApiKey(settings.apiKey, settings.llmProvider)) {
@@ -873,11 +1163,11 @@ function validateSettings(settings) {
   }
 
   if (!settings.llmProvider) {
-    errors.push(CONFIG.ERRORS.NO_PROVIDER);
+    errors.push(APP_CONFIG.ERRORS.NO_PROVIDER);
   }
 
   if (!settings.llmModel) {
-    errors.push(CONFIG.ERRORS.NO_MODEL);
+    errors.push(APP_CONFIG.ERRORS.NO_MODEL);
   }
 
   if (errors.length > 0) {
@@ -1345,7 +1635,7 @@ Provide comprehensive requirement analysis.`;
 
   const analysis = await callAIStream(contentParts, settings, (chunk) => {
     // Send each chunk to content script
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'streamChunk',
       requestId: requestId,
       chunk: chunk
@@ -1450,7 +1740,7 @@ Provide detailed test scope covering all aspects.`;
 
     console.log('🤖 [Test Scope Stream] Calling AI provider with', contentParts.length, 'content parts...');
     const testScope = await callAIStream(contentParts, settings, (chunk) => {
-      chrome.tabs.sendMessage(tabId, {
+      safeSendMessageToTab(tabId, {
         action: 'streamChunk',
         requestId: requestId,
         chunk: chunk
@@ -1522,10 +1812,10 @@ Generate ${settings.testCount || 30} test cases total.`;
 **Description:** ${ticketData.description || 'N/A'}`;
 
   let accumulatedText = '';
-  
+
   const testCasesResponse = await callAIStream(systemMessage, userMessage, settings, (chunk) => {
     accumulatedText += chunk;
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'streamChunk',
       requestId: requestId,
       chunk: chunk
@@ -1634,7 +1924,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   // Create orchestrator with progress callback
   const orchestrator = new AgentOrchestrator(settings, (progress) => {
     // Send progress updates to content script
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'agentProgress',
       progress: progress
     });
@@ -1651,13 +1941,13 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     analysis = await analysisAgent.execute(enrichedTicketData, {}, settings);
   }
   
-  // Execute all agents
-  const results = await orchestrator.executeAgents(enrichedTicketData, analysis);
+  // Execute all agents with app context
+  const results = await orchestrator.executeAgents(enrichedTicketData, analysis, data.appContext);
   
   // Apply enhancements (gap analysis, complexity scaling)
   let enhancementResults = null;
   if (settings.enableEnhanced !== false) {
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'enhancementProgress',
       status: 'analyzing'
     });
@@ -1689,7 +1979,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       results.testCases.push(...enhancementResults.additionalTests);
     }
 
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'enhancementProgress',
       status: 'completed'
     });
@@ -1700,7 +1990,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   if (settings.enableHistoricalMining) {
     console.log('Starting historical mining...');
 
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'historicalMiningProgress',
       status: 'analyzing'
     });
@@ -1733,7 +2023,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       console.log(`Historical mining complete: ${historicalResults.enhancedTests.length} tests`);
     }
 
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'historicalMiningProgress',
       status: 'completed'
     });
@@ -1773,7 +2063,7 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
 
     const evolution = new EvolutionaryOptimizer(settings, (progress) => {
       // Send evolution progress to content script
-      chrome.tabs.sendMessage(tabId, {
+      safeSendMessageToTab(tabId, {
         action: 'evolutionProgress',
         progress: progress
       });
@@ -1821,7 +2111,7 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
     console.log('Evolution complete:', evolvedTests.length, 'tests (was', originalCount, ')');
 
     // Send completion message to update UI
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'evolutionComplete',
       data: {
         testCases: evolvedTests,
@@ -1834,7 +2124,7 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
     console.error('Evolution background error:', error);
 
     // Send error message to UI
-    chrome.tabs.sendMessage(tabId, {
+    safeSendMessageToTab(tabId, {
       action: 'evolutionError',
       error: error.message
     });

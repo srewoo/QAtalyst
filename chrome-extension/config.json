@@ -1,0 +1,661 @@
+{
+  "version": "11.1.0",
+  "appName": "QAtalyst - AI Test Case Generator",
+  "description": "Configuration file for QAtalyst extension",
+
+  "crawler": {
+    "description": "Web App Crawler Configuration",
+    "enabled": true,
+
+    "limits": {
+      "maxPages": 2000,
+      "maxDepth": 10,
+      "maxQueueSize": 2000,
+      "queueWarningThreshold": 1500,
+      "timeout": 600000,
+      "pageTimeout": 40000
+    },
+
+    "delays": {
+      "betweenPages": 200,
+      "pageLoad": 1000,
+      "dynamicContent": 400,
+      "retryDelay": 2000,
+      "description": "OPTIMIZED: Reduced delays for faster crawling. Adaptive wait strategies will adjust based on site type."
+    },
+
+    "timeouts": {
+      "navigation": {
+        "static": 15000,
+        "dynamic": 30000,
+        "heavy": 60000,
+        "default": 30000
+      },
+      "description": "P1.4: Adaptive timeouts based on detected site type. Fast sites get shorter timeouts, slow sites get longer timeouts to prevent false failures."
+    },
+
+    "streamingSave": {
+      "enabled": true,
+      "batchSize": 250,
+      "description": "P0.1: Save pages to IndexedDB in batches of 250 to prevent memory exhaustion. Reduced from 1000 to lower memory footprint."
+    },
+
+    "authentication": {
+      "detectPatterns": [
+        "/login",
+        "/signin",
+        "/sign-in",
+        "/auth",
+        "/oauth",
+        "/sso",
+        "/authentication",
+        "/login.aspx",
+        "/account/login"
+      ],
+      "description": "P1.5: URLs containing these patterns are skipped to prevent authentication redirects and stuck pages."
+    },
+
+    "urlNormalization": {
+      "enabled": true,
+      "removeParams": [
+        "page",
+        "offset",
+        "limit",
+        "timestamp",
+        "ts",
+        "_t",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_content",
+        "utm_term",
+        "fbclid",
+        "gclid",
+        "ref",
+        "source"
+      ],
+      "description": "P2.7: Remove pagination and tracking parameters from URLs to prevent duplicate crawling. Example: /page?page=1 and /page?page=2 are treated as same page."
+    },
+
+    "spaDetection": {
+      "enabled": true,
+      "hydrationWait": 3000,
+      "detectFrameworks": ["React", "Vue", "Angular", "Svelte"],
+      "description": "P2.8: Detect JavaScript frameworks and wait for hydration before extracting data. Prevents empty extractions on React/Vue apps. Increased to 3s for complex SPAs like Hubspot/Mindtickle."
+    },
+
+    "retry": {
+      "enabled": true,
+      "maxRetries": 2,
+      "retryDelay": 3000,
+      "retryableErrors": [
+        "timeout",
+        "net::",
+        "ERR_",
+        "Failed to fetch",
+        "Page load timeout"
+      ],
+      "description": "Automatically retry failed pages due to transient errors (timeouts, network issues). Non-retryable errors (404, 403, etc.) are logged immediately."
+    },
+
+    "incremental": {
+      "enabled": true,
+      "description": "Skip previously crawled pages when re-crawling the same application. Only new or changed pages will be processed, saving significant time.",
+      "forceRecrawl": false,
+      "forceRecrawlDescription": "Set to true to force a full recrawl even if previous data exists"
+    },
+
+    "parallel": {
+      "enabled": true,
+      "maxConcurrentTabs": 3,
+      "adaptiveScaling": true,
+      "minTabs": 2,
+      "maxTabs": 5,
+      "scaleUpThreshold": 1.5,
+      "scaleDownThreshold": 3.0,
+      "description": "MEMORY OPTIMIZED: Reduced parallel crawling from 10 to 5 max tabs to prevent memory exhaustion. Starts with 3 tabs.",
+      "coordinationDelay": 50
+    },
+
+    "sitemap": {
+      "enabled": true,
+      "parseFirst": true,
+      "fallbackToCrawl": true,
+      "paths": ["/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml"],
+      "description": "Parse sitemap.xml to discover all URLs instantly instead of page-by-page discovery"
+    },
+
+    "selective": {
+      "enabled": true,
+      "skipNonInteractive": false,
+      "requiredFeatures": ["form", "button", "table", "navigation"],
+      "minFeaturesRequired": 1,
+      "description": "Skip pages without forms/APIs/buttons to focus on interactive pages only"
+    },
+
+    "siteDetection": {
+      "enabled": true,
+      "sampleSize": 10,
+      "types": {
+        "static": {
+          "avgLoadTime": 1500,
+          "dynamicContentRatio": 0.2,
+          "pageLoadDelay": 500,
+          "smartWaitEnabled": false
+        },
+        "dynamic": {
+          "avgLoadTime": 3000,
+          "dynamicContentRatio": 0.6,
+          "pageLoadDelay": 1500,
+          "smartWaitEnabled": true
+        },
+        "heavy": {
+          "avgLoadTime": 5000,
+          "dynamicContentRatio": 0.8,
+          "pageLoadDelay": 3000,
+          "smartWaitEnabled": true
+        }
+      },
+      "description": "Week 2: Auto-detect site type and apply optimal wait strategies. Analyzes first 10 pages to classify site."
+    },
+
+    "priorityCrawling": {
+      "enabled": true,
+      "scoring": {
+        "navigation": 100,
+        "form": 90,
+        "api": 85,
+        "button": 70,
+        "table": 60,
+        "static": 20
+      },
+      "sortQueue": true,
+      "description": "Week 3: Prioritize important pages (navigation, forms) over static content for faster meaningful results."
+    },
+
+    "duplicateDetection": {
+      "enabled": true,
+      "similarityThreshold": 0.90,
+      "compareTitle": true,
+      "compareText": true,
+      "compareFeatures": true,
+      "compareStructure": true,
+      "skipPagination": true,
+      "paginationPatterns": ["page=", "/page/", "?p=", "&p=", "offset=", "skip="],
+      "detectParameterizedUrls": true,
+      "parameterizedUrlPatterns": "DEPRECATED - Now uses dynamic hybrid detection (regex + template learning)",
+      "maxSamplesPerPattern": 1,
+      "description": "Week 3: Skip duplicate and paginated pages. HYBRID DYNAMIC DETECTION: Automatically detects parameterized URLs (e.g., /recording/123, /recording/456) using regex patterns + template learning. No hardcoding needed - works on ALL websites. Only crawls 1 sample per detected pattern."
+    },
+
+    "caching": {
+      "enabled": true,
+      "cacheFeatures": true,
+      "cacheAPIs": true,
+      "cacheSimilarPages": true,
+      "maxCacheSize": 200,
+      "description": "MEMORY OPTIMIZED: Reduced from 1000 to 200 to prevent memory exhaustion. Cache extracted features and API patterns to speed up processing of similar pages."
+    },
+
+    "prefetching": {
+      "enabled": true,
+      "prefetchCount": 5,
+      "prefetchStrategy": "priority",
+      "description": "Week 4: Pre-fetch next URLs while processing current page for pipeline efficiency."
+    },
+
+    "resourceBlocking": {
+      "enabled": false,
+      "blockImages": true,
+      "blockFonts": true,
+      "blockCSS": false,
+      "blockMedia": true,
+      "allowScripts": true,
+      "description": "Block heavy resources during crawl to speed up page loads. NOW DOMAIN-SPECIFIC: Only blocks resources from the crawled domain, other tabs are unaffected. Set enabled:true to activate. CSS blocking disabled by default to preserve layout detection."
+    },
+
+    "features": {
+      "recursiveCrawl": true,
+      "followSameOriginOnly": true,
+      "detectSPARoutes": true,
+      "useSitemap": true,
+      "captureScreenshots": false,
+      "monitorNetwork": true,
+      "extractForms": true,
+      "extractTables": true,
+      "extractButtons": true,
+      "extractNavigation": true,
+      "extractModals": true
+    },
+
+    "exclusions": {
+      "extensions": [
+        "jpg", "jpeg", "png", "gif", "svg", "ico",
+        "pdf", "zip", "exe", "dmg", "mp4", "mp3",
+        "woff", "woff2", "ttf", "eot", "css", "js"
+      ],
+      "patterns": [
+        "/api/",
+        "/download/",
+        "/logout",
+        "/signout",
+        "mailto:",
+        "tel:",
+        "javascript:"
+      ],
+      "maxQueryLength": 200
+    },
+
+    "spaDiscovery": {
+      "enabled": false,
+      "maxClicksPerPage": 10,
+      "clickDelay": 500,
+      "discoverTabs": true,
+      "discoverModals": true,
+      "discoverAccordions": true,
+      "discoverDropdowns": true,
+      "description": "MEMORY OPTIMIZED: Disabled by default to prevent tab crashes. Click-based route discovery for SPAs. Enable only for SPA-heavy sites."
+    },
+
+    "smartWait": {
+      "enabled": true,
+      "networkIdle": true,
+      "networkIdleTime": 500,
+      "waitForElements": true,
+      "frameworks": true,
+      "timeout": 30000,
+      "minWait": 500,
+      "description": "Intelligent wait strategies for dynamic content. Waits for network idle, DOM stable, and framework hydration instead of fixed delays."
+    },
+
+    "storage": {
+      "storageType": "indexeddb",
+      "dbName": "QAtalystEmbeddings",
+      "dbVersion": 1,
+      "maxStorageSize": 52428800,
+      "compressionEnabled": true
+    }
+  },
+
+  "embeddings": {
+    "description": "Vector Embeddings Configuration - API-based only (BERT/TensorFlow.js blocked by CSP)",
+    "enabled": false,
+
+    "provider": {
+      "default": "jina",
+      "options": ["jina", "openai", "chrome-ai"],
+      "fallbackOrder": ["jina", "openai", "chrome-ai"],
+      "note": "Local ML libraries (Transformers.js, TensorFlow.js) cannot work in Chrome Manifest V3 extensions due to CSP restrictions. Use API-based embeddings (Jina AI, OpenAI) or wait for Chrome Built-in AI."
+    },
+
+    "models": {
+      "jina": {
+        "model": "jina-embeddings-v3",
+        "dimensions": 1024,
+        "batchSize": 2048,
+        "costPer1MTokens": 0,
+        "freeTier": "10 million tokens for new users",
+        "endpoint": "https://api.jina.ai/v1/embeddings",
+        "description": "RECOMMENDED - FREE tier, perfect for large-scale crawling (thousands of pages)"
+      },
+      "openai": {
+        "model": "text-embedding-3-small",
+        "dimensions": 1536,
+        "batchSize": 100,
+        "costPer1MTokens": 0.02,
+        "endpoint": "https://api.openai.com/v1/embeddings",
+        "description": "Production-ready, paid service, works in all Chrome versions"
+      },
+      "chromeAI": {
+        "model": "gemini-nano",
+        "dimensions": 768,
+        "enabled": false,
+        "description": "Free local embeddings, Chrome Canary/Dev only (experimental)"
+      }
+    },
+
+    "search": {
+      "topK": 5,
+      "minScore": 0.3,
+      "maxResults": 10,
+      "cacheEnabled": true,
+      "cacheSize": 100
+    },
+
+    "export": {
+      "formats": ["json", "binary"],
+      "defaultFormat": "json",
+      "compression": true,
+      "includeMetadata": true
+    }
+  },
+
+  "network": {
+    "description": "Network Monitoring Configuration",
+    "enabled": true,
+
+    "capture": {
+      "requests": true,
+      "responses": true,
+      "headers": true,
+      "payloads": true,
+      "timing": true
+    },
+
+    "filters": {
+      "captureAPIs": true,
+      "captureGraphQL": true,
+      "captureREST": true,
+      "ignoreStatic": true,
+      "maxPayloadSize": 10240
+    },
+
+    "endpoints": {
+      "apiPatterns": ["/api/", "/rest/", "/graphql", "/v1/", "/v2/"],
+      "excludePatterns": [
+        "google-analytics",
+        "doubleclick",
+        "facebook.com",
+        "twitter.com",
+        "hotjar",
+        "mixpanel",
+        "segment.io"
+      ]
+    }
+  },
+
+  "domExtraction": {
+    "description": "DOM Feature Extraction Configuration",
+    "enabled": true,
+
+    "textContent": {
+      "enabled": true,
+      "maxLength": 4000,
+      "description": "MEMORY OPTIMIZED: Reduced from 5000 to 4000 chars to lower memory footprint. Extract main article/page text content for help sites and documentation."
+    },
+
+    "features": {
+      "forms": {
+        "enabled": true,
+        "maxForms": 10,
+        "captureValidation": true,
+        "captureFields": true
+      },
+      "tables": {
+        "enabled": true,
+        "maxTables": 10,
+        "captureHeaders": true,
+        "captureActions": true,
+        "minRows": 1
+      },
+      "buttons": {
+        "enabled": true,
+        "maxButtons": 50,
+        "captureDisabled": true,
+        "captureActions": false
+      },
+      "navigation": {
+        "enabled": true,
+        "maxItems": 20,
+        "captureSubmenus": true
+      },
+      "modals": {
+        "enabled": true,
+        "maxModals": 5,
+        "captureHidden": false
+      },
+      "cards": {
+        "enabled": true,
+        "maxCards": 20,
+        "maxContentLength": 100
+      },
+      "lists": {
+        "enabled": true,
+        "maxLists": 10,
+        "minItems": 3,
+        "maxItemsPerList": 10
+      }
+    },
+
+    "selectors": {
+      "forms": ["form"],
+      "tables": ["table"],
+      "buttons": ["button", "a.btn", "[role='button']"],
+      "navigation": ["nav", "[role='navigation']"],
+      "modals": ["[role='dialog']", ".modal", "[aria-modal='true']"]
+    }
+  },
+
+  "ai": {
+    "description": "AI Provider Configuration",
+
+    "defaults": {
+      "temperature": 0.7,
+      "maxTokens": 16000,
+      "testCount": 30,
+      "minTestCount": 20,
+      "maxTestCount": 100
+    },
+
+    "providers": {
+      "openai": {
+        "enabled": true,
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "defaultModel": "gpt-4o",
+        "models": ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini", "gpt-4"]
+      },
+      "claude": {
+        "enabled": true,
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "defaultModel": "claude-3-5-sonnet-20241022",
+        "models": [
+          "claude-3-5-sonnet-20241022",
+          "claude-3-opus-20240229",
+          "claude-3-sonnet-20240229",
+          "claude-3-haiku-20240307"
+        ]
+      },
+      "gemini": {
+        "enabled": true,
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/models",
+        "defaultModel": "gemini-2.0-flash-exp",
+        "models": [
+          "gemini-2.0-flash-exp",
+          "gemini-1.5-pro",
+          "gemini-1.5-flash"
+        ]
+      }
+    },
+
+    "streaming": {
+      "enabled": true,
+      "chunkSize": 1024,
+      "timeout": 90000
+    },
+
+    "multiAgent": {
+      "enabled": true,
+      "agents": [
+        "requirement",
+        "positive",
+        "negative",
+        "edge",
+        "regression",
+        "integration",
+        "review"
+      ],
+      "distribution": {
+        "positive": 0.40,
+        "negative": 0.30,
+        "edge": 0.20,
+        "regression": 0.05,
+        "integration": 0.05
+      }
+    }
+  },
+
+  "evolution": {
+    "description": "Evolutionary Test Optimization",
+    "enabled": true,
+
+    "intensity": {
+      "default": "balanced",
+      "options": {
+        "light": {
+          "generations": 3,
+          "populationSize": 3,
+          "mutationRate": 0.3
+        },
+        "balanced": {
+          "generations": 5,
+          "populationSize": 5,
+          "mutationRate": 0.4
+        },
+        "intensive": {
+          "generations": 8,
+          "populationSize": 7,
+          "mutationRate": 0.5
+        },
+        "exhaustive": {
+          "generations": 10,
+          "populationSize": 10,
+          "mutationRate": 0.6
+        }
+      }
+    },
+
+    "mutations": [
+      "dataVariation",
+      "scenarioExpansion",
+      "boundaryTesting",
+      "errorInjection",
+      "contextShifting"
+    ]
+  },
+
+  "integrations": {
+    "description": "External Integration Configuration",
+
+    "confluence": {
+      "enabled": false,
+      "autoFetch": true,
+      "timeout": 10000,
+      "maxPages": 5
+    },
+
+    "figma": {
+      "enabled": false,
+      "maxImages": 50,
+      "minImageSizeKB": 5,
+      "rateLimitDelay": 1000
+    },
+
+    "googleDocs": {
+      "enabled": false,
+      "timeout": 10000
+    },
+
+    "testrail": {
+      "enabled": false,
+      "exportFormat": "xml"
+    }
+  },
+
+  "ui": {
+    "description": "User Interface Configuration",
+
+    "panel": {
+      "width": "400px",
+      "position": "right",
+      "animationDuration": 300
+    },
+
+    "display": {
+      "maxTextLength": 10000,
+      "debounceDelay": 500,
+      "showProgress": true,
+      "showTimestamps": true
+    },
+
+    "notifications": {
+      "enabled": true,
+      "duration": 5000,
+      "position": "top-right"
+    }
+  },
+
+  "security": {
+    "description": "Security Configuration",
+
+    "encryption": {
+      "algorithm": "AES-GCM",
+      "keyLength": 256,
+      "ivLength": 12,
+      "saltLength": 16,
+      "iterations": 100000
+    },
+
+    "sanitization": {
+      "enabled": true,
+      "allowedTags": [
+        "p", "br", "strong", "em", "ul", "ol", "li",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "code", "pre", "a", "span", "div"
+      ],
+      "allowedAttributes": ["class", "id", "href", "target"]
+    },
+
+    "storage": {
+      "encryptAPIKeys": true,
+      "encryptEmbeddings": false
+    }
+  },
+
+  "performance": {
+    "description": "Performance Optimization",
+
+    "timeouts": {
+      "request": 90000,
+      "retry": 2000,
+      "maxRetries": 2
+    },
+
+    "limits": {
+      "maxTextExtractLength": 30000,
+      "maxConcurrentRequests": 5
+    },
+
+    "cache": {
+      "enabled": true,
+      "ttl": 3600000,
+      "maxSize": 100
+    }
+  },
+
+  "logging": {
+    "description": "Logging Configuration",
+    "enabled": true,
+    "level": "info",
+    "levels": ["debug", "info", "warn", "error"],
+    "console": true,
+    "storage": false,
+    "maxLogs": 1000
+  },
+
+  "features": {
+    "description": "Feature Flags",
+
+    "experimental": {
+      "chromeAI": false,
+      "interactiveCrawling": false,
+      "visualRegression": false,
+      "autoRecrawl": false
+    },
+
+    "beta": {
+      "enhancedSPADetection": true,
+      "sitemapParsing": true,
+      "incrementalCrawl": true
+    }
+  }
+}

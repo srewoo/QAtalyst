@@ -1,11 +1,18 @@
 {
   "manifest_version": 3,
   "name": "QAtalyst - AI Test Case Generator",
-  "version": "10.1.0",
-  "description": "AI-powered Jira assistant for intelligent test case generation.",
+  "version": "11.1.0",
+  "description": "AI-powered Jira assistant with intelligent web app crawling and context-aware test generation.",
   "permissions": [
     "storage",
-    "identity"
+    "identity",
+    "webRequest",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "notifications",
+    "declarativeNetRequest",
+    "downloads"
   ],
   "host_permissions": [
     "https://*/*",
@@ -53,8 +60,11 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["icons/*"],
-      "matches": ["https://*.atlassian.net/*", "https://*.jira.com/*"]
+      "resources": ["icons/*", "config.json"],
+      "matches": ["https://*.atlassian.net/*", "https://*.jira.com/*", "<all_urls>"]
     }
-  ]
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
 }
