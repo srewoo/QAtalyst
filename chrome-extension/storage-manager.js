@@ -1,6 +1,6 @@
 /**
  * Storage Manager - IndexedDB operations for knowledge graphs
- * Version: 11.2.0
+ * Version: 11.2.1
  * Manages persistent storage, export/import of crawled app data (pages, forms, APIs)
  * Note: Method names reference "embeddings" for backward compatibility but primarily store knowledge graphs
  */

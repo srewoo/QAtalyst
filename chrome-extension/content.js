@@ -2263,7 +2263,7 @@ Expected Result: ${expectedResult}`;
   function showHelp() {
     const helpContent = `
 ╔══════════════════════════════════════════╗
-║        🚀 QAtalyst v11.2.0 - Help        ║
+║        🚀 QAtalyst v11.2.1 - Help        ║
 ╚══════════════════════════════════════════╝
 
 📋 CORE FEATURES:

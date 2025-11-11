@@ -1,6 +1,6 @@
 /**
  * Graph Filter - Smart filtering utilities for knowledge graphs
- * Version: 11.2.0
+ * Version: 11.2.1
  *
  * Shared between background script and content script for consistent filtering
  */

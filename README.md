@@ -2,7 +2,7 @@
 
 **Advanced Chrome Extension with Multi-Agent System & Evolutionary Optimization**
 
-[![Version](https://img.shields.io/badge/version-11.2.0-blue.svg)](https://github.com/your-repo)
+[![Version](https://img.shields.io/badge/version-11.2.1-blue.svg)](https://github.com/your-repo)
 [![Chrome Extension](https://img.shields.io/badge/chrome-extension-green.svg)](https://chrome.google.com/webstore)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
