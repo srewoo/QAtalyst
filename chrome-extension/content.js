@@ -13,6 +13,10 @@
     if (request.action === 'streamChunk') {
       handleStreamChunk(request.requestId, request.chunk);
     }
+    if (request.action === 'keepAlive') {
+      // Keep-alive heartbeat to prevent timeout - no action needed
+      console.log('💓 Keep-alive heartbeat received');
+    }
     if (request.action === 'agentProgress') {
       handleAgentProgress(request.progress);
     }

@@ -95,7 +95,24 @@ class AgentOrchestrator {
       }
 
       try {
-        const agentResult = await agent.execute(ticketData, results, this.settings, appContext);
+        // Use batched execution for test agents to prevent timeouts
+        const isTestAgent = agent instanceof PositiveTestAgent ||
+                           agent instanceof NegativeTestAgent ||
+                           agent instanceof EdgeCaseAgent ||
+                           agent instanceof RegressionTestAgent ||
+                           agent instanceof IntegrationTestAgent;
+
+        let agentResult;
+        if (isTestAgent) {
+          // Use batched execution: 4 batches of 3 tests each = 12 tests per agent
+          agentResult = await agent.executeBatched(ticketData, results, this.settings, appContext, {
+            batches: 4,
+            testsPerBatch: 3
+          });
+        } else {
+          // Regular execution for non-test agents (Context, Requirements, Review)
+          agentResult = await agent.execute(ticketData, results, this.settings, appContext);
+        }
 
         // Store agent results
         results.agentResults[agent.name] = agentResult;
@@ -184,6 +201,60 @@ class BaseAgent {
     const response = await this.callAI(systemMessage, userMessage, settings);
 
     return this.parseResponse(response);
+  }
+
+  // Batched execution to prevent timeouts on large requests
+  // Splits the work into smaller batches and aggregates results
+  async executeBatched(ticketData, previousResults, settings, appContext = null, batchConfig = null) {
+    // Default batch configuration
+    const config = batchConfig || {
+      batches: 3,           // Number of batches
+      testsPerBatch: 3      // Tests to generate per batch
+    };
+
+    console.log(`[${this.name}] 🔄 Using batched execution: ${config.batches} batches × ${config.testsPerBatch} tests each`);
+
+    const allResults = [];
+
+    for (let i = 0; i < config.batches; i++) {
+      console.log(`[${this.name}] 📦 Batch ${i + 1}/${config.batches}...`);
+
+      try {
+        const systemMessage = this.getSystemMessage(previousResults, i + 1, config.batches, config.testsPerBatch);
+        const userMessage = this.getUserMessageBatched(ticketData, previousResults, appContext, i + 1, config.batches, config.testsPerBatch);
+
+        // Call AI for this batch
+        const response = await this.callAI(systemMessage, userMessage, settings);
+        const batchResults = this.parseResponse(response);
+
+        // Accumulate results
+        if (Array.isArray(batchResults)) {
+          allResults.push(...batchResults);
+          console.log(`[${this.name}] ✅ Batch ${i + 1} complete: ${batchResults.length} tests generated`);
+        }
+      } catch (error) {
+        console.error(`[${this.name}] ❌ Batch ${i + 1} failed:`, error.message);
+        // Continue with next batch even if one fails
+      }
+    }
+
+    console.log(`[${this.name}] 🎉 All batches complete: ${allResults.length} total tests`);
+    return allResults;
+  }
+
+  // Override this in subclasses to customize batch messages
+  // Default implementation: modifies the regular getUserMessage to request fewer tests
+  getUserMessageBatched(ticketData, previousResults, appContext, batchNum, totalBatches, testsPerBatch) {
+    const originalMessage = this.getUserMessage(ticketData, previousResults, appContext);
+
+    // Replace any "Generate X test cases" with "Generate testsPerBatch test cases"
+    // This is a smart default that works for most agents
+    const batchMessage = originalMessage.replace(
+      /Generate \d+ (?:UNIQUE )?(?:positive|negative|edge|regression|integration)? ?test cases/gi,
+      `Generate ${testsPerBatch} test cases (batch ${batchNum}/${totalBatches})`
+    );
+
+    return batchMessage;
   }
 
   getSystemMessage(previousResults) {
@@ -557,6 +628,38 @@ Generate ${testCount} UNIQUE positive test cases covering:
 - Standard feature usage
 - Use domain-specific terminology: ${keywords.join(', ')}
 ${appContextSection ? '\n**CRITICAL:** Use the ACTUAL field names, button labels, and API endpoints from the Application Context above. Do not make up field names or endpoints.' : ''}
+
+Return as JSON array.`;
+  }
+
+  // Batched version - asks for specific number of tests per batch
+  getUserMessageBatched(ticketData, previousResults, appContext, batchNum, totalBatches, testsPerBatch) {
+    const existingTests = previousResults.testCases?.map(tc => `- ${tc.title}`).join('\n') || 'None yet';
+    const keywords = this.extractKeywords(ticketData);
+    const personas = this.inferPersonas(ticketData);
+    const appContextSection = this.formatAppContext(appContext || previousResults.appContext, previousResults);
+
+    return `Based on this requirement analysis:
+
+${previousResults.analysis || 'No prior analysis available'}
+${appContextSection}
+**Domain Context:**
+- Keywords: ${keywords.join(', ')}
+- User Personas: ${personas.join(', ')}
+
+**Already Generated Tests:**
+${existingTests}
+
+**Important:** Do NOT duplicate existing tests. This is batch ${batchNum} of ${totalBatches}. Generate NEW, complementary scenarios.
+
+**Ticket:** ${ticketData.key}
+**Summary:** ${ticketData.summary}
+
+Generate ${testsPerBatch} UNIQUE positive test cases for this batch covering:
+- Happy path scenarios
+- Valid input combinations
+- Expected user workflows
+${appContextSection ? '\n**CRITICAL:** Use the ACTUAL field names, button labels, and API endpoints from the Application Context above.' : ''}
 
 Return as JSON array.`;
   }

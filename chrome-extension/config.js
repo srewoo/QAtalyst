@@ -7,7 +7,7 @@ if (typeof APP_CONFIG === 'undefined') {
   // API Request Configuration
   var APP_CONFIG = {
   // Timeouts
-  REQUEST_TIMEOUT: 90000, // 90 seconds for AI responses
+  REQUEST_TIMEOUT: 120000, // 120 seconds (2 minutes) for AI responses - Increased to handle large batch requests
   RETRY_DELAY: 2000, // 2 seconds between retries
   MAX_RETRIES: 2,
 
