@@ -1873,6 +1873,15 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp'
   ];
 
+  // Start keep-alive heartbeat to prevent timeout
+  // Send a message every 5 seconds to keep the message port alive
+  const keepAliveInterval = setInterval(() => {
+    safeSendMessageToTab(tabId, {
+      action: 'keepAlive',
+      timestamp: Date.now()
+    });
+  }, 5000);
+
   // Bind callAI to all agents
   const bindCallAI = (agent) => {
     // Agents call with (systemMessage, userMessage, settings)
@@ -1897,7 +1906,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     };
     agent.settings = settings;
   };
-  
+
   // Create orchestrator with progress callback
   const orchestrator = new AgentOrchestrator(settings, (progress) => {
     // Send progress updates to content script
@@ -1909,128 +1918,134 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   
   // Bind callAI to all agents
   orchestrator.agents.forEach(bindCallAI);
-  
-  // First, analyze requirements if not already done
-  let analysis = data.analysis;
-  if (!analysis) {
-    const analysisAgent = new RequirementAnalysisAgent();
-    bindCallAI(analysisAgent);
-    analysis = await analysisAgent.execute(enrichedTicketData, {}, settings);
-  }
-  
-  // Execute all agents with app context
-  const results = await orchestrator.executeAgents(enrichedTicketData, analysis, data.appContext);
-  
-  // Apply enhancements (gap analysis, complexity scaling)
-  let enhancementResults = null;
-  if (settings.enableEnhanced !== false) {
-    safeSendMessageToTab(tabId, {
-      action: 'enhancementProgress',
-      status: 'analyzing'
-    });
 
-    // Create wrapper for EnhancementEngine that converts 3-param to 2-param callAI
-    const enhancerCallAI = async (systemMessage, userMessage, enhancerSettings) => {
-      const contentParts = [
-        { type: 'text', text: systemMessage },
-        { type: 'text', text: userMessage }
-      ];
-
-      // Add Jira image attachments if available and using vision model
-      const currentSettings = enhancerSettings || settings;
-      const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
-      if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
-        console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira images to EnhancementEngine API call`);
-        enrichedTicketData.imageAttachments.forEach(image => {
-          contentParts.push({ type: 'image_url', image_url: { url: image.data } });
-        });
-      }
-
-      return await callAI(contentParts, currentSettings);
-    };
-    const enhancer = new EnhancementEngine(settings, enhancerCallAI);
-    enhancementResults = await enhancer.enhance(results.testCases, enrichedTicketData, results.analysis);
-
-    // Add gap-filling tests if any
-    if (enhancementResults.additionalTests && enhancementResults.additionalTests.length > 0) {
-      results.testCases.push(...enhancementResults.additionalTests);
+  try {
+    // First, analyze requirements if not already done
+    let analysis = data.analysis;
+    if (!analysis) {
+      const analysisAgent = new RequirementAnalysisAgent();
+      bindCallAI(analysisAgent);
+      analysis = await analysisAgent.execute(enrichedTicketData, {}, settings);
     }
 
-    safeSendMessageToTab(tabId, {
-      action: 'enhancementProgress',
-      status: 'completed'
-    });
-  }
+    // Execute all agents with app context
+    const results = await orchestrator.executeAgents(enrichedTicketData, analysis, data.appContext);
 
-  // Apply historical mining if enabled
-  let historicalResults = null;
-  if (settings.enableHistoricalMining) {
-    console.log('Starting historical mining...');
+    // Apply enhancements (gap analysis, complexity scaling)
+    let enhancementResults = null;
+    if (settings.enableEnhanced !== false) {
+      safeSendMessageToTab(tabId, {
+        action: 'enhancementProgress',
+        status: 'analyzing'
+      });
 
-    safeSendMessageToTab(tabId, {
-      action: 'historicalMiningProgress',
-      status: 'analyzing'
-    });
+      // Create wrapper for EnhancementEngine that converts 3-param to 2-param callAI
+      const enhancerCallAI = async (systemMessage, userMessage, enhancerSettings) => {
+        const contentParts = [
+          { type: 'text', text: systemMessage },
+          { type: 'text', text: userMessage }
+        ];
 
-    // Create wrapper for HistoricalMiningEngine that converts 3-param to 2-param callAI
-    const historicalCallAI = async (systemMessage, userMessage, historicalSettings) => {
-      const contentParts = [
-        { type: 'text', text: systemMessage },
-        { type: 'text', text: userMessage }
-      ];
+        // Add Jira image attachments if available and using vision model
+        const currentSettings = enhancerSettings || settings;
+        const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
+        if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+          console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira images to EnhancementEngine API call`);
+          enrichedTicketData.imageAttachments.forEach(image => {
+            contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+          });
+        }
 
-      // Add Jira image attachments if available and using vision model
-      const currentSettings = historicalSettings || settings;
-      const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
-      if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
-        console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira images to HistoricalMiningEngine API call`);
-        enrichedTicketData.imageAttachments.forEach(image => {
-          contentParts.push({ type: 'image_url', image_url: { url: image.data } });
-        });
+        return await callAI(contentParts, currentSettings);
+      };
+      const enhancer = new EnhancementEngine(settings, enhancerCallAI);
+      enhancementResults = await enhancer.enhance(results.testCases, enrichedTicketData, results.analysis);
+
+      // Add gap-filling tests if any
+      if (enhancementResults.additionalTests && enhancementResults.additionalTests.length > 0) {
+        results.testCases.push(...enhancementResults.additionalTests);
       }
 
-      return await callAI(contentParts, currentSettings);
-    };
-    const historicalMiner = new HistoricalMiningEngine(settings, historicalCallAI, data.baseUrl);
-    historicalResults = await historicalMiner.mineAndEnhance(enrichedTicketData, results.testCases);
-
-    // Replace testCases with enhanced version
-    if (historicalResults && historicalResults.enhancedTests) {
-      results.testCases = historicalResults.enhancedTests;
-      console.log(`Historical mining complete: ${historicalResults.enhancedTests.length} tests`);
+      safeSendMessageToTab(tabId, {
+        action: 'enhancementProgress',
+        status: 'completed'
+      });
     }
 
-    safeSendMessageToTab(tabId, {
-      action: 'historicalMiningProgress',
-      status: 'completed'
-    });
+    // Apply historical mining if enabled
+    let historicalResults = null;
+    if (settings.enableHistoricalMining) {
+      console.log('Starting historical mining...');
+
+      safeSendMessageToTab(tabId, {
+        action: 'historicalMiningProgress',
+        status: 'analyzing'
+      });
+
+      // Create wrapper for HistoricalMiningEngine that converts 3-param to 2-param callAI
+      const historicalCallAI = async (systemMessage, userMessage, historicalSettings) => {
+        const contentParts = [
+          { type: 'text', text: systemMessage },
+          { type: 'text', text: userMessage }
+        ];
+
+        // Add Jira image attachments if available and using vision model
+        const currentSettings = historicalSettings || settings;
+        const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
+        if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+          console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira images to HistoricalMiningEngine API call`);
+          enrichedTicketData.imageAttachments.forEach(image => {
+            contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+          });
+        }
+
+        return await callAI(contentParts, currentSettings);
+      };
+      const historicalMiner = new HistoricalMiningEngine(settings, historicalCallAI, data.baseUrl);
+      historicalResults = await historicalMiner.mineAndEnhance(enrichedTicketData, results.testCases);
+
+      // Replace testCases with enhanced version
+      if (historicalResults && historicalResults.enhancedTests) {
+        results.testCases = historicalResults.enhancedTests;
+        console.log(`Historical mining complete: ${historicalResults.enhancedTests.length} tests`);
+      }
+
+      safeSendMessageToTab(tabId, {
+        action: 'historicalMiningProgress',
+        status: 'completed'
+      });
+    }
+
+    // Store original test count for comparison
+    const originalTestCount = results.testCases.length;
+
+    // Return base results immediately (don't wait for evolution)
+    const baseResponse = {
+      testCases: results.testCases,
+      ...results.statistics,
+      analysis: results.analysis,
+      review: results.review,
+      agentResults: results.agentResults,
+      evolved: false,
+      evolutionPending: settings.enableEvolution && results.testCases.length > 0,
+      originalCount: originalTestCount,
+      enhancements: enhancementResults,
+      historicalInsights: historicalResults?.insights || null,
+      historicalBugs: historicalResults?.historicalBugs || [],
+      externalSources: currentExternalSources // Include external sources in the response
+    };
+
+    // Start evolution in background (non-blocking)
+    if (settings.enableEvolution && results.testCases.length > 0) {
+      runEvolutionInBackground(results.testCases, enrichedTicketData, settings, tabId, originalTestCount);
+    }
+
+    return baseResponse;
+  } finally {
+    // Always clear keep-alive interval
+    clearInterval(keepAliveInterval);
+    console.log('✅ Keep-alive heartbeat stopped');
   }
-
-  // Store original test count for comparison
-  const originalTestCount = results.testCases.length;
-
-  // Return base results immediately (don't wait for evolution)
-  const baseResponse = {
-    testCases: results.testCases,
-    ...results.statistics,
-    analysis: results.analysis,
-    review: results.review,
-    agentResults: results.agentResults,
-    evolved: false,
-    evolutionPending: settings.enableEvolution && results.testCases.length > 0,
-    originalCount: originalTestCount,
-    enhancements: enhancementResults,
-    historicalInsights: historicalResults?.insights || null,
-    historicalBugs: historicalResults?.historicalBugs || [],
-    externalSources: currentExternalSources // Include external sources in the response
-  };
-
-  // Start evolution in background (non-blocking)
-  if (settings.enableEvolution && results.testCases.length > 0) {
-    runEvolutionInBackground(results.testCases, enrichedTicketData, settings, tabId, originalTestCount);
-  }
-
-  return baseResponse;
 }
 
 // Run evolutionary optimization in background without blocking
