@@ -150,11 +150,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     'historicalJqlFilters',
     'jiraEmail',
     'jiraApiToken',
+    'testMgmtPlatform',
     'testrailUrl',
     'testrailUsername',
     'testrailApiKey',
     'testrailProjectId',
     'testrailSection',
+    'zephyrScaleApiToken',
+    'zephyrScaleProjectKey',
+    'zephyrScaleFolderId',
+    'zephyrSquadJiraUrl',
+    'zephyrSquadUsername',
+    'zephyrSquadApiToken',
+    'zephyrSquadProjectKey',
+    'zephyrSquadVersionId',
+    'xrayIsCloud',
+    'xrayJiraUrl',
+    'xrayUsername',
+    'xrayApiToken',
+    'xrayClientId',
+    'xrayClientSecret',
+    'xrayProjectKey',
+    'qmetryIsCloud',
+    'qmetryApiUrl',
+    'qmetryApiKey',
+    'qmetryUsername',
+    'qmetryPassword',
+    'qmetryProjectId',
+    'qmetryReleaseId',
+    'fieldMappings',
     'confluenceUrl',
     'confluenceEmail',
     'confluenceToken',
@@ -255,12 +279,77 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('jiraEmail').value = settings.jiraEmail || '';
   document.getElementById('jiraApiToken').value = settings.jiraApiToken || '';
 
-  // Integrations
+  // Test Management Platform
+  const testMgmtPlatform = settings.testMgmtPlatform || 'none';
+  document.getElementById('testMgmtPlatform').value = testMgmtPlatform;
+
+  // Show/hide platform-specific configs
+  document.querySelectorAll('.test-mgmt-config').forEach(el => el.style.display = 'none');
+  if (testMgmtPlatform !== 'none') {
+    const configId = testMgmtPlatform + '-config';
+    const configEl = document.getElementById(configId);
+    if (configEl) configEl.style.display = 'block';
+    document.getElementById('field-mapping-section').style.display = 'block';
+  }
+
+  // TestRail
   document.getElementById('testrailUrl').value = settings.testrailUrl || '';
   document.getElementById('testrailUsername').value = settings.testrailUsername || '';
   document.getElementById('testrailApiKey').value = settings.testrailApiKey || '';
   document.getElementById('testrailProjectId').value = settings.testrailProjectId || '';
   document.getElementById('testrailSection').value = settings.testrailSection || 'QAtalyst_Automation';
+
+  // Zephyr Scale
+  document.getElementById('zephyrScaleApiToken').value = settings.zephyrScaleApiToken || '';
+  document.getElementById('zephyrScaleProjectKey').value = settings.zephyrScaleProjectKey || '';
+  document.getElementById('zephyrScaleFolderId').value = settings.zephyrScaleFolderId || '';
+
+  // Zephyr Squad
+  document.getElementById('zephyrSquadJiraUrl').value = settings.zephyrSquadJiraUrl || '';
+  document.getElementById('zephyrSquadUsername').value = settings.zephyrSquadUsername || '';
+  document.getElementById('zephyrSquadApiToken').value = settings.zephyrSquadApiToken || '';
+  document.getElementById('zephyrSquadProjectKey').value = settings.zephyrSquadProjectKey || '';
+  document.getElementById('zephyrSquadVersionId').value = settings.zephyrSquadVersionId || '-1';
+
+  // Xray
+  const xrayIsCloud = settings.xrayIsCloud !== false;
+  if (xrayIsCloud) {
+    document.getElementById('xrayCloud').checked = true;
+    document.getElementById('xrayCloudConfig').style.display = 'block';
+    document.getElementById('xrayServerConfig').style.display = 'none';
+  } else {
+    document.getElementById('xrayServer').checked = true;
+    document.getElementById('xrayCloudConfig').style.display = 'none';
+    document.getElementById('xrayServerConfig').style.display = 'block';
+  }
+  document.getElementById('xrayJiraUrl').value = settings.xrayJiraUrl || '';
+  document.getElementById('xrayUsername').value = settings.xrayUsername || '';
+  document.getElementById('xrayApiToken').value = settings.xrayApiToken || '';
+  document.getElementById('xrayClientId').value = settings.xrayClientId || '';
+  document.getElementById('xrayClientSecret').value = settings.xrayClientSecret || '';
+  document.getElementById('xrayProjectKey').value = settings.xrayProjectKey || '';
+
+  // qMetry
+  const qmetryIsCloud = settings.qmetryIsCloud !== false;
+  if (qmetryIsCloud) {
+    document.getElementById('qmetryCloud').checked = true;
+    document.getElementById('qmetryCloudConfig').style.display = 'block';
+    document.getElementById('qmetryOnPremiseConfig').style.display = 'none';
+  } else {
+    document.getElementById('qmetryOnPremise').checked = true;
+    document.getElementById('qmetryCloudConfig').style.display = 'none';
+    document.getElementById('qmetryOnPremiseConfig').style.display = 'block';
+  }
+  document.getElementById('qmetryApiUrl').value = settings.qmetryApiUrl || '';
+  document.getElementById('qmetryApiKey').value = settings.qmetryApiKey || '';
+  document.getElementById('qmetryUsername').value = settings.qmetryUsername || '';
+  document.getElementById('qmetryPassword').value = settings.qmetryPassword || '';
+  document.getElementById('qmetryProjectId').value = settings.qmetryProjectId || '';
+  document.getElementById('qmetryReleaseId').value = settings.qmetryReleaseId || '';
+
+  // Load custom field mappings
+  loadFieldMappings(settings.fieldMappings);
+
   document.getElementById('confluenceUrl').value = settings.confluenceUrl || '';
   document.getElementById('confluenceEmail').value = settings.confluenceEmail || '';
   document.getElementById('confluenceToken').value = settings.confluenceToken || '';
@@ -381,12 +470,39 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     jiraEmail: document.getElementById('jiraEmail').value.trim(),
     jiraApiToken: document.getElementById('jiraApiToken').value.trim(),
 
-    // Integrations
+    // Test Management Integrations
+    testMgmtPlatform: document.getElementById('testMgmtPlatform').value,
     testrailUrl: document.getElementById('testrailUrl').value,
     testrailUsername: document.getElementById('testrailUsername').value,
     testrailApiKey: document.getElementById('testrailApiKey').value,
     testrailProjectId: document.getElementById('testrailProjectId').value,
     testrailSection: document.getElementById('testrailSection').value,
+    zephyrScaleApiToken: document.getElementById('zephyrScaleApiToken').value,
+    zephyrScaleProjectKey: document.getElementById('zephyrScaleProjectKey').value,
+    zephyrScaleFolderId: document.getElementById('zephyrScaleFolderId').value,
+    zephyrSquadJiraUrl: document.getElementById('zephyrSquadJiraUrl').value,
+    zephyrSquadUsername: document.getElementById('zephyrSquadUsername').value,
+    zephyrSquadApiToken: document.getElementById('zephyrSquadApiToken').value,
+    zephyrSquadProjectKey: document.getElementById('zephyrSquadProjectKey').value,
+    zephyrSquadVersionId: document.getElementById('zephyrSquadVersionId').value,
+    xrayIsCloud: document.getElementById('xrayCloud').checked,
+    xrayJiraUrl: document.getElementById('xrayJiraUrl').value,
+    xrayUsername: document.getElementById('xrayUsername').value,
+    xrayApiToken: document.getElementById('xrayApiToken').value,
+    xrayClientId: document.getElementById('xrayClientId').value,
+    xrayClientSecret: document.getElementById('xrayClientSecret').value,
+    xrayProjectKey: document.getElementById('xrayProjectKey').value,
+    qmetryIsCloud: document.getElementById('qmetryCloud').checked,
+    qmetryApiUrl: document.getElementById('qmetryApiUrl').value,
+    qmetryApiKey: document.getElementById('qmetryApiKey').value,
+    qmetryUsername: document.getElementById('qmetryUsername').value,
+    qmetryPassword: document.getElementById('qmetryPassword').value,
+    qmetryProjectId: document.getElementById('qmetryProjectId').value,
+    qmetryReleaseId: document.getElementById('qmetryReleaseId').value,
+
+    // Custom field mappings
+    fieldMappings: JSON.stringify(getFieldMappings()),
+
     confluenceUrl: document.getElementById('confluenceUrl').value,
     confluenceEmail: document.getElementById('confluenceEmail').value,
     confluenceToken: document.getElementById('confluenceToken').value,
@@ -995,3 +1111,559 @@ document.getElementById('testGoogleOAuth')?.addEventListener('click', async () =
     statusEl.style.color = '#dc3545';
   }
 });
+
+// Test Management Platform Event Listeners
+
+// Platform selector - show/hide platform configs
+document.getElementById('testMgmtPlatform')?.addEventListener('change', (e) => {
+  const platform = e.target.value;
+
+  // Hide all platform configs
+  document.querySelectorAll('.test-mgmt-config').forEach(el => el.style.display = 'none');
+
+  // Show selected platform config
+  if (platform !== 'none') {
+    const configId = platform + '-config';
+    const configEl = document.getElementById(configId);
+    if (configEl) configEl.style.display = 'block';
+    document.getElementById('field-mapping-section').style.display = 'block';
+  }
+});
+
+// Xray platform toggle (Cloud vs Server)
+document.querySelectorAll('input[name="xrayPlatform"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    const isCloud = e.target.value === 'cloud';
+    document.getElementById('xrayCloudConfig').style.display = isCloud ? 'block' : 'none';
+    document.getElementById('xrayServerConfig').style.display = isCloud ? 'none' : 'block';
+  });
+});
+
+// qMetry platform toggle (Cloud vs On-Premise)
+document.querySelectorAll('input[name="qmetryPlatform"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    const isCloud = e.target.value === 'cloud';
+    document.getElementById('qmetryCloudConfig').style.display = isCloud ? 'block' : 'none';
+    document.getElementById('qmetryOnPremiseConfig').style.display = isCloud ? 'none' : 'block';
+  });
+});
+
+// Figma Image Mode toggle
+document.querySelectorAll('input[name="figmaImageMode"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    const mode = e.target.value;
+    const singleInfo = document.getElementById('figmaSingleModeInfo');
+    const childrenInfo = document.getElementById('figmaChildrenModeInfo');
+
+    if (mode === 'children') {
+      if (singleInfo) singleInfo.style.display = 'none';
+      if (childrenInfo) childrenInfo.style.display = 'block';
+    } else {
+      if (singleInfo) singleInfo.style.display = 'block';
+      if (childrenInfo) childrenInfo.style.display = 'none';
+    }
+  });
+});
+
+// Google Auth Mode toggle
+document.querySelectorAll('input[name="googleAuthMode"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    const mode = e.target.value;
+    const publicMode = document.getElementById('googlePublicMode');
+    const oauth2Mode = document.getElementById('googleOAuth2Mode');
+
+    if (mode === 'oauth2') {
+      if (publicMode) publicMode.style.display = 'none';
+      if (oauth2Mode) oauth2Mode.style.display = 'block';
+    } else {
+      if (publicMode) publicMode.style.display = 'block';
+      if (oauth2Mode) oauth2Mode.style.display = 'none';
+    }
+  });
+});
+
+// Test connection buttons for each platform
+
+// TestRail
+document.getElementById('testTestrail')?.addEventListener('click', async () => {
+  const statusEl = document.getElementById('testrailStatus');
+  statusEl.textContent = 'Testing connection...';
+  statusEl.style.color = '#0ea5e9';
+
+  const settings = {
+    testrailUrl: document.getElementById('testrailUrl').value,
+    testrailUsername: document.getElementById('testrailUsername').value,
+    testrailApiKey: document.getElementById('testrailApiKey').value
+  };
+
+  if (!settings.testrailUrl || !settings.testrailUsername || !settings.testrailApiKey) {
+    statusEl.textContent = '❌ Please fill in all required fields';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+
+  try {
+    const integration = new TestRailIntegration(settings);
+    await integration.testConnection();
+    statusEl.textContent = '✅ Connection successful!';
+    statusEl.style.color = '#28a745';
+  } catch (error) {
+    statusEl.textContent = `❌ ${error.message}`;
+    statusEl.style.color = '#dc3545';
+  }
+});
+
+// Zephyr Scale
+document.getElementById('testZephyrScale')?.addEventListener('click', async () => {
+  const statusEl = document.getElementById('zephyrScaleStatus');
+  statusEl.textContent = 'Testing connection...';
+  statusEl.style.color = '#0ea5e9';
+
+  const settings = {
+    zephyrScaleApiToken: document.getElementById('zephyrScaleApiToken').value,
+    zephyrScaleProjectKey: document.getElementById('zephyrScaleProjectKey').value
+  };
+
+  if (!settings.zephyrScaleApiToken || !settings.zephyrScaleProjectKey) {
+    statusEl.textContent = '❌ Please fill in all required fields';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+
+  try {
+    const integration = new ZephyrScaleIntegration(settings);
+    await integration.testConnection();
+    statusEl.textContent = '✅ Connection successful!';
+    statusEl.style.color = '#28a745';
+  } catch (error) {
+    statusEl.textContent = `❌ ${error.message}`;
+    statusEl.style.color = '#dc3545';
+  }
+});
+
+// Zephyr Squad
+document.getElementById('testZephyrSquad')?.addEventListener('click', async () => {
+  const statusEl = document.getElementById('zephyrSquadStatus');
+  statusEl.textContent = 'Testing connection...';
+  statusEl.style.color = '#0ea5e9';
+
+  const settings = {
+    zephyrSquadJiraUrl: document.getElementById('zephyrSquadJiraUrl').value,
+    zephyrSquadUsername: document.getElementById('zephyrSquadUsername').value,
+    zephyrSquadApiToken: document.getElementById('zephyrSquadApiToken').value,
+    zephyrSquadProjectKey: document.getElementById('zephyrSquadProjectKey').value
+  };
+
+  if (!settings.zephyrSquadJiraUrl || !settings.zephyrSquadUsername || !settings.zephyrSquadApiToken) {
+    statusEl.textContent = '❌ Please fill in all required fields';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+
+  try {
+    const integration = new ZephyrSquadIntegration(settings);
+    await integration.testConnection();
+    statusEl.textContent = '✅ Connection successful!';
+    statusEl.style.color = '#28a745';
+  } catch (error) {
+    statusEl.textContent = `❌ ${error.message}`;
+    statusEl.style.color = '#dc3545';
+  }
+});
+
+// Xray
+document.getElementById('testXray')?.addEventListener('click', async () => {
+  const statusEl = document.getElementById('xrayStatus');
+  statusEl.textContent = 'Testing connection...';
+  statusEl.style.color = '#0ea5e9';
+
+  const isCloud = document.getElementById('xrayCloud').checked;
+  const settings = {
+    xrayIsCloud: isCloud,
+    xrayJiraUrl: document.getElementById('xrayJiraUrl').value,
+    xrayUsername: document.getElementById('xrayUsername').value,
+    xrayApiToken: document.getElementById('xrayApiToken').value,
+    xrayClientId: document.getElementById('xrayClientId').value,
+    xrayClientSecret: document.getElementById('xrayClientSecret').value
+  };
+
+  if (isCloud && (!settings.xrayClientId || !settings.xrayClientSecret)) {
+    statusEl.textContent = '❌ Please fill in Client ID and Secret for Cloud';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+
+  if (!isCloud && (!settings.xrayJiraUrl || !settings.xrayUsername || !settings.xrayApiToken)) {
+    statusEl.textContent = '❌ Please fill in all required fields for Server';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+
+  try {
+    const integration = new XrayIntegration(settings);
+    await integration.testConnection();
+    statusEl.textContent = '✅ Connection successful!';
+    statusEl.style.color = '#28a745';
+  } catch (error) {
+    statusEl.textContent = `❌ ${error.message}`;
+    statusEl.style.color = '#dc3545';
+  }
+});
+
+// qMetry
+document.getElementById('testQmetry')?.addEventListener('click', async () => {
+  const statusEl = document.getElementById('qmetryStatus');
+  statusEl.textContent = 'Testing connection...';
+  statusEl.style.color = '#0ea5e9';
+
+  const isCloud = document.getElementById('qmetryCloud').checked;
+  const settings = {
+    qmetryIsCloud: isCloud,
+    qmetryApiUrl: document.getElementById('qmetryApiUrl').value,
+    qmetryApiKey: document.getElementById('qmetryApiKey').value,
+    qmetryUsername: document.getElementById('qmetryUsername').value,
+    qmetryPassword: document.getElementById('qmetryPassword').value
+  };
+
+  if (isCloud && !settings.qmetryApiKey) {
+    statusEl.textContent = '❌ Please enter API Key for Cloud';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+
+  if (!isCloud && (!settings.qmetryUsername || !settings.qmetryPassword)) {
+    statusEl.textContent = '❌ Please fill in username and password for On-Premise';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+
+  try {
+    const integration = new QmetryIntegration(settings);
+    await integration.testConnection();
+    statusEl.textContent = '✅ Connection successful!';
+    statusEl.style.color = '#28a745';
+  } catch (error) {
+    statusEl.textContent = `❌ ${error.message}`;
+    statusEl.style.color = '#dc3545';
+  }
+});
+
+// Store fetched custom fields globally
+let fetchedCustomFields = [];
+
+// Fetch Custom Fields button
+document.getElementById('fetchCustomFields')?.addEventListener('click', async () => {
+  const statusEl = document.getElementById('fetchFieldsStatus');
+  statusEl.textContent = 'Fetching custom fields...';
+  statusEl.style.color = '#0ea5e9';
+
+  const platform = document.getElementById('testMgmtPlatform').value;
+
+  if (platform === 'none') {
+    statusEl.textContent = '❌ Please select a test management platform first';
+    statusEl.style.color = '#dc3545';
+    return;
+  }
+
+  try {
+    let integration;
+    let fields;
+
+    switch (platform) {
+      case 'testrail':
+        integration = new TestRailIntegration({
+          testrailUrl: document.getElementById('testrailUrl').value,
+          testrailUsername: document.getElementById('testrailUsername').value,
+          testrailApiKey: document.getElementById('testrailApiKey').value
+        });
+        fields = await integration.getCustomFields();
+        break;
+
+      case 'zephyr-scale':
+        integration = new ZephyrScaleIntegration({
+          zephyrScaleApiToken: document.getElementById('zephyrScaleApiToken').value,
+          zephyrScaleProjectKey: document.getElementById('zephyrScaleProjectKey').value
+        });
+        fields = await integration.getCustomFields();
+        break;
+
+      case 'zephyr-squad':
+        integration = new ZephyrSquadIntegration({
+          zephyrSquadJiraUrl: document.getElementById('zephyrSquadJiraUrl').value,
+          zephyrSquadUsername: document.getElementById('zephyrSquadUsername').value,
+          zephyrSquadApiToken: document.getElementById('zephyrSquadApiToken').value,
+          zephyrSquadProjectKey: document.getElementById('zephyrSquadProjectKey').value
+        });
+        fields = await integration.getCustomFields();
+        break;
+
+      case 'xray':
+        integration = new XrayIntegration({
+          xrayIsCloud: document.getElementById('xrayCloud').checked,
+          xrayJiraUrl: document.getElementById('xrayJiraUrl').value,
+          xrayUsername: document.getElementById('xrayUsername').value,
+          xrayApiToken: document.getElementById('xrayApiToken').value,
+          xrayClientId: document.getElementById('xrayClientId').value,
+          xrayClientSecret: document.getElementById('xrayClientSecret').value
+        });
+        fields = await integration.getCustomFields();
+        break;
+
+      case 'qmetry':
+        integration = new QmetryIntegration({
+          qmetryIsCloud: document.getElementById('qmetryCloud').checked,
+          qmetryApiUrl: document.getElementById('qmetryApiUrl').value,
+          qmetryApiKey: document.getElementById('qmetryApiKey').value,
+          qmetryUsername: document.getElementById('qmetryUsername').value,
+          qmetryPassword: document.getElementById('qmetryPassword').value,
+          qmetryProjectId: document.getElementById('qmetryProjectId').value
+        });
+        fields = await integration.getCustomFields();
+        break;
+    }
+
+    // Store fetched fields
+    fetchedCustomFields = fields;
+
+    // Display available fields in console and status
+    console.log(`Available custom fields for ${platform}:`, fields);
+    statusEl.textContent = `✅ Found ${fields.length} custom fields - Auto-populated in table below`;
+    statusEl.style.color = '#28a745';
+
+    // Auto-populate table with all fetched fields
+    autoPopulateFieldMappings(fields);
+
+  } catch (error) {
+    statusEl.textContent = `❌ ${error.message}`;
+    statusEl.style.color = '#dc3545';
+  }
+});
+
+// Auto-populate table with all fetched custom fields
+function autoPopulateFieldMappings(fields) {
+  const table = document.getElementById('fieldMappingsTable');
+
+  // Clear existing rows
+  table.innerHTML = '';
+
+  // Create a row for each custom field
+  fields.forEach(field => {
+    // Handle different API response formats
+    const fieldName = field.name || field.label || field.system_name || field.key || field.id;
+    // Prioritize system_name for TestRail custom fields (e.g., "custom_regression_case")
+    const fieldId = field.system_name || field.key || field.name || field.id;
+
+    // Convert field name to snake_case for QAtalyst field
+    // e.g., "Automated Mobile Platform" → "automated_mobile_platform"
+    const qatalystFieldName = normalizeFieldName(fieldName);
+
+    const newRow = document.createElement('tr');
+    newRow.setAttribute('data-mapping-id', qatalystFieldName);
+    newRow.innerHTML = `
+      <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+        <input type="text" class="qatalyst-field-name" value="${qatalystFieldName}" placeholder="QAtalyst field name" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Original: ${fieldName}</div>
+      </td>
+      <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">→</td>
+      <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+        <input type="text" class="testmgmt-field-input" value="${fieldId}" placeholder="Test management field ID" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; display: block;">
+        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
+          ${field.type ? `Type: ${field.type}` : ''}
+          ${field.description ? ` - ${field.description}` : ''}
+        </div>
+      </td>
+      <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+        <input type="text" class="field-value" placeholder="e.g., Android, Yes, API" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Value to use when uploading tests</div>
+      </td>
+      <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">
+        <button type="button" class="btn-remove-mapping" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+      </td>
+    `;
+
+    table.appendChild(newRow);
+  });
+
+  // Show a message if no fields were found
+  if (fields.length === 0) {
+    const emptyRow = document.createElement('tr');
+    emptyRow.innerHTML = `
+      <td colspan="5" style="padding: 24px; text-align: center; color: #64748b;">
+        No custom fields found. Click "+ Add Custom Mapping" to add manual mappings.
+      </td>
+    `;
+    table.appendChild(emptyRow);
+  }
+}
+
+// Normalize field name to snake_case
+function normalizeFieldName(name) {
+  return name
+    .toString()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_') // Replace non-alphanumeric with underscore
+    .replace(/^_+|_+$/g, ''); // Remove leading/trailing underscores
+}
+
+// Handle dropdown change - show/hide text input
+document.addEventListener('change', (e) => {
+  if (e.target.classList.contains('testmgmt-field-select')) {
+    const row = e.target.closest('tr');
+    const textInput = row.querySelector('.testmgmt-field-input');
+
+    if (e.target.value === '__custom__' || e.target.value === '') {
+      textInput.style.display = 'block';
+    } else {
+      textInput.style.display = 'none';
+      textInput.value = e.target.value; // Sync value
+    }
+  }
+});
+
+// Add Custom Mapping button
+document.getElementById('addCustomMapping')?.addEventListener('click', () => {
+  const table = document.getElementById('fieldMappingsTable');
+
+  // Remove empty state message if it exists
+  const emptyState = table.querySelector('tr td[colspan="5"]');
+  if (emptyState) {
+    table.innerHTML = '';
+  }
+
+  const newId = `mapping_${Date.now()}`;
+
+  const newRow = document.createElement('tr');
+  newRow.setAttribute('data-mapping-id', newId);
+  newRow.innerHTML = `
+    <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+      <input type="text" class="qatalyst-field-name" placeholder="Enter QAtalyst field name" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+    </td>
+    <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">→</td>
+    <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+      <input type="text" class="testmgmt-field-input" placeholder="Enter test management field ID" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; display: block;">
+    </td>
+    <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+      <input type="text" class="field-value" placeholder="e.g., Android, Yes, API" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+    </td>
+    <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">
+      <button type="button" class="btn-remove-mapping" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+    </td>
+  `;
+
+  table.appendChild(newRow);
+});
+
+// Remove mapping row
+document.addEventListener('click', (e) => {
+  if (e.target.classList.contains('btn-remove-mapping')) {
+    const row = e.target.closest('tr');
+    row.remove();
+  }
+});
+
+// Get all field mappings for saving
+function getFieldMappings() {
+  const mappings = {};
+  const rows = document.querySelectorAll('#fieldMappingsTable tr');
+
+  rows.forEach(row => {
+    const qatalystField = row.querySelector('.qatalyst-field-name')?.value.trim();
+    const select = row.querySelector('.testmgmt-field-select');
+    const textInput = row.querySelector('.testmgmt-field-input');
+    const valueInput = row.querySelector('.field-value');
+
+    if (!qatalystField) return; // Skip if no QAtalyst field name
+
+    // Get value from dropdown or text input
+    let testMgmtField = '';
+    if (select && select.value && select.value !== '__custom__' && select.value !== '') {
+      testMgmtField = select.value;
+    } else if (textInput && textInput.value.trim()) {
+      testMgmtField = textInput.value.trim();
+    }
+
+    if (testMgmtField) {
+      mappings[qatalystField] = {
+        field: testMgmtField,
+        value: valueInput ? valueInput.value.trim() : ''
+      };
+    }
+  });
+
+  return mappings;
+}
+
+// Load saved field mappings
+function loadFieldMappings(fieldMappingsJson) {
+  const table = document.getElementById('fieldMappingsTable');
+
+  if (!fieldMappingsJson) {
+    // Show empty state message
+    showEmptyFieldMappingsState();
+    return;
+  }
+
+  try {
+    const mappings = JSON.parse(fieldMappingsJson);
+
+    // Clear existing rows
+    table.innerHTML = '';
+
+    // If no mappings saved, show empty state
+    if (Object.keys(mappings).length === 0) {
+      showEmptyFieldMappingsState();
+      return;
+    }
+
+    // Create rows for each saved mapping
+    Object.entries(mappings).forEach(([qatalystField, mapping]) => {
+      // Handle both old format (string) and new format (object with field and value)
+      let testMgmtField, fieldValue;
+      if (typeof mapping === 'string') {
+        // Old format: just the field ID
+        testMgmtField = mapping;
+        fieldValue = '';
+      } else {
+        // New format: object with field and value
+        testMgmtField = mapping.field || mapping;
+        fieldValue = mapping.value || '';
+      }
+
+      const newRow = document.createElement('tr');
+      newRow.setAttribute('data-mapping-id', qatalystField);
+      newRow.innerHTML = `
+        <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+          <input type="text" class="qatalyst-field-name" value="${qatalystField}" placeholder="QAtalyst field name" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+        </td>
+        <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">→</td>
+        <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+          <input type="text" class="testmgmt-field-input" value="${testMgmtField}" placeholder="Test management field ID" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; display: block;">
+        </td>
+        <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+          <input type="text" class="field-value" value="${fieldValue}" placeholder="e.g., Android, Yes, API" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+        </td>
+        <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">
+          <button type="button" class="btn-remove-mapping" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+        </td>
+      `;
+
+      table.appendChild(newRow);
+    });
+  } catch (error) {
+    console.error('Failed to load field mappings:', error);
+    showEmptyFieldMappingsState();
+  }
+}
+
+// Show empty state for field mappings
+function showEmptyFieldMappingsState() {
+  const table = document.getElementById('fieldMappingsTable');
+  table.innerHTML = `
+    <tr>
+      <td colspan="5" style="padding: 32px; text-align: center; color: #64748b; background: #f8fafc;">
+        <div style="font-size: 14px; font-weight: 500; margin-bottom: 8px;">No field mappings yet</div>
+        <div style="font-size: 13px;">Click "Fetch Custom Fields" to auto-populate from your test management system,<br>or click "+ Add Custom Mapping" to add manually.</div>
+      </td>
+    </tr>
+  `;
+}

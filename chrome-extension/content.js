@@ -7,7 +7,101 @@
   let currentStreamingRequestId = null;
   let streamingContent = '';
   let isStreaming = false;
-  
+
+  /**
+   * Escape HTML special characters to prevent XSS
+   * @param {string} text - Text to escape
+   * @returns {string} - Escaped text
+   */
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  /**
+   * Create safe error message element
+   * @param {string} message - Error message to display
+   * @returns {HTMLElement} - Safe error element
+   */
+  function createSafeErrorMessage(message) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'qatalyst-error';
+
+    const icon = document.createTextNode('❌ ');
+    errorDiv.appendChild(icon);
+
+    // Split by newlines and create separate lines
+    const lines = message.split('\n');
+    lines.forEach((line, index) => {
+      if (index > 0) {
+        errorDiv.appendChild(document.createElement('br'));
+      }
+      errorDiv.appendChild(document.createTextNode(line));
+    });
+
+    return errorDiv;
+  }
+
+  /**
+   * Safely format and sanitize content for display
+   * Prevents XSS by using textContent and controlled DOM creation
+   * @param {string} content - Content to format
+   * @returns {HTMLElement} - Safe DOM element
+   */
+  function createSafeFormattedContent(content) {
+    const container = document.createElement('div');
+
+    // Split content by lines
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+      const lineDiv = document.createElement('div');
+
+      // Process bold text **text**
+      const boldRegex = /\*\*(.*?)\*\*/g;
+      let lastIndex = 0;
+      let match;
+
+      while ((match = boldRegex.exec(line)) !== null) {
+        // Add text before match
+        if (match.index > lastIndex) {
+          const textNode = document.createTextNode(line.substring(lastIndex, match.index));
+          lineDiv.appendChild(textNode);
+        }
+
+        // Add bold text
+        const strongElem = document.createElement('strong');
+        strongElem.textContent = match[1];
+        lineDiv.appendChild(strongElem);
+
+        lastIndex = match.index + match[0].length;
+      }
+
+      // Add remaining text
+      if (lastIndex < line.length) {
+        const textNode = document.createTextNode(line.substring(lastIndex));
+        lineDiv.appendChild(textNode);
+      }
+
+      // Handle bullet points
+      if (line.trim().startsWith('- ')) {
+        lineDiv.style.paddingLeft = '20px';
+        lineDiv.textContent = '• ' + line.substring(2);
+      }
+
+      // If line is empty, add space
+      if (line.trim() === '') {
+        lineDiv.innerHTML = '&nbsp;';
+      }
+
+      container.appendChild(lineDiv);
+    }
+
+    return container;
+  }
+
   // Listen for streaming chunks, agent progress, evolution progress, enhancement progress, and historical mining progress
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'streamChunk') {
@@ -28,6 +122,9 @@
     }
     if (request.action === 'historicalMiningProgress') {
       handleHistoricalMiningProgress(request.status);
+    }
+    if (request.type === 'UPLOAD_PROGRESS') {
+      handleUploadProgress(request.progress);
     }
     if (request.action === 'evolutionComplete') {
       handleEvolutionComplete(request.data);
@@ -259,24 +356,36 @@
     streamingContent += chunk;
     const resultsContainer = document.getElementById('results-container');
     if (resultsContainer) {
-      // Display streaming content with typing effect
-      resultsContainer.innerHTML = `
-        <div class="qatalyst-streaming">
-          <div class="stream-header">
-            <span class="stream-status">✨ Generating...</span>
-            <button class="stop-btn" id="stop-stream-btn">⏹ Stop</button>
-          </div>
-          <div class="stream-content">${formatStreamingContent(streamingContent)}</div>
-        </div>
-      `;
-      
-      // Add stop button listener
-      const stopBtn = document.getElementById('stop-stream-btn');
-      if (stopBtn && !stopBtn.hasAttribute('data-listener')) {
-        stopBtn.setAttribute('data-listener', 'true');
-        stopBtn.addEventListener('click', stopStreaming);
-      }
-      
+      // Clear and rebuild with safe DOM manipulation
+      resultsContainer.innerHTML = '';
+
+      const streamingDiv = document.createElement('div');
+      streamingDiv.className = 'qatalyst-streaming';
+
+      const headerDiv = document.createElement('div');
+      headerDiv.className = 'stream-header';
+
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'stream-status';
+      statusSpan.textContent = '✨ Generating...';
+
+      const stopBtn = document.createElement('button');
+      stopBtn.className = 'stop-btn';
+      stopBtn.id = 'stop-stream-btn';
+      stopBtn.textContent = '⏹ Stop';
+      stopBtn.addEventListener('click', stopStreaming);
+
+      headerDiv.appendChild(statusSpan);
+      headerDiv.appendChild(stopBtn);
+
+      const contentDiv = document.createElement('div');
+      contentDiv.className = 'stream-content';
+      contentDiv.appendChild(createSafeFormattedContent(streamingContent));
+
+      streamingDiv.appendChild(headerDiv);
+      streamingDiv.appendChild(contentDiv);
+      resultsContainer.appendChild(streamingDiv);
+
       // Auto-scroll to bottom
       resultsContainer.scrollTop = resultsContainer.scrollHeight;
     }
@@ -299,17 +408,21 @@
       isStreaming = false;
       currentStreamingRequestId = null;
       
-      // Update UI
+      // Update UI with safe DOM manipulation
       const resultsContainer = document.getElementById('results-container');
       if (resultsContainer) {
-        resultsContainer.innerHTML = `
-          <div class="qatalyst-warning">
-            ⚠️ Generation stopped by user
-            <div style="margin-top: 10px;">
-              ${formatStreamingContent(streamingContent)}
-            </div>
-          </div>
-        `;
+        resultsContainer.innerHTML = '';
+
+        const warningDiv = document.createElement('div');
+        warningDiv.className = 'qatalyst-warning';
+        warningDiv.textContent = '⚠️ Generation stopped by user';
+
+        const contentWrapper = document.createElement('div');
+        contentWrapper.style.marginTop = '10px';
+        contentWrapper.appendChild(createSafeFormattedContent(streamingContent));
+
+        warningDiv.appendChild(contentWrapper);
+        resultsContainer.appendChild(warningDiv);
       }
     }
   }
@@ -331,11 +444,11 @@
           <div class="agent-progress-fill" style="width: ${(step / total) * 100}%"></div>
         </div>
         <div class="agent-current">
-          ${status === 'running' ? '⚡' : status === 'completed' ? '✅' : '❌'} 
-          <strong>${agent}</strong>
-          ${status === 'running' ? `<span class="agent-desc">${description}</span>` : ''}
-          ${status === 'completed' && count ? `<span class="agent-count">Generated ${count} tests</span>` : ''}
-          ${status === 'error' ? `<span class="agent-error">${error}</span>` : ''}
+          ${status === 'running' ? '⚡' : status === 'completed' ? '✅' : '❌'}
+          <strong>${escapeHtml(agent)}</strong>
+          ${status === 'running' ? `<span class="agent-desc">${escapeHtml(description)}</span>` : ''}
+          ${status === 'completed' && count ? `<span class="agent-count">Generated ${escapeHtml(String(count))} tests</span>` : ''}
+          ${status === 'error' ? `<span class="agent-error">${escapeHtml(error)}</span>` : ''}
         </div>
       </div>
     `;
@@ -494,9 +607,9 @@
       </div>
       <div class="qatalyst-content">
         <div class="qatalyst-ticket-info">
-          <strong>Ticket:</strong> ${ticketKey}
+          <strong>Ticket:</strong> ${escapeHtml(ticketKey)}
         </div>
-        
+
         <div class="qatalyst-actions">
           <button class="qatalyst-btn primary" id="analyze-btn" data-testid="analyze-requirements-btn">
             <span class="btn-icon">🔍</span>
@@ -859,7 +972,73 @@
     }
     return 'external';
   }
-  
+
+  /**
+   * Extract important keywords from Jira ticket for intelligent crawl data filtering
+   * @param {Object} ticketData - Jira ticket data
+   * @returns {Array} - Array of keywords
+   */
+  function extractTicketKeywords(ticketData) {
+    const keywords = new Set();
+    const text = `${ticketData.summary || ''} ${ticketData.description || ''}`.toLowerCase();
+
+    // Common words to ignore
+    const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can']);
+
+    // Extract words (3+ characters, not stop words)
+    const words = text.match(/\b[a-z]{3,}\b/g) || [];
+    words.forEach(word => {
+      if (!stopWords.has(word)) {
+        keywords.add(word);
+      }
+    });
+
+    // Extract camelCase and kebab-case terms
+    const compoundWords = text.match(/[a-z]+(?:[A-Z][a-z]+)+|[a-z]+-[a-z-]+/g) || [];
+    compoundWords.forEach(word => keywords.add(word.toLowerCase()));
+
+    return Array.from(keywords);
+  }
+
+  /**
+   * Get intelligently filtered crawl context based on Jira ticket keywords
+   * Queries crawl data JSON and creates 5-10 KB focused summary
+   * @param {Object} ticketData - Jira ticket data for keyword extraction
+   * @returns {Promise<string|null>} - Filtered context summary
+   */
+  async function getCrawledContextSummary(ticketData) {
+    try {
+      // Extract keywords from Jira ticket
+      const keywords = extractTicketKeywords(ticketData);
+
+      if (keywords.length === 0) {
+        console.log('ℹ️ No keywords extracted from ticket for crawl data filtering');
+        return null;
+      }
+
+      console.log(`🔍 Extracted ${keywords.length} keywords from ticket:`, keywords.slice(0, 10));
+
+      // Request filtered crawl data from background
+      const response = await chrome.runtime.sendMessage({
+        action: 'getFilteredCrawlData',
+        keywords: keywords,
+        maxSizeKB: 10 // Limit summary to 10 KB
+      });
+
+      if (!response || !response.success || !response.summary) {
+        console.log('ℹ️ No relevant crawl data found. Use Settings > Web App Crawler to crawl your application.');
+        return null;
+      }
+
+      console.log(`✅ Using filtered crawl context (${response.summary.length} bytes, ${response.matchedPages} relevant pages)`);
+      return response.summary;
+
+    } catch (error) {
+      console.warn('⚠️ Could not fetch filtered crawl data:', error);
+      return null;
+    }
+  }
+
   // Setup event listeners
   function setupEventListeners(ticketKey, ticketData) {
     // Close button
@@ -877,12 +1056,12 @@
     document.getElementById('analyze-btn')?.addEventListener('click', async () => {
       await handleAnalyze(ticketKey, ticketData);
     });
-    
+
     // Test scope button
     document.getElementById('test-scope-btn')?.addEventListener('click', async () => {
       await handleTestScope(ticketKey, ticketData);
     });
-    
+
     // Test cases button
     document.getElementById('test-cases-btn')?.addEventListener('click', async () => {
       await handleTestCases(ticketKey, ticketData);
@@ -956,13 +1135,23 @@
         currentStreamingRequestId = `analyze-${Date.now()}`;
         resultsContainer.innerHTML = '<div class="qatalyst-loading">🔍 Analyzing requirements with AI (streaming enabled)...</div>';
         
+        const crawledContext = await getCrawledContextSummary(ticketData);
+
+        // Update currentAppContext for UI display
+        if (crawledContext) {
+          currentAppContext = { hasCrawledData: true };
+        } else {
+          currentAppContext = null;
+        }
+
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: 'analyzeRequirementsStream',
             data: {
               ticketKey,
               ticketData,
-              settings
+              settings,
+              crawledContext: crawledContext
             }
           }, response => {
             if (chrome.runtime.lastError) {
@@ -976,7 +1165,7 @@
             }
           });
         });
-        
+
         // Stream is complete
         isStreaming = false;
         currentStreamingRequestId = null;
@@ -985,13 +1174,23 @@
         // Regular non-streaming
         resultsContainer.innerHTML = '<div class="qatalyst-loading">🔍 Analyzing requirements with AI...</div>';
         
+        const crawledContext = await getCrawledContextSummary(ticketData);
+
+        // Update currentAppContext for UI display
+        if (crawledContext) {
+          currentAppContext = { hasCrawledData: true };
+        } else {
+          currentAppContext = null;
+        }
+
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: 'analyzeRequirements',
             data: {
               ticketKey,
               ticketData,
-              settings
+              settings,
+              crawledContext: crawledContext
             }
           }, response => {
             if (chrome.runtime.lastError) {
@@ -1005,14 +1204,15 @@
             }
           });
         });
-        
+
         displayAnalysisResults(response);
       }
       
     } catch (error) {
       isStreaming = false;
       currentStreamingRequestId = null;
-      resultsContainer.innerHTML = `<div class="qatalyst-error">❌ ${error.message.replace(/\\n/g, '<br>')}</div>`;
+      resultsContainer.innerHTML = '';
+      resultsContainer.appendChild(createSafeErrorMessage(error.message));
     } finally {
       btn.disabled = false;
     }
@@ -1065,13 +1265,23 @@
         currentStreamingRequestId = `scope-${Date.now()}`;
         resultsContainer.innerHTML = '<div class="qatalyst-loading">📋 Generating comprehensive test scope (streaming enabled)...</div>';
         
+        const crawledContext = await getCrawledContextSummary(ticketData);
+
+        // Update currentAppContext for UI display
+        if (crawledContext) {
+          currentAppContext = { hasCrawledData: true };
+        } else {
+          currentAppContext = null;
+        }
+
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: 'generateTestScopeStream',
             data: {
               ticketKey,
               ticketData,
-              settings
+              settings,
+              crawledContext: crawledContext
             }
           }, response => {
             if (chrome.runtime.lastError) {
@@ -1085,7 +1295,7 @@
             }
           });
         });
-        
+
         // Stream is complete
         isStreaming = false;
         currentStreamingRequestId = null;
@@ -1093,14 +1303,24 @@
       } else {
         // Regular non-streaming
         resultsContainer.innerHTML = '<div class="qatalyst-loading">📋 Generating comprehensive test scope...</div>';
-        
+
+        const crawledContext = await getCrawledContextSummary(ticketData);
+
+        // Update currentAppContext for UI display
+        if (crawledContext) {
+          currentAppContext = { hasCrawledData: true };
+        } else {
+          currentAppContext = null;
+        }
+
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: 'generateTestScope',
             data: {
               ticketKey,
               ticketData,
-              settings
+              settings,
+              crawledContext: crawledContext
             }
           }, response => {
             if (chrome.runtime.lastError) {
@@ -1114,14 +1334,15 @@
             }
           });
         });
-        
+
         displayTestScopeResults(response);
       }
       
     } catch (error) {
       isStreaming = false;
       currentStreamingRequestId = null;
-      resultsContainer.innerHTML = `<div class="qatalyst-error">❌ ${error.message.replace(/\\n/g, '<br>')}</div>`;
+      resultsContainer.innerHTML = '';
+      resultsContainer.appendChild(createSafeErrorMessage(error.message));
     } finally {
       btn.disabled = false;
     }
@@ -1314,7 +1535,8 @@
     } catch (error) {
       isStreaming = false;
       currentStreamingRequestId = null;
-      resultsContainer.innerHTML = `<div class="qatalyst-error">❌ ${error.message.replace(/\\n/g, '<br>')}</div>`;
+      resultsContainer.innerHTML = '';
+      resultsContainer.appendChild(createSafeErrorMessage(error.message));
     } finally {
       btn.disabled = false;
     }
@@ -1603,6 +1825,16 @@
             <span>Export to CSV</span>
           </button>
         </div>
+        <div style="display: flex; gap: 8px; margin-top: 8px;">
+          <button class="qatalyst-btn primary" id="export-to-test-mgmt-btn" style="flex: 1; background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+            <span class="btn-icon">🚀</span>
+            <span>Export to Test Management <span style="background: #3b82f6; color: white; font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle;">BETA</span></span>
+          </button>
+          <button class="qatalyst-btn" id="cancel-upload-btn" style="display: none; background: #ef4444; color: white;">
+            <span class="btn-icon">🛑</span>
+            <span>Cancel</span>
+          </button>
+        </div>
       </div>
     `;
 
@@ -1613,6 +1845,21 @@
 
     document.getElementById('export-csv-btn')?.addEventListener('click', () => {
       exportTestCasesToCSV(data.testCases);
+    });
+
+    document.getElementById('export-to-test-mgmt-btn')?.addEventListener('click', async () => {
+      await exportToTestManagement(data.testCases);
+    });
+
+    document.getElementById('cancel-upload-btn')?.addEventListener('click', async () => {
+      const response = await chrome.runtime.sendMessage({ type: 'CANCEL_UPLOAD' });
+      if (response.success) {
+        const cancelBtn = document.getElementById('cancel-upload-btn');
+        if (cancelBtn) {
+          cancelBtn.disabled = true;
+          cancelBtn.innerHTML = '<span class="btn-icon">⏳</span><span>Cancelling...</span>';
+        }
+      }
     });
 
     document.getElementById('regenerate-testcases-btn')?.addEventListener('click', async () => {
@@ -1631,8 +1878,8 @@
     const figmaStatus = externalSources.figma > 0 ? '✅ Yes' : '❌ No';
     const googleDocsStatus = externalSources.googleDocs > 0 ? '✅ Yes' : '❌ No';
 
-    // Check if knowledge graph is available (will be analyzed by ContextAnalysisAgent)
-    const knowledgeGraphStatus = (appContext && appContext.knowledgeGraph) ? '✅ Yes' : '❌ No';
+    // Check if crawled data is available (filtered by keywords)
+    const knowledgeGraphStatus = (appContext && (appContext.knowledgeGraph || appContext.hasCrawledData)) ? '✅ Yes' : '❌ No';
 
     // Build details for knowledge graph tooltip
     let kgDetails = '';
@@ -1781,7 +2028,134 @@
       alert('Failed to export test cases to CSV. Please try again.');
     }
   }
-  
+
+  function handleUploadProgress(progress) {
+    const btn = document.getElementById('export-to-test-mgmt-btn');
+    if (!btn) return;
+
+    const { current, total, phase } = progress;
+
+    if (phase === 'initializing') {
+      btn.innerHTML = '<span class="btn-icon">🔄</span><span>Initializing...</span>';
+    } else if (phase === 'checking-duplicates') {
+      btn.innerHTML = '<span class="btn-icon">🔍</span><span>Checking duplicates...</span>';
+    } else if (phase === 'bulk-uploading') {
+      btn.innerHTML = '<span class="btn-icon">🚀</span><span>Bulk uploading...</span>';
+    } else if (phase === 'uploading') {
+      const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
+      btn.innerHTML = `<span class="btn-icon">📤</span><span>Uploading ${current}/${total} (${percentage}%)</span>`;
+    } else if (phase === 'completed') {
+      btn.innerHTML = '<span class="btn-icon">✅</span><span>Completed!</span>';
+    } else if (phase === 'cancelled') {
+      btn.innerHTML = '<span class="btn-icon">🛑</span><span>Cancelled</span>';
+    } else if (phase === 'rate-limited') {
+      btn.innerHTML = '<span class="btn-icon">⚠️</span><span>Rate Limited</span>';
+    }
+  }
+
+  async function exportToTestManagement(testCases) {
+    const btn = document.getElementById('export-to-test-mgmt-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="btn-icon">⏳</span><span>Exporting...</span>';
+    }
+
+    // Show cancel button
+    const cancelBtn = document.getElementById('cancel-upload-btn');
+    if (cancelBtn) {
+      cancelBtn.style.display = 'inline-block';
+    }
+
+    try {
+      // Get Jira ticket key
+      const ticketKey = extractTicketKey();
+
+      // Send message to background script to handle the export
+      const response = await chrome.runtime.sendMessage({
+        type: 'EXPORT_TO_TEST_MANAGEMENT',
+        testCases: testCases,
+        jiraTicket: ticketKey
+      });
+
+      // Hide cancel button
+      if (cancelBtn) {
+        cancelBtn.style.display = 'none';
+        cancelBtn.disabled = false;
+        cancelBtn.innerHTML = '<span class="btn-icon">🛑</span><span>Cancel</span>';
+      }
+
+      if (response.success) {
+        // Show success feedback
+        if (btn) {
+          btn.innerHTML = '<span class="btn-icon">✅</span><span>Exported!</span>';
+          setTimeout(() => {
+            btn.innerHTML = '<span class="btn-icon">🚀</span><span>Export to Test Management <span style="background: #3b82f6; color: white; font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle;">BETA</span></span>';
+            btn.disabled = false;
+          }, 3000);
+        }
+
+        // Show detailed results
+        const successCount = response.results.success.length;
+        const failedCount = response.results.failed.length;
+        const skippedCount = response.results.skipped ? response.results.skipped.length : 0;
+        const platform = response.platform;
+
+        let message = `Successfully exported ${successCount} test case(s) to ${platform}`;
+
+        if (skippedCount > 0) {
+          message += `\n${skippedCount} duplicate(s) skipped (already exist in ${platform})`;
+        }
+
+        if (failedCount > 0) {
+          message += `\n\nFailed to export ${failedCount} test case(s):`;
+          response.results.failed.forEach(fail => {
+            message += `\n- ${fail.title}: ${fail.error}`;
+          });
+        }
+
+        if (skippedCount > 0) {
+          message += '\n\nSkipped duplicates:';
+          response.results.skipped.forEach(skip => {
+            message += `\n- ${skip.title} (already exists: ${skip.existingId})`;
+          });
+        }
+
+        if (successCount > 0) {
+          message += '\n\nSuccessfully exported:';
+          response.results.success.forEach(success => {
+            message += `\n- ${success.title} (${success.id})`;
+          });
+        }
+
+        alert(message);
+        console.log('✅ Export results:', response.results);
+      } else {
+        throw new Error(response.error || 'Export failed');
+      }
+    } catch (error) {
+      console.error('❌ Error exporting to test management:', error);
+
+      // Hide cancel button
+      const cancelBtn = document.getElementById('cancel-upload-btn');
+      if (cancelBtn) {
+        cancelBtn.style.display = 'none';
+        cancelBtn.disabled = false;
+        cancelBtn.innerHTML = '<span class="btn-icon">🛑</span><span>Cancel</span>';
+      }
+
+      // Show error feedback
+      if (btn) {
+        btn.innerHTML = '<span class="btn-icon">❌</span><span>Export Failed</span>';
+        setTimeout(() => {
+          btn.innerHTML = '<span class="btn-icon">🚀</span><span>Export to Test Management <span style="background: #3b82f6; color: white; font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle;">BETA</span></span>';
+          btn.disabled = false;
+        }, 3000);
+      }
+
+      alert(`Failed to export to test management: ${error.message}\n\nPlease check your Test Management settings in the extension options.`);
+    }
+  }
+
   async function addAnalysisToJira(analysis) {
     const btn = document.getElementById('add-analysis-to-jira-btn');
     if (btn) {

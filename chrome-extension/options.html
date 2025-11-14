@@ -699,7 +699,26 @@
     <!-- Integrations Tab -->
     <div class="tab-content" id="integrations-tab">
       <div class="section">
-        <h2>🔗 TestRail Integration<span class="coming-soon-badge">Coming Soon</span></h2>
+        <h2>🔗 Test Management Integration <span style="background: #3b82f6; color: white; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; margin-left: 8px; vertical-align: middle;">BETA</span></h2>
+        <p>Export generated test cases directly to your test management system. Choose your platform below.</p>
+
+        <!-- Platform Selector -->
+        <div class="form-group" style="margin-bottom: 30px;">
+          <label><strong>Select Test Management Platform:</strong></label>
+          <select id="testMgmtPlatform" style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; margin-top: 8px;">
+            <option value="none">None (Disabled)</option>
+            <option value="testrail">TestRail</option>
+            <option value="zephyr-scale">Zephyr Scale (Jira Cloud)</option>
+            <option value="zephyr-squad">Zephyr Squad (Jira Server/Data Center)</option>
+            <option value="xray">Xray Test Management</option>
+            <option value="qmetry">qMetry Test Management</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- TestRail Configuration -->
+      <div class="section test-mgmt-config" id="testrail-config" style="display: none;">
+        <h2>🔗 TestRail Configuration</h2>
         <p>Configure TestRail connection for test case export.</p>
         
         <div class="form-group">
@@ -732,10 +751,314 @@
             <input type="text" id="testrailSection" placeholder="QAtalyst_Automation" data-testid="testrail-section">
           </div>
         </div>
-        
+
         <a href="https://www.gurock.com/testrail/docs/api" target="_blank" class="help-link">📖 TestRail API Documentation</a>
       </div>
-      
+
+      <!-- Zephyr Scale Configuration -->
+      <div class="section test-mgmt-config" id="zephyr-scale-config" style="display: none;">
+        <h2>🔷 Zephyr Scale Configuration</h2>
+        <p>Configure Zephyr Scale (Jira Cloud) for test case export.</p>
+
+        <div class="form-group">
+          <label for="zephyrScaleApiToken">API Token:</label>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <input type="password" id="zephyrScaleApiToken" placeholder="Enter Zephyr Scale API token" style="flex-grow: 1;">
+            <button type="button" class="btn secondary" id="testZephyrScale">Test</button>
+          </div>
+          <span id="zephyrScaleStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="zephyrScaleProjectKey">Project Key:</label>
+            <input type="text" id="zephyrScaleProjectKey" placeholder="PROJ">
+          </div>
+          <div class="form-group">
+            <label for="zephyrScaleFolderId">Folder ID (Optional):</label>
+            <input type="text" id="zephyrScaleFolderId" placeholder="Leave empty for root">
+          </div>
+        </div>
+
+        <a href="https://support.smartbear.com/zephyr-scale-cloud/api-docs/" target="_blank" class="help-link">📖 Zephyr Scale API Documentation</a>
+      </div>
+
+      <!-- Zephyr Squad Configuration -->
+      <div class="section test-mgmt-config" id="zephyr-squad-config" style="display: none;">
+        <h2>🔶 Zephyr Squad Configuration</h2>
+        <p>Configure Zephyr Squad (Jira Server/Data Center) for test case export.</p>
+
+        <div class="form-group">
+          <label for="zephyrSquadJiraUrl">Jira URL:</label>
+          <input type="text" id="zephyrSquadJiraUrl" placeholder="https://jira.yourcompany.com">
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="zephyrSquadUsername">Username/Email:</label>
+            <input type="text" id="zephyrSquadUsername" placeholder="your-email@example.com">
+          </div>
+          <div class="form-group">
+            <label for="zephyrSquadApiToken">API Token:</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <input type="password" id="zephyrSquadApiToken" placeholder="Enter API token" style="flex-grow: 1;">
+              <button type="button" class="btn secondary" id="testZephyrSquad">Test</button>
+            </div>
+            <span id="zephyrSquadStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="zephyrSquadProjectKey">Project Key:</label>
+            <input type="text" id="zephyrSquadProjectKey" placeholder="PROJ">
+          </div>
+          <div class="form-group">
+            <label for="zephyrSquadVersionId">Version ID (Optional):</label>
+            <input type="text" id="zephyrSquadVersionId" placeholder="-1 (Unscheduled)">
+          </div>
+        </div>
+
+        <a href="https://zfjsw.docs.apiary.io/" target="_blank" class="help-link">📖 Zephyr Squad API Documentation</a>
+      </div>
+
+      <!-- Xray Configuration -->
+      <div class="section test-mgmt-config" id="xray-config" style="display: none;">
+        <h2>✖️ Xray Test Management Configuration</h2>
+        <p>Configure Xray for test case export.</p>
+
+        <!-- Xray Platform Type -->
+        <div class="form-group">
+          <label><strong>Xray Platform:</strong></label>
+          <div style="display: flex; gap: 16px; margin-top: 8px;">
+            <label style="display: flex; align-items: center; cursor: pointer;">
+              <input type="radio" name="xrayPlatform" value="cloud" id="xrayCloud" checked style="margin-right: 8px;">
+              <span>Xray Cloud (Jira Cloud)</span>
+            </label>
+            <label style="display: flex; align-items: center; cursor: pointer;">
+              <input type="radio" name="xrayPlatform" value="server" id="xrayServer" style="margin-right: 8px;">
+              <span>Xray Server/Data Center</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Xray Cloud Config -->
+        <div id="xrayCloudConfig" style="display: block;">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="xrayClientId">Client ID:</label>
+              <input type="text" id="xrayClientId" placeholder="Enter Xray Cloud Client ID">
+            </div>
+            <div class="form-group">
+              <label for="xrayClientSecret">Client Secret:</label>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="password" id="xrayClientSecret" placeholder="Enter Client Secret" style="flex-grow: 1;">
+                <button type="button" class="btn secondary" id="testXray">Test</button>
+              </div>
+              <span id="xrayStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Xray Server Config -->
+        <div id="xrayServerConfig" style="display: none;">
+          <div class="form-group">
+            <label for="xrayJiraUrl">Jira URL:</label>
+            <input type="text" id="xrayJiraUrl" placeholder="https://jira.yourcompany.com">
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="xrayUsername">Username/Email:</label>
+              <input type="text" id="xrayUsername" placeholder="your-email@example.com">
+            </div>
+            <div class="form-group">
+              <label for="xrayApiToken">API Token:</label>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="password" id="xrayApiToken" placeholder="Enter API token" style="flex-grow: 1;">
+                <button type="button" class="btn secondary" id="testXray">Test</button>
+              </div>
+              <span id="xrayStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Common Xray Config -->
+        <div class="form-group">
+          <label for="xrayProjectKey">Project Key:</label>
+          <input type="text" id="xrayProjectKey" placeholder="PROJ">
+        </div>
+
+        <a href="https://docs.getxray.app/display/XRAYCLOUD/REST+API" target="_blank" class="help-link">📖 Xray API Documentation</a>
+      </div>
+
+      <!-- qMetry Configuration -->
+      <div class="section test-mgmt-config" id="qmetry-config" style="display: none;">
+        <h2>📊 qMetry Test Management Configuration</h2>
+        <p>Configure qMetry for test case export.</p>
+
+        <!-- qMetry Platform Type -->
+        <div class="form-group">
+          <label><strong>qMetry Platform:</strong></label>
+          <div style="display: flex; gap: 16px; margin-top: 8px;">
+            <label style="display: flex; align-items: center; cursor: pointer;">
+              <input type="radio" name="qmetryPlatform" value="cloud" id="qmetryCloud" checked style="margin-right: 8px;">
+              <span>qMetry Cloud</span>
+            </label>
+            <label style="display: flex; align-items: center; cursor: pointer;">
+              <input type="radio" name="qmetryPlatform" value="onpremise" id="qmetryOnPremise" style="margin-right: 8px;">
+              <span>qMetry On-Premise</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- qMetry Cloud Config -->
+        <div id="qmetryCloudConfig" style="display: block;">
+          <div class="form-group">
+            <label for="qmetryApiKey">API Key:</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <input type="password" id="qmetryApiKey" placeholder="Enter qMetry API Key" style="flex-grow: 1;">
+              <button type="button" class="btn secondary" id="testQmetry">Test</button>
+            </div>
+            <span id="qmetryStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
+          </div>
+        </div>
+
+        <!-- qMetry On-Premise Config -->
+        <div id="qmetryOnPremiseConfig" style="display: none;">
+          <div class="form-group">
+            <label for="qmetryApiUrl">API URL:</label>
+            <input type="text" id="qmetryApiUrl" placeholder="https://your-qmetry-instance.com/api/v1">
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="qmetryUsername">Username:</label>
+              <input type="text" id="qmetryUsername" placeholder="your-username">
+            </div>
+            <div class="form-group">
+              <label for="qmetryPassword">Password:</label>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="password" id="qmetryPassword" placeholder="Enter password" style="flex-grow: 1;">
+                <button type="button" class="btn secondary" id="testQmetry">Test</button>
+              </div>
+              <span id="qmetryStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Common qMetry Config -->
+        <div class="form-row">
+          <div class="form-group">
+            <label for="qmetryProjectId">Project ID:</label>
+            <input type="text" id="qmetryProjectId" placeholder="12345">
+          </div>
+          <div class="form-group">
+            <label for="qmetryReleaseId">Release ID (Optional):</label>
+            <input type="text" id="qmetryReleaseId" placeholder="Leave empty for no release">
+          </div>
+        </div>
+
+        <a href="https://api.qmetry.com/qtm4j/docs/" target="_blank" class="help-link">📖 qMetry API Documentation</a>
+      </div>
+
+      <!-- Custom Field Mapping -->
+      <div class="section test-mgmt-config" id="field-mapping-section" style="display: none;">
+        <h2>🔧 Custom Field Mapping</h2>
+        <p>Map QAtalyst test case fields to your test management system's custom fields. Different companies have different field structures - configure yours here.</p>
+
+        <div style="background: #f0f9ff; border-left: 4px solid #0ea5e9; padding: 12px; margin: 16px 0; border-radius: 4px;">
+          <p style="margin: 0; font-size: 13px; color: #334155;">
+            <strong>💡 Tip:</strong> Click "Fetch Custom Fields" to automatically load available fields from your test management system, then map them to QAtalyst fields below.
+          </p>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+          <button type="button" class="btn secondary" id="fetchCustomFields">Fetch Custom Fields</button>
+          <span id="fetchFieldsStatus" style="font-size: 12px;"></span>
+        </div>
+
+        <div id="customFieldsContainer">
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0;">
+                <th style="padding: 12px; text-align: left; font-weight: 600; color: #475569; width: 20%;">QAtalyst Field</th>
+                <th style="padding: 12px; text-align: center; font-weight: 600; color: #475569; width: 5%;">Maps To</th>
+                <th style="padding: 12px; text-align: left; font-weight: 600; color: #475569; width: 30%;">Test Management Field</th>
+                <th style="padding: 12px; text-align: left; font-weight: 600; color: #475569; width: 30%;">Default Value</th>
+                <th style="padding: 12px; text-align: center; font-weight: 600; color: #475569; width: 15%;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="fieldMappingsTable">
+              <tr data-mapping-id="test_data">
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                  <input type="text" class="qatalyst-field-name" value="test_data" placeholder="QAtalyst field name" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                </td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">→</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                  <select class="testmgmt-field-select" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                    <option value="">-- Select or type custom field --</option>
+                  </select>
+                  <input type="text" class="testmgmt-field-input" placeholder="Or type: custom_test_data or customfield_10001" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; display: none;">
+                </td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">
+                  <button type="button" class="btn-remove-mapping" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+                </td>
+              </tr>
+              <tr data-mapping-id="environment">
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                  <input type="text" class="qatalyst-field-name" value="environment" placeholder="QAtalyst field name" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                </td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">→</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                  <select class="testmgmt-field-select" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                    <option value="">-- Select or type custom field --</option>
+                  </select>
+                  <input type="text" class="testmgmt-field-input" placeholder="Or type: custom_environment" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; display: none;">
+                </td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">
+                  <button type="button" class="btn-remove-mapping" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+                </td>
+              </tr>
+              <tr data-mapping-id="automation_status">
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                  <input type="text" class="qatalyst-field-name" value="automation_status" placeholder="QAtalyst field name" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                </td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">→</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                  <select class="testmgmt-field-select" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                    <option value="">-- Select or type custom field --</option>
+                  </select>
+                  <input type="text" class="testmgmt-field-input" placeholder="Or type: custom_automation_status" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; display: none;">
+                </td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">
+                  <button type="button" class="btn-remove-mapping" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+                </td>
+              </tr>
+              <tr data-mapping-id="test_type">
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                  <input type="text" class="qatalyst-field-name" value="test_type" placeholder="QAtalyst field name" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                </td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">→</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0;">
+                  <select class="testmgmt-field-select" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                    <option value="">-- Select or type custom field --</option>
+                  </select>
+                  <input type="text" class="testmgmt-field-input" placeholder="Or type: custom_test_type" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; display: none;">
+                </td>
+                <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: center;">
+                  <button type="button" class="btn-remove-mapping" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <button type="button" class="btn secondary" id="addCustomMapping">+ Add Custom Mapping</button>
+        </div>
+      </div>
+
       <div class="section">
         <h2>📄 Confluence Integration</h2>
         <p>Configure Confluence for requirement extraction.</p>
@@ -1586,6 +1909,7 @@
   
   <script src="config.js"></script>
   <script src="security.js"></script>
+  <script src="integrations.js"></script>
   <script src="options.js"></script>
 </body>
 </html>
