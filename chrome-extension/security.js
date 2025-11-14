@@ -175,7 +175,7 @@ if (typeof SecurityManager === 'undefined') {
       return 'enc:' + JSON.stringify(encrypted);
     } catch (error) {
       console.error('Failed to encrypt API key for storage:', error);
-      return apiKey; // Fallback to plain text if encryption fails
+      throw new Error('Encryption failed. API key cannot be stored securely. Please check your browser settings and try again.');
     }
   }
 

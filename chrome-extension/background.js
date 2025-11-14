@@ -8,6 +8,8 @@ importScripts('config-loader.js');
 // Import configuration and utilities
 importScripts('config.js');
 importScripts('security.js');
+importScripts('rate-limiter.js');
+importScripts('token-counter.js');
 importScripts('graph-filter.js');
 importScripts('agents.js');
 importScripts('evolution.js');
@@ -35,6 +37,9 @@ const RETRY_DELAY = APP_CONFIG.RETRY_DELAY;
 
 // Active streaming controllers for cancellation
 const activeStreams = new Map();
+
+// Active test management integration (for cancellation)
+let activeIntegration = null;
 
 // Web Crawler state management - initialize AFTER config loads
 let activeCrawler = null;
@@ -217,6 +222,22 @@ function safeSendMessageToTab(tabId, message) {
 
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // Get filtered crawl data based on Jira ticket keywords
+  if (request.action === 'getFilteredCrawlData') {
+    getFilteredCrawlData(request.keywords, request.maxSizeKB)
+      .then(result => sendResponse({ success: true, summary: result.summary, matchedPages: result.matchedPages }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // Get crawl data from storage (populated by Settings page crawler)
+  if (request.action === 'getCrawlData') {
+    getCrawlDataFromStorage()
+      .then(data => sendResponse({ success: true, data: data }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
   if (request.action === 'analyzeRequirements') {
     handleAnalyzeRequirements(request.data)
       .then(sendResponse)
@@ -265,7 +286,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ success: cancelled });
     return true;
   }
-  
+
+  if (request.type === 'EXPORT_TO_TEST_MANAGEMENT') {
+    handleExportToTestManagement(request.testCases, request.jiraTicket)
+      .then(sendResponse)
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.type === 'CANCEL_UPLOAD') {
+    if (activeIntegration && typeof activeIntegration.cancelUpload === 'function') {
+      activeIntegration.cancelUpload();
+      sendResponse({ success: true, message: 'Upload cancellation requested' });
+    } else {
+      sendResponse({ success: false, message: 'No active upload to cancel' });
+    }
+    return true;
+  }
+
+  if (request.type === 'GET_UPLOAD_PROGRESS') {
+    if (activeIntegration && typeof activeIntegration.getProgress === 'function') {
+      sendResponse({ success: true, progress: activeIntegration.getProgress() });
+    } else {
+      sendResponse({ success: false, progress: null });
+    }
+    return true;
+  }
+
   // Multi-agent test generation
   if (request.action === 'generateTestCasesMultiAgent') {
     handleGenerateTestCasesMultiAgent(request.data, sender.tab.id)
@@ -548,11 +595,26 @@ function sleep(ms) {
 async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-  
+
   try {
     const messages = [
       { role: 'user', content: contentParts }
     ];
+
+    // Check token count and warn if approaching limits
+    const model = settings.llmModel || 'gpt-4o';
+    const tokenCheck = checkTokenLimit(
+      estimateMessagesTokens(messages),
+      model,
+      settings.maxTokens || 16000
+    );
+
+    if (!tokenCheck.safe) {
+      console.error(`❌ ${tokenCheck.warning}`);
+      throw new Error(`Token limit exceeded for ${model}. Please reduce input size.`);
+    } else if (tokenCheck.warning) {
+      console.warn(`⚠️ ${tokenCheck.warning}`);
+    }
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -570,18 +632,32 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
     });
     
     clearTimeout(timeoutId);
-    
+
+    // Handle rate limiting (429) with retry
+    if (response.status === 429 && retries > 0) {
+      const retryAfter = response.headers.get('Retry-After');
+      const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : RETRY_DELAY * Math.pow(2, MAX_RETRIES - retries);
+
+      console.warn(`OpenAI rate limit hit (429), retrying after ${waitTime}ms (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
+      await sleep(waitTime);
+      return callOpenAI(contentParts, settings, retries - 1);
+    }
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error?.message || `OpenAI API error: ${response.status}`);
+      const error = new Error(errorData.error?.message || `OpenAI API error: ${response.status}`);
+      error.status = response.status;
+      error.response = response;
+      throw error;
     }
-    
+
     const data = await response.json();
     return data.choices[0].message.content;
-    
+
   } catch (error) {
     clearTimeout(timeoutId);
-    
+
+    // Retry on timeout
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying OpenAI request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
@@ -593,7 +669,7 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     // Better error messages
-    if (error.message.includes('Rate limit')) {
+    if (error.status === 429 || error.message.includes('Rate limit')) {
       throw new Error(APP_CONFIG.ERRORS.RATE_LIMIT);
     }
     if (error.message.includes('network') || error.message.includes('fetch')) {
@@ -611,8 +687,8 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
   
   try {
     const model = settings.llmModel || 'gemini-2.5-flash-exp';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.apiKey}`;
-    
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
     const geminiContent = contentParts.map(part => {
       if (typeof part === 'string') {
         return { text: part };
@@ -628,7 +704,8 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'x-goog-api-key': settings.apiKey
       },
       body: JSON.stringify({
         contents: [{
@@ -643,18 +720,32 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
     });
     
     clearTimeout(timeoutId);
-    
+
+    // Handle rate limiting (429) with retry
+    if (response.status === 429 && retries > 0) {
+      const retryAfter = response.headers.get('Retry-After');
+      const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : RETRY_DELAY * Math.pow(2, MAX_RETRIES - retries);
+
+      console.warn(`Gemini rate limit hit (429), retrying after ${waitTime}ms (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
+      await sleep(waitTime);
+      return callGemini(contentParts, settings, retries - 1);
+    }
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error?.message || `Gemini API error: ${response.status}`);
+      const error = new Error(errorData.error?.message || `Gemini API error: ${response.status}`);
+      error.status = response.status;
+      error.response = response;
+      throw error;
     }
-    
+
     const data = await response.json();
     return data.candidates[0].content.parts[0].text;
-    
+
   } catch (error) {
     clearTimeout(timeoutId);
 
+    // Retry on timeout
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Gemini request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
@@ -666,7 +757,7 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     // Better error messages
-    if (error.message.includes('Rate limit')) {
+    if (error.status === 429 || error.message.includes('Rate limit')) {
       throw new Error(APP_CONFIG.ERRORS.RATE_LIMIT);
     }
     if (error.message.includes('network') || error.message.includes('fetch')) {
@@ -722,18 +813,32 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
     });
     
     clearTimeout(timeoutId);
-    
+
+    // Handle rate limiting (429) with retry
+    if (response.status === 429 && retries > 0) {
+      const retryAfter = response.headers.get('Retry-After') || response.headers.get('retry-after');
+      const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : RETRY_DELAY * Math.pow(2, MAX_RETRIES - retries);
+
+      console.warn(`Claude rate limit hit (429), retrying after ${waitTime}ms (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
+      await sleep(waitTime);
+      return callClaude(contentParts, settings, retries - 1);
+    }
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error?.message || `Claude API error: ${response.status}`);
+      const error = new Error(errorData.error?.message || `Claude API error: ${response.status}`);
+      error.status = response.status;
+      error.response = response;
+      throw error;
     }
-    
+
     const data = await response.json();
     return data.content[0].text;
-    
+
   } catch (error) {
     clearTimeout(timeoutId);
 
+    // Retry on timeout
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Claude request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
@@ -745,7 +850,7 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     // Better error messages
-    if (error.message.includes('Rate limit')) {
+    if (error.status === 429 || error.message.includes('Rate limit')) {
       throw new Error(APP_CONFIG.ERRORS.RATE_LIMIT);
     }
     if (error.message.includes('network') || error.message.includes('fetch')) {
@@ -792,7 +897,7 @@ async function callOpenAIStream(contentParts, settings, onChunk, requestId) {
     reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let fullResponse = '';
+    const responseChunks = [];
 
     while (true) {
       const {done, value} = await reader.read();
@@ -811,7 +916,7 @@ async function callOpenAIStream(contentParts, settings, onChunk, requestId) {
             const parsed = JSON.parse(data);
             const chunk = parsed.choices[0]?.delta?.content;
             if (chunk) {
-              fullResponse += chunk;
+              responseChunks.push(chunk);
               onChunk(chunk);
             }
           } catch (e) {
@@ -821,7 +926,7 @@ async function callOpenAIStream(contentParts, settings, onChunk, requestId) {
       }
     }
 
-    return fullResponse;
+    return responseChunks.join('');
 
   } catch (error) {
     if (error.name === 'AbortError') {
@@ -895,7 +1000,7 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
     reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let fullResponse = '';
+    const responseChunks = [];
 
     while (true) {
       const {done, value} = await reader.read();
@@ -913,7 +1018,7 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
             const parsed = JSON.parse(data);
             if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
               const chunk = parsed.delta.text;
-              fullResponse += chunk;
+              responseChunks.push(chunk);
               onChunk(chunk);
             }
           } catch (e) {
@@ -923,7 +1028,7 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
       }
     }
 
-    return fullResponse;
+    return responseChunks.join('');
 
   } catch (error) {
     if (error.name === 'AbortError') {
@@ -952,7 +1057,7 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
 
   try {
     const model = settings.llmModel || APP_CONFIG.DEFAULT_MODELS.gemini;
-    const url = `${APP_CONFIG.ENDPOINTS.gemini}/${model}:streamGenerateContent?key=${settings.apiKey}&alt=sse`;
+    const url = `${APP_CONFIG.ENDPOINTS.gemini}/${model}:streamGenerateContent?alt=sse`;
 
     const geminiContent = contentParts.map(part => {
       if (typeof part === 'string') {
@@ -968,7 +1073,8 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'x-goog-api-key': settings.apiKey
       },
       body: JSON.stringify({
         contents: [{
@@ -990,7 +1096,7 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
     reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let fullResponse = '';
+    const responseChunks = [];
 
     while (true) {
       const {done, value} = await reader.read();
@@ -1008,7 +1114,7 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
             const parsed = JSON.parse(data);
             const chunk = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
             if (chunk) {
-              fullResponse += chunk;
+              responseChunks.push(chunk);
               onChunk(chunk);
             }
           } catch (e) {
@@ -1018,7 +1124,7 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
       }
     }
 
-    return fullResponse;
+    return responseChunks.join('');
 
   } catch (error) {
     if (error.name === 'AbortError') {
@@ -1152,6 +1258,279 @@ function validateSettings(settings) {
   }
 }
 
+/**
+ * Get filtered crawl data based on Jira ticket keywords
+ * Intelligently queries crawl data JSON and creates a focused 5-10 KB summary
+ * @param {Array} keywords - Keywords extracted from Jira ticket
+ * @param {number} maxSizeKB - Maximum summary size in KB
+ * @returns {Promise<Object>} - { summary: string, matchedPages: number }
+ */
+async function getFilteredCrawlData(keywords, maxSizeKB = 10) {
+  try {
+    // Ensure storage manager is ready
+    await storageReady;
+
+    if (!storageManager) {
+      console.log('ℹ️ Storage manager not initialized');
+      return { summary: null, matchedPages: 0 };
+    }
+
+    // Get all stored apps with their knowledge graphs
+    const allApps = await storageManager.getAllEmbeddings();
+
+    if (!allApps || allApps.length === 0) {
+      console.log('ℹ️ No crawled apps in storage');
+      return { summary: null, matchedPages: 0 };
+    }
+
+    console.log(`📦 Found ${allApps.length} crawled app(s) in storage`);
+
+    // Extract all pages from all knowledge graphs
+    const crawledPages = [];
+    for (const app of allApps) {
+      console.log(`🔍 Checking app: ${app.appUrl}`);
+      console.log(`   - Has knowledgeGraph: ${!!app.knowledgeGraph}`);
+
+      if (app.knowledgeGraph) {
+        console.log(`   - knowledgeGraph.pages type: ${typeof app.knowledgeGraph.pages}`);
+        console.log(`   - Is array: ${Array.isArray(app.knowledgeGraph.pages)}`);
+
+        if (app.knowledgeGraph.pages) {
+          // Ensure pages is actually an array
+          if (Array.isArray(app.knowledgeGraph.pages)) {
+            console.log(`   - Adding ${app.knowledgeGraph.pages.length} pages`);
+            crawledPages.push(...app.knowledgeGraph.pages);
+          } else {
+            console.warn('⚠️ app.knowledgeGraph.pages is not an array:', typeof app.knowledgeGraph.pages);
+            // Try to convert it to an array if it's an object
+            if (typeof app.knowledgeGraph.pages === 'object' && app.knowledgeGraph.pages !== null) {
+              const pagesArray = Object.values(app.knowledgeGraph.pages);
+              console.log(`   - Converted object to array: ${pagesArray.length} pages`);
+              crawledPages.push(...pagesArray);
+            }
+          }
+        }
+      }
+    }
+
+    if (crawledPages.length === 0) {
+      console.log('ℹ️ No pages found in crawl data. Please crawl your app first using Settings → Web App Crawler');
+      return { summary: null, matchedPages: 0 };
+    }
+
+    console.log(`🔍 Filtering ${crawledPages.length} pages from ${allApps.length} app(s) with ${keywords.length} keywords`);
+
+    // Score and rank pages by relevance
+    const scoredPages = crawledPages.map(page => {
+      let score = 0;
+      const description = page.description || page.metadata?.description || '';
+      const pageText = `${page.title || ''} ${page.url || ''} ${description} ${page.metadata?.keywords?.join(' ') || ''}`.toLowerCase();
+
+      // Calculate relevance score based on keyword matches
+      keywords.forEach(keyword => {
+        const keywordLower = keyword.toLowerCase();
+
+        // URL match (highest weight)
+        if (page.url && page.url.toLowerCase().includes(keywordLower)) {
+          score += 10;
+        }
+
+        // Title match (high weight)
+        if (page.title && page.title.toLowerCase().includes(keywordLower)) {
+          score += 5;
+        }
+
+        // Description match (medium weight)
+        if (description && description.toLowerCase().includes(keywordLower)) {
+          score += 3;
+        }
+
+        // Form field names match
+        if (page.forms) {
+          page.forms.forEach(form => {
+            if (form.fields) {
+              form.fields.forEach(field => {
+                if (field.name && field.name.toLowerCase().includes(keywordLower)) {
+                  score += 2;
+                }
+              });
+            }
+          });
+        }
+
+        // General content match (low weight)
+        if (pageText.includes(keywordLower)) {
+          score += 1;
+        }
+      });
+
+      return { page, score };
+    });
+
+    // Sort by relevance score (descending)
+    scoredPages.sort((a, b) => b.score - a.score);
+
+    // Filter pages with score > 0 (at least one keyword match)
+    const relevantPages = scoredPages.filter(p => p.score > 0);
+
+    if (relevantPages.length === 0) {
+      console.log('ℹ️ No relevant pages found for the given keywords');
+      return { summary: null, matchedPages: 0 };
+    }
+
+    console.log(`✅ Found ${relevantPages.length} relevant pages (top score: ${relevantPages[0]?.score || 0})`);
+
+    // Build focused summary within size limit
+    const maxBytes = maxSizeKB * 1024;
+    const encoder = new TextEncoder(); // Reuse encoder instance
+    let summary = `\n\n## 🌐 Application Context (Filtered from Crawl Data)\n\n`;
+    summary += `**Relevance:** Found ${relevantPages.length} pages matching ticket keywords\n`;
+    summary += `**Keywords Used:** ${keywords.slice(0, 10).join(', ')}${keywords.length > 10 ? ` +${keywords.length - 10} more` : ''}\n\n`;
+
+    let includedPages = 0;
+    let currentSize = encoder.encode(summary).length;
+
+    // Add pages in order of relevance until size limit reached
+    for (const { page, score } of relevantPages) {
+      const pageSection = buildPageSection(page, score);
+      const sectionSize = encoder.encode(pageSection).length;
+
+      if (currentSize + sectionSize > maxBytes && includedPages > 0) {
+        // Size limit reached, add summary note
+        const remaining = relevantPages.length - includedPages;
+        if (remaining > 0) {
+          summary += `\n_... and ${remaining} more relevant pages (omitted for size limit)_\n`;
+        }
+        break;
+      }
+
+      summary += pageSection;
+      currentSize += sectionSize;
+      includedPages++;
+    }
+
+    console.log(`📊 Generated summary: ${currentSize} bytes (${(currentSize / 1024).toFixed(1)} KB), ${includedPages} pages`);
+
+    return {
+      summary: summary,
+      matchedPages: includedPages
+    };
+
+  } catch (error) {
+    console.error('❌ Error filtering crawl data:', error);
+    return { summary: null, matchedPages: 0 };
+  }
+}
+
+/**
+ * Build a formatted section for a single page
+ * @param {Object} page - Page data
+ * @param {number} score - Relevance score
+ * @returns {string} - Formatted page section
+ */
+function buildPageSection(page, score) {
+  let section = `### 📄 ${page.title || 'Untitled Page'} (Relevance: ${score})\n`;
+  section += `- **URL:** ${page.url}\n`;
+
+  const description = page.description || page.metadata?.description;
+  if (description) {
+    section += `- **Description:** ${description.substring(0, 200)}${description.length > 200 ? '...' : ''}\n`;
+  }
+
+  // Forms
+  if (page.forms && page.forms.length > 0) {
+    section += `- **Forms:** ${page.forms.length} form(s)\n`;
+    page.forms.slice(0, 2).forEach((form, idx) => {
+      section += `  - Form ${idx + 1}: `;
+      if (form.fields && form.fields.length > 0) {
+        const fieldNames = form.fields.slice(0, 5).map(f => f.name || f.type).filter(Boolean);
+        section += `${form.fields.length} fields (${fieldNames.join(', ')})`;
+        if (form.fields.length > 5) section += ` +${form.fields.length - 5} more`;
+      }
+      section += `\n`;
+    });
+  }
+
+  // Interactions
+  if (page.interactions && page.interactions.length > 0) {
+    section += `- **Interactive Elements:** ${page.interactions.length} (`;
+    const interactionTypes = {};
+    page.interactions.forEach(i => {
+      interactionTypes[i.type] = (interactionTypes[i.type] || 0) + 1;
+    });
+    section += Object.entries(interactionTypes).map(([type, count]) => `${count} ${type}`).join(', ');
+    section += `)\n`;
+  }
+
+  // APIs/Endpoints if available
+  if (page.apis && page.apis.length > 0) {
+    section += `- **API Endpoints:** ${page.apis.slice(0, 3).join(', ')}${page.apis.length > 3 ? ` +${page.apis.length - 3} more` : ''}\n`;
+  }
+
+  section += `\n`;
+  return section;
+}
+
+// Get crawl data from existing storage (populated by Settings page crawler)
+async function getCrawlDataFromStorage() {
+  try {
+    // Ensure storage manager is ready
+    await storageReady;
+
+    if (!storageManager) {
+      console.log('ℹ️ Storage manager not initialized');
+      return null;
+    }
+
+    // Get all crawled pages from storage
+    const crawledPages = await storageManager.getAllPages();
+
+    if (!crawledPages || crawledPages.length === 0) {
+      console.log('ℹ️ No crawl data in storage. Run crawler from Settings page first.');
+      return null;
+    }
+
+    // Get knowledge graph for additional context
+    const knowledgeGraph = await storageManager.getKnowledgeGraph();
+
+    // Build context data from stored crawl
+    const contextData = {
+      pages: [],
+      pagesCount: crawledPages.length,
+      featuresCount: 0,
+      apisCount: 0
+    };
+
+    // Extract and format page data
+    for (const page of crawledPages) {
+      contextData.pages.push({
+        url: page.url,
+        title: page.title,
+        description: page.metadata?.description || '',
+        forms: page.forms || [],
+        interactions: page.interactions || [],
+        keywords: page.metadata?.keywords || []
+      });
+
+      // Count features and APIs
+      if (page.forms) contextData.featuresCount += page.forms.length;
+      if (page.interactions) contextData.featuresCount += page.interactions.length;
+    }
+
+    // Count APIs from knowledge graph
+    if (knowledgeGraph && knowledgeGraph.apis) {
+      contextData.apisCount = knowledgeGraph.apis.length || 0;
+    }
+
+    console.log(`📊 Retrieved crawl data: ${contextData.pagesCount} pages, ${contextData.featuresCount} features, ${contextData.apisCount} APIs`);
+    return contextData;
+
+  } catch (error) {
+    console.error('❌ Error retrieving crawl data from storage:', error);
+    return null;
+  }
+}
+
 // API call handlers
 async function handleAnalyzeRequirements(data) {
   validateSettings(data.settings);
@@ -1257,6 +1636,7 @@ Provide comprehensive, critical analysis. Be honest about gaps and ambiguities -
 **Attachments:** ${enrichedTicketData.attachments?.length || 0} files
 **Linked Pages:** ${enrichedTicketData.linkedPages?.length || 0} pages
 ${enrichedTicketData.externalSources ? `**External Sources:** ${enrichedTicketData.externalSources.confluence} Confluence, ${enrichedTicketData.externalSources.figma} Figma, ${enrichedTicketData.externalSources.googleDocs} Google Docs` : ''}
+${data.crawledContext || ''}
 
 Provide comprehensive requirement analysis.`;
 
@@ -1364,6 +1744,7 @@ Format as structured markdown.`;
 **Summary:** ${enrichedTicketData.summary || 'N/A'}
 **Description:** ${enrichedTicketData.description || 'N/A'}
 ${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
+${data.crawledContext || ''}
 
 Provide detailed test scope covering all aspects.`;
 
@@ -1583,6 +1964,7 @@ Provide comprehensive, critical analysis. Be honest about gaps and ambiguities -
 **Attachments:** ${enrichedTicketData.attachments?.length || 0} files
 **Linked Pages:** ${enrichedTicketData.linkedPages?.length || 0} pages
 ${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
+${data.crawledContext || ''}
 
 Provide comprehensive requirement analysis.`;
 
@@ -1688,6 +2070,7 @@ async function handleGenerateTestScopeStream(data, tabId) {
 **Summary:** ${enrichedTicketData.summary || 'N/A'}
 **Description:** ${enrichedTicketData.description || 'N/A'}
 ${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
+${data.crawledContext || ''}
 
 Provide detailed test scope covering all aspects.`;
 
@@ -2228,6 +2611,150 @@ Please regenerate the test cases incorporating the user's feedback. Return the r
     // For analysis and test scope, return the improved content directly
     return { improvedContent: improvedResponse };
   }
+}
+
+// Test Management Export Handler
+async function handleExportToTestManagement(testCases, jiraTicket) {
+  try {
+    // Get settings from storage
+    const settings = await chrome.storage.sync.get([
+      'testMgmtPlatform',
+      'testrailUrl',
+      'testrailUsername',
+      'testrailApiKey',
+      'testrailProjectId',
+      'testrailSection',
+      'zephyrScaleApiToken',
+      'zephyrScaleProjectKey',
+      'zephyrScaleFolderId',
+      'zephyrSquadJiraUrl',
+      'zephyrSquadUsername',
+      'zephyrSquadApiToken',
+      'zephyrSquadProjectKey',
+      'zephyrSquadVersionId',
+      'xrayIsCloud',
+      'xrayJiraUrl',
+      'xrayUsername',
+      'xrayApiToken',
+      'xrayClientId',
+      'xrayClientSecret',
+      'xrayProjectKey',
+      'qmetryIsCloud',
+      'qmetryApiUrl',
+      'qmetryApiKey',
+      'qmetryUsername',
+      'qmetryPassword',
+      'qmetryProjectId',
+      'qmetryReleaseId',
+      'fieldMappings'
+    ]);
+
+    const platform = settings.testMgmtPlatform;
+
+    if (!platform || platform === 'none') {
+      throw new Error('No test management platform configured. Please configure one in Settings > Integrations.');
+    }
+
+    let integration;
+    let results;
+    let fieldMappings = {};
+
+    // Parse field mappings if available
+    if (settings.fieldMappings) {
+      try {
+        fieldMappings = JSON.parse(settings.fieldMappings);
+      } catch (e) {
+        console.warn('Failed to parse field mappings:', e);
+      }
+    }
+
+    // Create integration instance based on platform
+    switch (platform) {
+      case 'testrail':
+        integration = new TestRailIntegration({
+          testrailUrl: settings.testrailUrl,
+          testrailUsername: settings.testrailUsername,
+          testrailApiKey: settings.testrailApiKey,
+          testrailProjectId: settings.testrailProjectId,
+          testrailSection: settings.testrailSection
+        });
+        // Store for cancellation
+        activeIntegration = integration;
+        results = await integration.uploadTestCases(testCases, jiraTicket, null, fieldMappings);
+        break;
+
+      case 'zephyr-scale':
+        integration = new ZephyrScaleIntegration({
+          zephyrScaleApiToken: settings.zephyrScaleApiToken,
+          zephyrScaleProjectKey: settings.zephyrScaleProjectKey,
+          zephyrScaleFolderId: settings.zephyrScaleFolderId
+        });
+        results = await integration.uploadTestCases(testCases, jiraTicket, `QAtalyst: ${jiraTicket}`, { customFields: fieldMappings });
+        break;
+
+      case 'zephyr-squad':
+        integration = new ZephyrSquadIntegration({
+          zephyrSquadJiraUrl: settings.zephyrSquadJiraUrl,
+          zephyrSquadUsername: settings.zephyrSquadUsername,
+          zephyrSquadApiToken: settings.zephyrSquadApiToken,
+          zephyrSquadProjectKey: settings.zephyrSquadProjectKey,
+          zephyrSquadVersionId: settings.zephyrSquadVersionId
+        });
+        results = await integration.uploadTestCases(testCases, jiraTicket, null, { customFields: fieldMappings });
+        break;
+
+      case 'xray':
+        integration = new XrayIntegration({
+          xrayIsCloud: settings.xrayIsCloud,
+          xrayJiraUrl: settings.xrayJiraUrl,
+          xrayUsername: settings.xrayUsername,
+          xrayApiToken: settings.xrayApiToken,
+          xrayClientId: settings.xrayClientId,
+          xrayClientSecret: settings.xrayClientSecret,
+          xrayProjectKey: settings.xrayProjectKey
+        });
+        results = await integration.uploadTestCases(testCases, jiraTicket, null, { customFields: fieldMappings });
+        break;
+
+      case 'qmetry':
+        integration = new QmetryIntegration({
+          qmetryIsCloud: settings.qmetryIsCloud,
+          qmetryApiUrl: settings.qmetryApiUrl,
+          qmetryApiKey: settings.qmetryApiKey,
+          qmetryUsername: settings.qmetryUsername,
+          qmetryPassword: settings.qmetryPassword,
+          qmetryProjectId: settings.qmetryProjectId,
+          qmetryReleaseId: settings.qmetryReleaseId
+        });
+        results = await integration.uploadTestCases(testCases, jiraTicket, `QAtalyst: ${jiraTicket}`, { customFields: fieldMappings });
+        break;
+
+      default:
+        throw new Error(`Unsupported platform: ${platform}`);
+    }
+
+    // Return success response with results
+    return {
+      success: true,
+      platform: getPlatformDisplayName(platform),
+      results: results
+    };
+
+  } catch (error) {
+    console.error('Export to test management failed:', error);
+    throw error;
+  }
+}
+
+function getPlatformDisplayName(platform) {
+  const displayNames = {
+    'testrail': 'TestRail',
+    'zephyr-scale': 'Zephyr Scale',
+    'zephyr-squad': 'Zephyr Squad',
+    'xray': 'Xray',
+    'qmetry': 'qMetry'
+  };
+  return displayNames[platform] || platform;
 }
 
 // Installation handler

@@ -107,14 +107,28 @@ class EvolutionaryOptimizer {
   }
   
   async evaluateFitness(population, ticketData) {
-    // PARALLEL OPTIMIZATION: Evaluate all individuals in parallel instead of sequentially
-    const fitnessPromises = population.map((individual, i) => {
-      // Skip quality evaluation for every 3rd individual to reduce AI calls
-      const skipQuality = (i % 3 !== 0);
-      return this.calculateFitness(individual, ticketData, skipQuality);
-    });
+    // THROTTLED PARALLEL OPTIMIZATION: Evaluate individuals in batches to prevent rate limiting
+    const BATCH_SIZE = 5; // Maximum 5 concurrent API calls
+    const scores = [];
 
-    const scores = await Promise.all(fitnessPromises);
+    for (let i = 0; i < population.length; i += BATCH_SIZE) {
+      const batch = population.slice(i, i + BATCH_SIZE);
+      const batchPromises = batch.map((individual, batchIndex) => {
+        const globalIndex = i + batchIndex;
+        // Skip quality evaluation for every 3rd individual to reduce AI calls
+        const skipQuality = (globalIndex % 3 !== 0);
+        return this.calculateFitness(individual, ticketData, skipQuality);
+      });
+
+      const batchScores = await Promise.all(batchPromises);
+      scores.push(...batchScores);
+
+      // Small delay between batches to prevent overwhelming the API
+      if (i + BATCH_SIZE < population.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
     return scores;
   }
 
