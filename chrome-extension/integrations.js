@@ -83,6 +83,8 @@ class IntegrationManager {
    * Fetch multiple Confluence pages in parallel with concurrency control
    */
   async fetchConfluencePages(urls) {
+    console.log(`📄 [IntegrationManager] fetchConfluencePages called with ${urls.length} URLs`);
+    console.log(`📄 [IntegrationManager] Confluence URLs to fetch:`, urls);
     const results = [];
     const concurrencyLimit = 3; // Max 3 concurrent requests
 
@@ -121,6 +123,8 @@ class IntegrationManager {
    * Fetch multiple Figma files with rate limiting
    */
   async fetchFigmaFiles(urls) {
+    console.log(`🎨 [IntegrationManager] fetchFigmaFiles called with ${urls.length} URLs`);
+    console.log(`🎨 [IntegrationManager] Figma URLs to fetch:`, urls);
     const results = [];
 
     for (let i = 0; i < urls.length; i++) {
@@ -205,10 +209,22 @@ class IntegrationManager {
   async fetchAllLinkedContent(ticketData) {
     console.log('🔗 [IntegrationManager] Starting fetchAllLinkedContent');
     console.log('🔗 [IntegrationManager] Settings configured:', {
-      hasConfluence: !!(this.settings.confluenceUrl && this.settings.confluenceToken),
+      hasConfluence: !!(this.settings.confluenceUrl && this.settings.confluenceEmail && this.settings.confluenceToken),
       hasFigma: !!this.settings.figmaToken,
       hasGoogleDocs: !!this.settings.googleApiKey
     });
+
+    // Log detailed configuration status for debugging
+    if (!this.settings.confluenceUrl || !this.settings.confluenceEmail || !this.settings.confluenceToken) {
+      console.warn('⚠️ [IntegrationManager] Confluence not fully configured:', {
+        hasUrl: !!this.settings.confluenceUrl,
+        hasEmail: !!this.settings.confluenceEmail,
+        hasToken: !!this.settings.confluenceToken
+      });
+    }
+    if (!this.settings.figmaToken) {
+      console.warn('⚠️ [IntegrationManager] Figma not configured (missing token)');
+    }
 
     const results = {
       confluence: [],
@@ -268,13 +284,47 @@ class IntegrationManager {
     const fetchTasks = [];
 
     if (confluenceUrls.length > 0) {
-      fetchTasks.push(this.fetchConfluencePages(confluenceUrls));
+      console.log(`📄 [IntegrationManager] Processing ${confluenceUrls.length} Confluence URLs`);
+      console.log(`📄 [IntegrationManager] Confluence configuration:`, {
+        hasUrl: !!this.settings.confluenceUrl,
+        hasEmail: !!this.settings.confluenceEmail,
+        hasToken: !!this.settings.confluenceToken,
+        url: this.settings.confluenceUrl || 'undefined',
+        email: this.settings.confluenceEmail || 'undefined',
+        tokenFirst10: this.settings.confluenceToken ? this.settings.confluenceToken.substring(0, 10) + '...' : 'undefined'
+      });
+
+      // Only fetch if Confluence is properly configured
+      if (this.settings.confluenceUrl && this.settings.confluenceEmail && this.settings.confluenceToken) {
+        console.log('✅ [IntegrationManager] Confluence configured, adding fetch task');
+        fetchTasks.push(this.fetchConfluencePages(confluenceUrls));
+      } else {
+        console.error('❌ [IntegrationManager] Confluence URLs found but integration not properly configured');
+        console.error('   Required: confluenceUrl, confluenceEmail, and confluenceToken');
+        console.error('   Settings keys present:', Object.keys(this.settings));
+      }
     }
     if (figmaUrls.length > 0) {
-      fetchTasks.push(this.fetchFigmaFiles(figmaUrls));
+      console.log(`🎨 [IntegrationManager] Processing ${figmaUrls.length} Figma URLs`);
+      console.log(`🎨 [IntegrationManager] Figma token present:`, !!this.settings.figmaToken);
+      console.log(`🎨 [IntegrationManager] Figma token value (first 10 chars):`, this.settings.figmaToken ? this.settings.figmaToken.substring(0, 10) + '...' : 'undefined');
+
+      // Only fetch if Figma is properly configured
+      if (this.settings.figmaToken) {
+        console.log('✅ [IntegrationManager] Figma configured, adding fetch task');
+        fetchTasks.push(this.fetchFigmaFiles(figmaUrls));
+      } else {
+        console.error('❌ [IntegrationManager] Figma URLs found but integration not configured (missing figmaToken)');
+        console.error('   Settings keys present:', Object.keys(this.settings));
+      }
     }
     if (googleDocsUrls.length > 0) {
-      fetchTasks.push(this.fetchGoogleDocs(googleDocsUrls));
+      // Only fetch if Google Docs is properly configured
+      if (this.settings.googleApiKey) {
+        fetchTasks.push(this.fetchGoogleDocs(googleDocsUrls));
+      } else {
+        console.error('❌ [IntegrationManager] Google Docs URLs found but integration not configured (missing googleApiKey)');
+      }
     }
 
     // Wait for all integrations to complete (use allSettled to not fail on errors)
@@ -354,6 +404,13 @@ class ConfluenceIntegration {
     this.baseUrl = settings.confluenceUrl;
     this.email = settings.confluenceEmail;
     this.token = settings.confluenceToken;
+
+    console.log('📄 [Confluence] Integration initialized with:', {
+      hasBaseUrl: !!this.baseUrl,
+      hasEmail: !!this.email,
+      hasToken: !!this.token,
+      settingsKeys: Object.keys(settings)
+    });
   }
   
   extractUrls(text) {
@@ -387,7 +444,22 @@ class ConfluenceIntegration {
   }
   
   async fetchPage(url) {
+    console.log(`📄 [Confluence] fetchPage called for URL: ${url}`);
+    console.log(`📄 [Confluence] Configuration status:`, {
+      hasBaseUrl: !!this.baseUrl,
+      hasEmail: !!this.email,
+      hasToken: !!this.token,
+      baseUrl: this.baseUrl || 'undefined',
+      email: this.email || 'undefined',
+      tokenFirst10: this.token ? this.token.substring(0, 10) + '...' : 'undefined'
+    });
+
     if (!this.baseUrl || !this.email || !this.token) {
+      console.error('❌ [Confluence] Missing configuration:', {
+        baseUrl: this.baseUrl,
+        email: this.email,
+        token: this.token ? 'present' : 'missing'
+      });
       throw new Error('Confluence integration is not configured. Please add Confluence URL, email, and API token in extension settings.');
     }
 
@@ -400,8 +472,8 @@ class ConfluenceIntegration {
 
       console.log(`📄 Confluence - Extracted page ID: ${pageId} from URL: ${url}`);
 
-      // Check cache first
-      if (cacheManager) {
+      // Check cache first (cacheManager is optional)
+      if (typeof cacheManager !== 'undefined' && cacheManager) {
         const cacheKey = cacheManager.constructor.getCacheKey('confluence', pageId);
         const cached = cacheManager.get(cacheKey);
         if (cached) {
@@ -455,7 +527,7 @@ class ConfluenceIntegration {
 
       // Use retry helper if available, otherwise just execute once
       let result;
-      if (retryHelper) {
+      if (typeof retryHelper !== 'undefined' && retryHelper) {
         result = await retryHelper.forService('confluence', 'fetchPage', fetchPageWithRetry, {
           maxRetries: 3,
           baseDelay: 1000
@@ -464,8 +536,8 @@ class ConfluenceIntegration {
         result = await fetchPageWithRetry();
       }
 
-      // Cache the result
-      if (cacheManager && result) {
+      // Cache the result (cacheManager is optional)
+      if (typeof cacheManager !== 'undefined' && cacheManager && result) {
         const cacheKey = cacheManager.constructor.getCacheKey('confluence', pageId);
         cacheManager.set(cacheKey, result);
         console.log(`Cached Confluence page: ${pageId}`);
@@ -562,6 +634,12 @@ class FigmaIntegration {
   constructor(settings) {
     this.token = settings.figmaToken;
     this.imageMode = settings.figmaImageMode || 'single'; // 'single' or 'children'
+
+    console.log('🎨 [Figma] Integration initialized with:', {
+      hasToken: !!this.token,
+      imageMode: this.imageMode,
+      settingsKeys: Object.keys(settings)
+    });
   }
   
   extractUrls(text) {
@@ -622,7 +700,11 @@ class FigmaIntegration {
   }
   
   async fetchFile(url, retries = 3) {
+    console.log(`🎨 [Figma] fetchFile called for URL: ${url}`);
+    console.log(`🎨 [Figma] Token present: ${!!this.token}`);
+
     if (!this.token) {
+      console.error('❌ [Figma] No token found. Token value:', this.token);
       throw new Error('Figma integration is not configured. Please add your Figma Personal Access Token in extension settings.');
     }
 

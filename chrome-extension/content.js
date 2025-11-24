@@ -1399,7 +1399,9 @@
         'enablePositiveAgent', 'enableNegativeAgent', 'enableEdgeAgent',
         'enableRegressionAgent', 'enableIntegrationAgent', 'enableReviewAgent',
         'enableHistoricalMining', 'historicalMaxResults', 'historicalJqlFilters',
-        'jiraEmail', 'jiraApiToken'
+        'jiraEmail', 'jiraApiToken',
+        'confluenceUrl', 'confluenceEmail', 'confluenceToken',
+        'figmaToken', 'googleApiKey'
       ]);
 
       // Fetch Jira image attachments if model supports vision

@@ -157,7 +157,7 @@ async function runDiagnostics() {
     // Check settings
     const settings = await chrome.storage.sync.get([
       'llmProvider', 'llmModel', 'apiKey', 'enableStreaming',
-      'confluenceUrl', 'confluenceToken', 'figmaToken', 'googleApiKey'
+      'confluenceUrl', 'confluenceEmail', 'confluenceToken', 'figmaToken', 'googleApiKey'
     ]);
     
     console.log('⚙️ Settings Check:');
@@ -167,7 +167,7 @@ async function runDiagnostics() {
     console.log('  Streaming:', settings.enableStreaming !== false ? '✅ Enabled' : '⚠️ Disabled');
     
     console.log('\n🔗 Integrations Check:');
-    console.log('  Confluence:', settings.confluenceUrl && settings.confluenceToken ? '✅ Configured' : '⚠️ Not configured');
+    console.log('  Confluence:', settings.confluenceUrl && settings.confluenceEmail && settings.confluenceToken ? '✅ Configured' : '⚠️ Not configured (needs URL, email, and token)');
     console.log('  Figma:', settings.figmaToken ? '✅ Configured' : '⚠️ Not configured');
     console.log('  Google Docs:', settings.googleApiKey ? '✅ Configured' : '⚠️ Not configured');
     
@@ -1796,9 +1796,41 @@ Provide detailed test scope covering all aspects.`;
 
 async function handleGenerateTestCases(data) {
   validateSettings(data.settings);
-  
+
   const { ticketKey, ticketData, settings } = data;
-  
+
+  // Fetch external content if integrations are configured
+  let enrichedTicketData = ticketData;
+  let currentExternalSources = null;
+  if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
+    console.log('🔗 [Test Cases] Fetching external integrations...');
+    try {
+      const integrationManager = new IntegrationManager(settings);
+      const externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+
+      // Set external sources count
+      currentExternalSources = {
+        confluence: externalContent.confluence.length,
+        figma: externalContent.figma.length,
+        googleDocs: externalContent.googleDocs.length
+      };
+
+      console.log('✅ [Test Cases] External sources fetched:', currentExternalSources);
+
+      // Use enriched description if external content was found
+      if (externalContent.enrichedDescription !== ticketData.description) {
+        enrichedTicketData = {
+          ...ticketData,
+          description: externalContent.enrichedDescription,
+        };
+        console.log('📝 [Test Cases] Using enriched description with external content');
+      }
+    } catch (integrationError) {
+      console.warn('⚠️ [Test Cases] Integration fetch failed, continuing with ticket data only:', integrationError.message);
+      // Continue with original ticket data
+    }
+  }
+
   const systemMessage = `You are an expert test engineer. Generate detailed, executable test cases.
 
 For each test case include:
@@ -1822,8 +1854,8 @@ Format as JSON array.`;
   const userMessage = `Generate test cases for:
 
 **Ticket:** ${ticketKey}
-**Summary:** ${ticketData.summary || 'N/A'}
-**Description:** ${ticketData.description || 'N/A'}
+**Summary:** ${enrichedTicketData.summary || 'N/A'}
+**Description:** ${enrichedTicketData.description || 'N/A'}
 
 Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"Positive","priority":"P0","steps":["step1","step2"],"expectedResult":"...","preconditions":"...","testData":"..."}]`;
 
@@ -1850,7 +1882,11 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
       edgeCaseCount: testCases.filter(tc => tc.category === 'Edge').length
     };
     
-    return { testCases, ...stats };
+    return {
+      testCases,
+      ...stats,
+      externalSources: currentExternalSources
+    };
   } catch (error) {
     throw new Error(`Failed to parse test cases: ${error.message}`);
   }
