@@ -926,7 +926,7 @@
   function extractLinkedPages() {
     const linkedPages = [];
     const processedUrls = new Set();
-    
+
     // Find all links in description and comments
     const linkElements = document.querySelectorAll(
       '[data-testid="issue.views.issue-base.foundation.description.description-content"] a,' +
@@ -934,17 +934,22 @@
       '.description a,' +
       '.comment-body a'
     );
-    
+
+    console.log(`🔗 Found ${linkElements.length} link elements in the page`);
+
     linkElements.forEach((linkEl, index) => {
       const url = linkEl.href;
       const text = linkEl.textContent.trim();
-      
+
       // Filter out internal Jira links and duplicates
       if (url && !processedUrls.has(url) && !url.includes('/browse/')) {
         processedUrls.add(url);
-        
+
         const pageType = determinePageType(url);
-        
+
+        // Log each detected link for debugging
+        console.log(`🔗 Link #${index + 1}: Type=${pageType}, URL=${url}, Text="${text}"`);
+
         linkedPages.push({
           id: index + 1,
           title: text || url,
@@ -953,23 +958,55 @@
         });
       }
     });
-    
+
+    console.log(`🔗 Total linked pages extracted: ${linkedPages.length}`);
+    if (linkedPages.length > 0) {
+      console.log('🔗 Linked pages by type:');
+      const typeCount = {};
+      linkedPages.forEach(page => {
+        typeCount[page.type] = (typeCount[page.type] || 0) + 1;
+      });
+      Object.entries(typeCount).forEach(([type, count]) => {
+        console.log(`  - ${type}: ${count}`);
+      });
+    }
+
     return linkedPages;
   }
   
   // Determine the type of linked page
   function determinePageType(url) {
-    if (url.includes('confluence') || url.includes('atlassian.net/wiki')) {
+    // Convert to lowercase for case-insensitive matching
+    const lowerUrl = url.toLowerCase();
+
+    // Confluence detection - more patterns
+    if (lowerUrl.includes('confluence') ||
+        lowerUrl.includes('atlassian.net/wiki') ||
+        lowerUrl.includes('/wiki/spaces/') ||
+        lowerUrl.includes('/wiki/display/') ||
+        lowerUrl.includes('/wiki/x/')) {
       return 'confluence';
-    } else if (url.includes('figma.com')) {
+    }
+    // Figma detection - handle various Figma URL patterns
+    else if (lowerUrl.includes('figma.com') ||
+             lowerUrl.includes('fig.ma')) {  // Figma's short URL service
       return 'figma';
-    } else if (url.includes('docs.google.com')) {
+    }
+    // Google Docs detection
+    else if (lowerUrl.includes('docs.google.com')) {
       return 'google_docs';
-    } else if (url.includes('drive.google.com')) {
+    }
+    // Google Drive detection
+    else if (lowerUrl.includes('drive.google.com')) {
       return 'google_drive';
-    } else if (url.includes('github.com')) {
+    }
+    // GitHub detection
+    else if (lowerUrl.includes('github.com')) {
       return 'github';
     }
+
+    // Log unrecognized URLs for debugging
+    console.log('🔗 URL type not recognized:', url);
     return 'external';
   }
 
@@ -1681,9 +1718,19 @@
     });
   }
   
+  // Store active filter state
+  let activeFilter = 'all';
+  let searchQuery = '';
+  let priorityFilter = 'all';
+
   function displayTestCasesResults(data) {
     const container = document.getElementById('results-container');
     currentTestCasesData = data; // Store for review
+
+    // Always reset filters when new results are displayed
+    activeFilter = 'all';
+    searchQuery = '';
+    priorityFilter = 'all';
 
     // Render context summary box
     const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {}, currentAppContext);
@@ -1786,14 +1833,36 @@
         ${enhancementBadges}
         ${historicalBadge}
         <div class="test-stats">
-          <span class="stat">Total: ${stats.total}</span>
-          <span class="stat">Positive: ${stats.positive}</span>
-          <span class="stat">Negative: ${stats.negative}</span>
-          <span class="stat">Edge: ${stats.edge}</span>
-          <span class="stat">Regression: ${stats.regression}</span>
-          <span class="stat">Integration: ${stats.integration}</span>
+          <button class="stat-filter active" data-filter="all">Total: ${stats.total}</button>
+          <button class="stat-filter" data-filter="Positive">Positive: ${stats.positive}</button>
+          <button class="stat-filter" data-filter="Negative">Negative: ${stats.negative}</button>
+          <button class="stat-filter" data-filter="Edge">Edge: ${stats.edge}</button>
+          <button class="stat-filter" data-filter="Regression">Regression: ${stats.regression}</button>
+          <button class="stat-filter" data-filter="Integration">Integration: ${stats.integration}</button>
         </div>
-        <div class="result-content test-cases">
+
+        <!-- Enhanced Filter Controls -->
+        <div class="filter-controls">
+          <div class="search-box">
+            <input type="text" id="test-search" placeholder="🔍 Search test cases..." class="qatalyst-search-input" value="" />
+          </div>
+          <div class="priority-filter">
+            <label>Priority:</label>
+            <select id="priority-filter" class="qatalyst-select">
+              <option value="all" selected>All</option>
+              <option value="P0">P0 - Critical</option>
+              <option value="P1">P1 - High</option>
+              <option value="P2">P2 - Medium</option>
+              <option value="P3">P3 - Low</option>
+            </select>
+          </div>
+          <button class="qatalyst-btn secondary" id="clear-filters-btn" style="display: none;">
+            <span>Clear Filters</span>
+          </button>
+          <div id="filter-status" class="filter-status"></div>
+        </div>
+
+        <div class="result-content test-cases" id="test-cases-container">
           ${formatTestCases(data.testCases)}
         </div>
 
@@ -1815,40 +1884,45 @@
           </button>
         </div>
 
-        <div style="display: flex; gap: 8px; margin-top: 12px;">
-          <button class="qatalyst-btn primary" id="add-to-jira-btn" style="flex: 1;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
+          <button class="qatalyst-btn primary" id="add-to-jira-btn">
             <span class="btn-icon">📝</span>
             <span>Add to Jira</span>
           </button>
-          <button class="qatalyst-btn secondary" id="export-csv-btn" style="flex: 1;">
+          <button class="qatalyst-btn secondary" id="export-csv-btn">
             <span class="btn-icon">📥</span>
             <span>Export to CSV</span>
           </button>
-        </div>
-        <div style="display: flex; gap: 8px; margin-top: 8px;">
-          <button class="qatalyst-btn primary" id="export-to-test-mgmt-btn" style="flex: 1; background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+          <button class="qatalyst-btn secondary" id="copy-clipboard-btn" style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);">
+            <span class="btn-icon">📋</span>
+            <span>Copy to Clipboard</span>
+          </button>
+          <button class="qatalyst-btn primary" id="export-to-test-mgmt-btn" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
             <span class="btn-icon">🚀</span>
-            <span>Export to Test Management <span style="background: #3b82f6; color: white; font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle;">BETA</span></span>
-          </button>
-          <button class="qatalyst-btn" id="cancel-upload-btn" style="display: none; background: #ef4444; color: white;">
-            <span class="btn-icon">🛑</span>
-            <span>Cancel</span>
+            <span>Test Management <span style="background: #3b82f6; color: white; font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle;">BETA</span></span>
           </button>
         </div>
+        <button class="qatalyst-btn" id="cancel-upload-btn" style="display: none; background: #ef4444; color: white; width: 100%; margin-top: 8px;">
+          <span class="btn-icon">🛑</span>
+          <span>Cancel Upload</span>
+        </button>
       </div>
     `;
 
     // Add event listeners
     document.getElementById('add-to-jira-btn')?.addEventListener('click', () => {
-      addTestCasesToJira(data.testCases);
+      const testsToExport = getFilteredTestCases(data.testCases);
+      addTestCasesToJira(testsToExport);
     });
 
     document.getElementById('export-csv-btn')?.addEventListener('click', () => {
-      exportTestCasesToCSV(data.testCases);
+      const testsToExport = getFilteredTestCases(data.testCases);
+      exportTestCasesToCSV(testsToExport);
     });
 
     document.getElementById('export-to-test-mgmt-btn')?.addEventListener('click', async () => {
-      await exportToTestManagement(data.testCases);
+      const testsToExport = getFilteredTestCases(data.testCases);
+      await exportToTestManagement(testsToExport);
     });
 
     document.getElementById('cancel-upload-btn')?.addEventListener('click', async () => {
@@ -1869,6 +1943,217 @@
         return;
       }
       await handleRegenerateTestCases(review);
+    });
+
+    // Copy to Clipboard functionality
+    document.getElementById('copy-clipboard-btn')?.addEventListener('click', () => {
+      const testsToExport = getFilteredTestCases(data.testCases);
+      copyTestCasesToClipboard(testsToExport);
+    });
+
+    // Filter functionality
+    const filterButtons = document.querySelectorAll('.stat-filter');
+
+    // Ensure only 'Total' button is active initially and reset filter state
+    activeFilter = 'all';
+    searchQuery = '';
+    priorityFilter = 'all';
+
+    filterButtons.forEach(btn => {
+      if (btn.dataset.filter === 'all') {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+
+    filterButtons.forEach(button => {
+      button.addEventListener('click', (e) => {
+        // Prevent event bubbling
+        e.stopPropagation();
+
+        // Remove active class from all buttons
+        filterButtons.forEach(btn => btn.classList.remove('active'));
+
+        // Add active class to clicked button (handle both target and currentTarget)
+        const clickedButton = e.currentTarget || e.target;
+        clickedButton.classList.add('active');
+
+        // Get filter value
+        activeFilter = clickedButton.dataset.filter;
+        applyFilters(data.testCases);
+      });
+    });
+
+    // Search functionality
+    document.getElementById('test-search')?.addEventListener('input', (e) => {
+      searchQuery = e.target.value.toLowerCase();
+      applyFilters(data.testCases);
+    });
+
+    // Priority filter
+    document.getElementById('priority-filter')?.addEventListener('change', (e) => {
+      priorityFilter = e.target.value;
+      applyFilters(data.testCases);
+    });
+
+    // Clear filters
+    document.getElementById('clear-filters-btn')?.addEventListener('click', () => {
+      activeFilter = 'all';
+      searchQuery = '';
+      priorityFilter = 'all';
+
+      // Reset UI
+      const searchInput = document.getElementById('test-search');
+      if (searchInput) searchInput.value = '';
+
+      const prioritySelect = document.getElementById('priority-filter');
+      if (prioritySelect) prioritySelect.value = 'all';
+
+      // Reset active button
+      filterButtons.forEach(btn => btn.classList.remove('active'));
+      const totalBtn = document.querySelector('.stat-filter[data-filter="all"]');
+      if (totalBtn) totalBtn.classList.add('active');
+
+      // Hide the clear button itself
+      const clearBtn = document.getElementById('clear-filters-btn');
+      if (clearBtn) clearBtn.style.display = 'none';
+
+      applyFilters(data.testCases);
+    });
+  }
+
+  // Get currently filtered test cases
+  function getFilteredTestCases(testCases) {
+    let filteredTests = [...testCases];
+
+    // Apply category filter
+    if (activeFilter !== 'all') {
+      filteredTests = filteredTests.filter(tc => tc.category === activeFilter);
+    }
+
+    // Apply search filter
+    if (searchQuery) {
+      filteredTests = filteredTests.filter(tc => {
+        const searchableText = `${tc.title} ${tc.description} ${tc.steps?.join(' ')} ${tc.expected_result || tc.expectedResult || ''}`.toLowerCase();
+        return searchableText.includes(searchQuery);
+      });
+    }
+
+    // Apply priority filter
+    if (priorityFilter !== 'all') {
+      filteredTests = filteredTests.filter(tc => tc.priority === priorityFilter);
+    }
+
+    return filteredTests;
+  }
+
+  // Apply all active filters to test cases
+  function applyFilters(testCases) {
+    const filteredTests = getFilteredTestCases(testCases);
+
+    // Check if any filters are active
+    const hasFilters = activeFilter !== 'all' || searchQuery || priorityFilter !== 'all';
+
+    // Show/hide clear filters button
+    const clearBtn = document.getElementById('clear-filters-btn');
+    if (clearBtn) {
+      clearBtn.style.display = hasFilters ? 'inline-flex' : 'none';
+    }
+
+    // Update filter status
+    const statusElement = document.getElementById('filter-status');
+    if (statusElement) {
+      if (hasFilters) {
+        statusElement.innerHTML = `
+          <span class="filter-badge">
+            Showing ${filteredTests.length} of ${testCases.length} tests
+          </span>
+        `;
+      } else {
+        statusElement.innerHTML = '';
+      }
+    }
+
+    // Update the displayed test cases
+    const container = document.getElementById('test-cases-container');
+    if (container) {
+      if (filteredTests.length === 0) {
+        container.innerHTML = `
+          <div class="no-results">
+            <p>No test cases match the current filters.</p>
+            <button class="qatalyst-btn secondary" onclick="document.getElementById('clear-filters-btn').click()">
+              Clear Filters
+            </button>
+          </div>
+        `;
+      } else {
+        container.innerHTML = formatTestCases(filteredTests);
+      }
+    }
+  }
+
+  // Copy test cases to clipboard
+  function copyTestCasesToClipboard(testCases) {
+    // Format test cases for clipboard
+    let clipboardText = 'QAtalyst Test Cases\n';
+    clipboardText += '===================\n\n';
+
+    // Add filter information if filters are active
+    const hasFilters = activeFilter !== 'all' || searchQuery || priorityFilter !== 'all';
+    if (hasFilters) {
+      clipboardText += 'Active Filters:\n';
+      if (activeFilter !== 'all') clipboardText += `- Category: ${activeFilter}\n`;
+      if (searchQuery) clipboardText += `- Search: "${searchQuery}"\n`;
+      if (priorityFilter !== 'all') clipboardText += `- Priority: ${priorityFilter}\n`;
+      clipboardText += `\nShowing ${testCases.length} test case(s)\n`;
+      clipboardText += '-------------------\n\n';
+    }
+
+    testCases.forEach((tc, idx) => {
+      clipboardText += `Test Case #${idx + 1}\n`;
+      clipboardText += `-----------\n`;
+      clipboardText += `ID: ${tc.id}\n`;
+      clipboardText += `Title: ${tc.title}\n`;
+      clipboardText += `Category: ${tc.category}\n`;
+      clipboardText += `Priority: ${tc.priority}\n`;
+      clipboardText += `Description: ${tc.description || 'N/A'}\n`;
+
+      if (tc.preconditions) {
+        clipboardText += `Preconditions: ${tc.preconditions}\n`;
+      }
+
+      if (tc.steps && tc.steps.length > 0) {
+        clipboardText += `Steps:\n`;
+        tc.steps.forEach((step, stepIdx) => {
+          clipboardText += `  ${stepIdx + 1}. ${step}\n`;
+        });
+      }
+
+      clipboardText += `Expected Result: ${tc.expected_result || tc.expectedResult || 'N/A'}\n`;
+
+      if (tc.test_data) {
+        clipboardText += `Test Data: ${tc.test_data}\n`;
+      }
+
+      clipboardText += '\n';
+    });
+
+    // Copy to clipboard
+    navigator.clipboard.writeText(clipboardText).then(() => {
+      // Show success message
+      const btn = document.getElementById('copy-clipboard-btn');
+      const originalHTML = btn.innerHTML;
+      btn.innerHTML = '<span class="btn-icon">✅</span><span>Copied!</span>';
+      btn.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+
+      setTimeout(() => {
+        btn.innerHTML = originalHTML;
+        btn.style.background = 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)';
+      }, 2000);
+    }).catch(err => {
+      console.error('Failed to copy to clipboard:', err);
+      alert('Failed to copy test cases to clipboard. Please try again.');
     });
   }
   

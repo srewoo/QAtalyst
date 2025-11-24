@@ -11,6 +11,7 @@ importScripts('security.js');
 importScripts('rate-limiter.js');
 importScripts('token-counter.js');
 importScripts('graph-filter.js');
+importScripts('duplicate-detector.js');
 importScripts('agents.js');
 importScripts('evolution.js');
 importScripts('integrations.js');

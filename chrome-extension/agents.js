@@ -1,6 +1,23 @@
 // Multi-Agent Test Generation System
 // Client-side agent orchestration for QAtalyst
 
+// Import DuplicateDetector if available
+// Check if DuplicateDetector is already defined (e.g., in service worker context)
+if (typeof DuplicateDetector === 'undefined') {
+  try {
+    // Try to load the duplicate detector if it exists
+    if (typeof require !== 'undefined') {
+      DuplicateDetector = require('./duplicate-detector.js');
+    } else if (typeof window !== 'undefined' && window.DuplicateDetector) {
+      // Will be loaded via script tag in browser
+      DuplicateDetector = window.DuplicateDetector;
+    }
+  } catch (e) {
+    // Duplicate detector not available
+    console.log('DuplicateDetector not available:', e.message);
+  }
+}
+
 /**
  * Robust JSON parser that handles common AI-generated JSON errors
  */
@@ -377,7 +394,7 @@ class ContextAnalysisAgent extends BaseAgent {
 
 Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and create an intelligent, concise feature summary for the given Jira ticket.
 
-**Your summary MUST include these 3 key sections:**
+**Your summary MUST include these 4 key sections:**
 
 1. **MAIN PURPOSE** 🎯
    - What is the primary purpose of this feature?
@@ -389,18 +406,29 @@ Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and cre
    - What forms/fields does the user interact with?
    - What API endpoints are called and in what sequence?
    - How do different components connect together?
+   - What data flows between systems?
 
 3. **UI COMPONENTS** 🎨
    - What forms are present and what fields do they contain?
    - What buttons/actions are available?
    - What pages/screens are involved?
    - How does the user navigate through the feature?
+   - What validation rules are in place?
+
+4. **SECURITY & PERFORMANCE CONSIDERATIONS** 🔒⚡
+   - What authentication/authorization is required?
+   - What sensitive data is handled (PII, passwords, tokens)?
+   - What are the performance-critical operations?
+   - What are potential bottlenecks (large data sets, file uploads)?
+   - What rate limiting or throttling exists?
+   - What error states and edge cases are handled?
 
 **CRITICAL**:
-- Keep it concise (200-500 words) but informative
+- Keep it concise (300-600 words) but comprehensive
 - Reference ACTUAL form fields, button names, and API endpoints from the data
 - Be specific and technical - use real field names and endpoints
-- Write in clear, structured format with the 3 sections above
+- Identify security risks and performance concerns explicitly
+- Write in clear, structured format with the 4 sections above
 
 **Output Format**: Plain text summary with clear sections, NOT test cases.`;
   }
@@ -496,24 +524,36 @@ class RequirementAnalysisAgent extends BaseAgent {
   }
   
   getSystemMessage(previousResults) {
+    const hasContext = previousResults?.contextSummary;
+
     return `You are a senior business analyst specializing in requirement analysis.
 Analyze Jira tickets and extract structured requirements for test case generation.
+
+${hasContext ? '**CRITICAL**: You have access to the actual application context. Cross-reference requirements with the real implementation to identify gaps or discrepancies.' : ''}
 
 Focus on:
 1. Feature overview and objectives
 2. Functional requirements (what the system should do)
-3. UI/UX specifications
-4. Integration points and dependencies
+3. UI/UX specifications ${hasContext ? '(validate against actual UI components)' : ''}
+4. Integration points and dependencies ${hasContext ? '(verify against actual APIs)' : ''}
 5. Acceptance criteria
 6. Edge cases and constraints
 7. Business rules and validations
+8. ${hasContext ? 'Implementation gaps (requirements not yet implemented)' : 'Potential implementation challenges'}
+9. ${hasContext ? 'Additional features found (implemented but not in requirements)' : 'Assumptions and risks'}
+
+${hasContext ? 'VALIDATION TASK: Compare the requirements with the Context Summary. Note any differences between what is requested and what is actually implemented.' : ''}
 
 Provide a well-structured analysis in markdown format with clear sections.`;
   }
   
   getUserMessage(ticketData, previousResults, appContext = null) {
-    return `Analyze this Jira ticket comprehensively:
+    const contextSection = previousResults?.contextSummary
+      ? `\n**APPLICATION CONTEXT (From Crawled Data):**\n${previousResults.contextSummary}\n\n**TASK: Cross-reference the requirements below with the actual implementation above.**\n\n`
+      : '';
 
+    return `Analyze this Jira ticket comprehensively:
+${contextSection}
 **Ticket:** ${ticketData.key}
 **Summary:** ${ticketData.summary || 'N/A'}
 **Type:** ${ticketData.type || 'N/A'}
@@ -565,12 +605,13 @@ Focus on:
 - Valid input combinations
 - Successful operations
 
-**IMPORTANT: Write DETAILED descriptions (2-3 sentences) that:**
+**CRITICAL REQUIREMENT: Write DETAILED descriptions (minimum 50 words) that:**
+- Must be AT LEAST 50 WORDS to ensure comprehensive test documentation
 - Start with "Verify that..."
-- Explain what functionality is being tested
-- Mention what the user is able to do
-- Include the expected behavior or outcome
-- Use phrases like: "works correctly", "user is able to", "ensure that", "confirm that"
+- Explain what functionality is being tested and WHY it matters
+- Mention what the user is able to do and the business value
+- Include the expected behavior, outcome, and validation points
+- Use pattern: "Verify that [feature] works correctly when [context]. Ensure that [validations] including [specific checks]. The user should be able to [actions] and the system should [behaviors]. This validates [business requirement]."
 
 Example: "Verify that the feature flag works correctly and user is able to toggle LLM functionality on/off at the site level. Ensure the toggle persists across sessions and affects all users in the site."
 
@@ -734,14 +775,15 @@ Focus on:
 - Error messages and handling
 - System resilience
 
-**IMPORTANT: Write DETAILED descriptions (2-3 sentences) that:**
+**CRITICAL REQUIREMENT: Write DETAILED descriptions (minimum 50 words) that:**
+- Must be AT LEAST 50 WORDS to ensure comprehensive test documentation
 - Start with "Verify that..."
-- Explain what error condition is being tested
+- Explain what error condition is being tested and its impact
 - Mention what the user is unable to do (security/validation)
 - Include the expected error handling behavior
-- Use phrases like: "correctly rejects", "user is unable to", "prevents", "validates", "handles error"
+- Use pattern: "Verify that the system correctly [validates/rejects/prevents] [invalid action] when [error context]. Ensure that [error handling] including [error message], [system state], and [data integrity]. The user should be unable to [blocked action] and the system should [protective behavior]. This protects against [security/data risk]."
 
-Example: "Verify that the system correctly validates file upload size and user is unable to upload files exceeding the 10MB limit. Ensure that appropriate error message is displayed and the system prevents the upload. Confirm that no partial files are stored."
+Example: "Verify that the system correctly validates file upload size and user is unable to upload files exceeding the 10MB limit. Ensure that appropriate error message is displayed clearly indicating the size limit violation and the system prevents the upload completely. Confirm that no partial files are stored in the system and the upload form resets properly. This protects against storage exhaustion attacks and maintains data integrity."
 
 Generate test cases in this EXACT JSON format:
 {
@@ -859,14 +901,15 @@ Focus on:
 - System limits
 - **Performance boundaries (max file size, timeout limits)**
 
-**IMPORTANT: Write DETAILED descriptions (2-3 sentences) that:**
+**CRITICAL REQUIREMENT: Write DETAILED descriptions (minimum 50 words) that:**
+- Must be AT LEAST 50 WORDS to ensure comprehensive test documentation
 - Start with "Verify that..."
-- Explain what boundary/edge condition is being tested
+- Explain what boundary/edge condition is being tested and why it's critical
 - Mention what the user is able to do at this edge case
-- Include the expected system behavior
-- Use phrases like: "correctly handles", "at the boundary", "edge condition", "system maintains", "without degradation"
+- Include the expected system behavior and performance implications
+- Use pattern: "Verify that the system correctly handles [edge condition] when [boundary context]. Ensure that [validations] including [boundary checks], [performance metrics], and [system stability]. The user should be able to [edge case action] and the system should [maintain behavior]. This tests the system's resilience at [boundary type]."
 
-Example: "Verify that the system correctly handles concurrent user sessions and user is able to perform actions simultaneously from multiple devices. Ensure that data consistency is maintained and no conflicts occur. Confirm that session management works correctly across all active sessions."
+Example: "Verify that the system correctly handles concurrent user sessions and user is able to perform actions simultaneously from multiple devices without data loss or corruption. Ensure that data consistency is maintained across all sessions including proper conflict resolution and no race conditions occur. Confirm that session management works correctly across all active sessions with proper isolation. This tests the system's ability to handle multiple concurrent users at scale."
 
 Generate test cases in this EXACT JSON format:
 {
@@ -946,28 +989,46 @@ class RegressionTestAgent extends BaseAgent {
 Create test scenarios that validate existing functionality is not broken by new changes.
 
 Focus on:
-- Core existing features
-- Previously working workflows
-- Backward compatibility
-- Integration points
-- Critical user paths
+- Core existing features that must continue working
+- Previously working workflows that could be impacted
+- Backward compatibility with older data/configurations
+- Critical integration points between components
+- Essential user paths that cannot break
+
+CRITICAL REQUIREMENTS:
+- Each test must protect a specific existing feature from regression
+- Description must be DETAILED (minimum 50 words) explaining what functionality is being protected
+- Use the pattern: "Verify that [existing feature] continues to work correctly when [new change context]. Ensure that [specific aspects] remain functional including [key validations]. This test protects against regression in [component/workflow]."
+- Steps must reference actual UI elements and workflows from the application
+- Include specific data values that worked before
 
 Generate test cases in this EXACT JSON format:
 {
   "testCases": [
     {
       "id": "TC-REG-001",
-      "title": "Clear test case title",
+      "title": "Verify existing user login continues working after profile updates",
       "category": "Regression",
       "priority": "P0|P1|P2",
-      "description": "What existing functionality this validates",
-      "preconditions": "Setup required",
-      "steps": ["Step 1", "Step 2", "Step 3"],
-      "expected_result": "Existing functionality works as before",
-      "test_data": "Test data"
+      "description": "Verify that existing users can still log in successfully after the new profile management features are added. Ensure that authentication flow remains intact including password validation, session creation, and redirect to dashboard. This test protects against regression in the core authentication system that could lock out existing users.",
+      "preconditions": "Existing user account created before the update",
+      "steps": [
+        "Navigate to login page",
+        "Enter existing user credentials",
+        "Click 'Sign In' button",
+        "Verify dashboard loads"
+      ],
+      "expected_result": "User successfully logs in and reaches dashboard as before",
+      "test_data": "Username: existing_user@test.com, Password: Test123!"
     }
   ]
 }
+
+QUALITY STANDARDS:
+- Description: 50+ words with clear regression context
+- Title: Specific about what existing feature is being tested
+- Steps: 3-7 clear steps referencing actual UI elements
+- Priority: P0 for critical paths, P1 for important features, P2 for nice-to-have
 
 Return ONLY valid JSON, no markdown formatting.`;
   }
@@ -1020,28 +1081,48 @@ class IntegrationTestAgent extends BaseAgent {
 Create test scenarios that validate system integrations and API interactions.
 
 Focus on:
-- API endpoint testing
-- Third-party integrations
-- Database interactions
-- Service-to-service communication
-- Data flow between components
+- API endpoint testing (REST, GraphQL, WebSocket)
+- Third-party service integrations (payment, auth, storage)
+- Database interactions and data consistency
+- Service-to-service communication and message queues
+- Data flow and transformation between components
+
+CRITICAL REQUIREMENTS:
+- Each test must validate a specific integration point
+- Description must be DETAILED (minimum 50 words) explaining the integration flow
+- Use the pattern: "Verify that [component A] successfully integrates with [component B] when [action]. Ensure that data flows correctly including [data transformations], API responses are [expected format], and error handling works for [failure scenarios]. This validates the integration between [systems]."
+- Reference ACTUAL API endpoints from the application context if available
+- Include request/response samples in test_data
 
 Generate test cases in this EXACT JSON format:
 {
   "testCases": [
     {
       "id": "TC-INT-001",
-      "title": "Clear test case title",
+      "title": "Verify user service integrates with notification API for email alerts",
       "category": "Integration",
       "priority": "P1|P2|P3",
-      "description": "What integration this validates",
-      "preconditions": "Setup required",
-      "steps": ["Step 1", "Step 2", "Step 3"],
-      "expected_result": "Integration works correctly",
-      "test_data": "Test data"
+      "description": "Verify that the user service successfully integrates with the notification API when sending welcome emails to new users. Ensure that user data is correctly transformed into email template format, the notification API returns proper status codes, and failures are logged appropriately. This validates the integration between user management and notification systems ensuring reliable email delivery.",
+      "preconditions": "Notification service is running and configured with SMTP",
+      "steps": [
+        "Create new user via POST /api/users",
+        "Verify notification service receives webhook",
+        "Check email queue for welcome message",
+        "Validate email content and formatting",
+        "Confirm delivery status update"
+      ],
+      "expected_result": "Welcome email sent successfully with correct user data",
+      "test_data": "Request: {name: 'Test User', email: 'test@example.com'}, Expected Response: {status: 200, emailId: 'uuid', queued: true}"
     }
   ]
 }
+
+QUALITY STANDARDS:
+- Description: 50+ words explaining the integration flow and validation
+- Title: Specific about which systems are integrating
+- Steps: Include API calls, data validation, and response checks
+- Test Data: Include sample requests/responses or database states
+- Priority: P1 for critical integrations, P2 for important, P3 for nice-to-have
 
 Return ONLY valid JSON, no markdown formatting.`;
   }
@@ -1090,48 +1171,99 @@ Return as JSON array.`;
 class ReviewAgent extends BaseAgent {
   constructor() {
     super('Review', 'Reviews generated tests for quality and coverage gaps', true);
+    // Initialize duplicate detector if available
+    this.duplicateDetector = DuplicateDetector ? new DuplicateDetector(0.85) : null;
   }
-  
-  getSystemMessage(previousResults) {
-    return `You are a senior QA lead reviewing test cases for quality and completeness.
 
-Analyze the generated test cases and provide a comprehensive review.
+  getSystemMessage(previousResults) {
+    return `You are a principal QA architect performing final quality review.
+
+Your review must be THOROUGH and ACTIONABLE, focusing on:
+
+1. **Coverage Analysis** (30% focus):
+   - Map tests to requirements - what % is covered?
+   - Identify untested features or workflows
+   - Check for missing user personas or roles
+   - Verify all acceptance criteria have tests
+
+2. **Quality Assessment** (40% focus):
+   - CRITICAL: Check if descriptions are DETAILED (50+ words minimum)
+   - Verify descriptions follow pattern: "Verify that [what] when [context]. Ensure [specifics]..."
+   - Identify duplicate or near-duplicate tests
+   - Find vague or unclear test descriptions (less than 50 words = vague)
+   - Check for missing preconditions or test data
+   - Validate priority assignments match criticality
+   - Ensure steps reference actual UI elements/APIs
+
+3. **Risk Analysis** (30% focus):
+   - Security vulnerabilities not tested
+   - Performance bottlenecks not covered
+   - Integration points missing tests
+   - Error handling gaps
 
 Return your analysis in this EXACT JSON format:
 {
-  "coverageAssessment": "Summary of what areas are well covered",
+  "coverageAssessment": "Detailed coverage analysis with specific examples",
   "coverageScore": 85,
   "criticalGaps": [
-    "Specific missing test scenario 1",
-    "Specific missing test scenario 2"
+    "Specific missing test scenario with clear description"
   ],
   "qualityIssues": [
-    "Duplicate or unclear test issue"
+    "Specific quality issue found in tests"
+  ],
+  "descriptionQualityIssues": [
+    "TC-XXX-001: Description is only 20 words, needs 50+ words with detailed context",
+    "TC-YYY-002: Description doesn't follow 'Verify that...' pattern"
+  ],
+  "duplicateTests": [
+    "Test titles that are duplicates or near-duplicates"
   ],
   "suggestedTests": [
     {
-      "title": "Specific test case title",
-      "rationale": "Why this test is needed",
+      "title": "Specific, actionable test title",
+      "rationale": "Why this test is critical",
       "priority": "P0|P1|P2",
       "category": "Positive|Negative|Edge|Security|Performance"
     }
   ],
   "securityConcerns": [
-    "Security test gap or concern"
+    "Security test gap or concern with specific risk"
   ],
   "performanceConcerns": [
-    "Performance test gap or concern"
+    "Performance test gap with specific scenario"
   ],
   "riskAreas": [
-    "High-risk area not adequately covered"
+    "High-risk area not adequately covered with impact description"
   ]
 }
 
-Provide actionable, specific feedback. Suggest 3-5 concrete new test cases to fill gaps.
+Be specific, not generic. Provide 3-5 concrete test suggestions.
 Return ONLY valid JSON.`;
   }
   
   getUserMessage(ticketData, previousResults, appContext = null) {
+    // Perform duplicate detection if detector is available
+    let duplicateInfo = '';
+    let duplicateAnalysis = null;
+
+    if (this.duplicateDetector && previousResults.testCases.length > 0) {
+      duplicateAnalysis = this.duplicateDetector.detectDuplicates(previousResults.testCases);
+
+      if (duplicateAnalysis.length > 0) {
+        const duplicateDetails = duplicateAnalysis.map(group => {
+          const primaryTest = previousResults.testCases[group.primary];
+          const duplicateList = group.similarities.map(dup =>
+            `  - "${dup.test.title}" (${Math.round(dup.similarity * 100)}% similar)`
+          ).join('\n');
+
+          return `- "${primaryTest.title}" has duplicates:\n${duplicateList}`;
+        }).join('\n\n');
+
+        duplicateInfo = `\n**Detected Duplicate Tests (${duplicateAnalysis.length} groups):**
+${duplicateDetails}\n`;
+      }
+    }
+
     const testCasesSummary = previousResults.testCases.map((tc, idx) =>
       `${idx + 1}. [${tc.category}] ${tc.title}`
     ).join('\n');
@@ -1153,7 +1285,76 @@ ${testCasesSummary}
 
 **Security Tests:** ${previousResults.testCases.filter(tc => tc.security_risk).length}
 **Performance Tests:** ${previousResults.testCases.filter(tc => tc.performance_impact === 'yes').length}
+${duplicateInfo}
+Provide a comprehensive quality review focusing on:
+1. Coverage gaps and missing test scenarios
+2. Quality issues including the duplicates detected above
+3. Specific, actionable test suggestions to fill gaps
 
-Provide a comprehensive quality review with specific gap-filling test suggestions.`;
+Return your analysis as specified JSON format.`;
+  }
+
+  // Override parseResponse to handle JSON parsing
+  parseResponse(response) {
+    if (typeof response === 'string') {
+      try {
+        // Remove any markdown code blocks if present
+        const cleanedJson = response.replace(/```json\s*|\s*```/gi, '').trim();
+        return JSON.parse(cleanedJson);
+      } catch (error) {
+        console.error('Failed to parse ReviewAgent response as JSON:', error);
+        console.error('Raw response:', response);
+        // Return a default review structure if parsing fails
+        return {
+          coverageAssessment: "Unable to parse review response",
+          coverageScore: 0,
+          criticalGaps: [],
+          qualityIssues: [],
+          descriptionQualityIssues: [],
+          duplicateTests: [],
+          suggestedTests: [],
+          securityConcerns: [],
+          performanceConcerns: [],
+          riskAreas: []
+        };
+      }
+    }
+    return response;
+  }
+
+  // Override execute to include duplicate removal
+  async execute(ticketData, previousResults, settings, appContext = null) {
+    // If duplicate detector is available, clean the tests first
+    if (this.duplicateDetector && previousResults.testCases.length > 0) {
+      const duplicateAnalysis = this.duplicateDetector.removeDuplicates(previousResults.testCases);
+
+      // Store the duplicate analysis for reference
+      this.lastDuplicateAnalysis = duplicateAnalysis;
+
+      // Log duplicate removal
+      if (duplicateAnalysis.removed.length > 0) {
+        console.log(`ReviewAgent: Removed ${duplicateAnalysis.removed.length} duplicate tests`);
+        console.log('Duplicate groups:', duplicateAnalysis.duplicateGroups);
+      }
+
+      // Update previousResults with cleaned tests
+      previousResults = {
+        ...previousResults,
+        testCases: duplicateAnalysis.cleaned,
+        duplicatesRemoved: duplicateAnalysis.removed,
+        duplicateGroups: duplicateAnalysis.duplicateGroups
+      };
+    }
+
+    // Call parent execute with cleaned tests - parseResponse will handle JSON parsing
+    const result = await super.execute(ticketData, previousResults, settings, appContext);
+
+    // Add duplicate information to the result object (result is already parsed by parseResponse)
+    if (this.lastDuplicateAnalysis && typeof result === 'object' && result !== null) {
+      result.duplicateAnalysis = this.lastDuplicateAnalysis.summary;
+      result.duplicatesRemoved = this.lastDuplicateAnalysis.removed.map(t => t.title);
+    }
+
+    return result;
   }
 }

@@ -217,17 +217,42 @@ class IntegrationManager {
       enrichedDescription: ticketData.description || ''
     };
 
-    // Extract URLs from ticket description and comments
-    const allText = [
-      ticketData.description || '',
-      ...(ticketData.comments || []).map(c => c.text || '') // Use c.text for comment content
-    ].join('\n');
-    console.log('🔗 [IntegrationManager] Extracted text length:', allText.length);
+    // First, try to use linkedPages if available (these are extracted from DOM)
+    let confluenceUrls = [];
+    let figmaUrls = [];
+    let googleDocsUrls = [];
 
-    // Extract all URLs
-    const confluenceUrls = this.confluence.extractUrls(allText);
-    const figmaUrls = this.figma.extractUrls(allText);
-    const googleDocsUrls = this.googleDocs.extractUrls(allText);
+    if (ticketData.linkedPages && Array.isArray(ticketData.linkedPages)) {
+      console.log('🔗 [IntegrationManager] Using linkedPages from DOM:', ticketData.linkedPages.length);
+
+      // Extract URLs from linkedPages based on their type
+      confluenceUrls = ticketData.linkedPages
+        .filter(page => page.type === 'confluence')
+        .map(page => page.url);
+
+      figmaUrls = ticketData.linkedPages
+        .filter(page => page.type === 'figma')
+        .map(page => page.url);
+
+      googleDocsUrls = ticketData.linkedPages
+        .filter(page => page.type === 'google_docs' || page.type === 'google_drive')
+        .map(page => page.url);
+    }
+
+    // Fallback: Extract URLs from ticket description and comments if no linkedPages
+    if (confluenceUrls.length === 0 && figmaUrls.length === 0 && googleDocsUrls.length === 0) {
+      console.log('🔗 [IntegrationManager] No linkedPages found, extracting from text');
+      const allText = [
+        ticketData.description || '',
+        ...(ticketData.comments || []).map(c => c.text || '') // Use c.text for comment content
+      ].join('\n');
+      console.log('🔗 [IntegrationManager] Extracted text length:', allText.length);
+
+      // Extract all URLs using regex patterns
+      confluenceUrls = this.confluence.extractUrls(allText);
+      figmaUrls = this.figma.extractUrls(allText);
+      googleDocsUrls = this.googleDocs.extractUrls(allText);
+    }
 
     console.log('🔗 [IntegrationManager] Extracted URLs:', {
       confluence: confluenceUrls.length,

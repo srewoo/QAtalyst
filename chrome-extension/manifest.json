@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "QAtalyst - AI Test Case Generator",
-  "version": "12.0.1",
+  "version": "12.2.0",
   "description": "AI-powered Jira assistant with intelligent web app crawling and context-aware test generation.",
   "permissions": [
     "storage",
@@ -37,7 +37,7 @@
         "https://*.atlassian.net/browse/*",
         "https://*.jira.com/browse/*"
       ],
-      "js": ["graph-filter.js", "config.js", "security.js", "content.js"],
+      "js": ["graph-filter.js", "config.js", "security.js", "duplicate-detector.js", "content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     }

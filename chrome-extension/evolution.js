@@ -184,10 +184,17 @@ class EvolutionaryOptimizer {
       }
 
       const systemMessage = `You are a QA quality evaluator. Score test cases from 0-1 based on:
-- Clarity of test steps
+- Description quality and detail (minimum 50 words, follows "Verify that..." pattern)
+- Clarity of test steps (specific, actionable, referencing actual UI elements)
 - Relevance to requirements
-- Realistic test data
-- Clear expected results
+- Realistic test data with specific values
+- Clear expected results with measurable outcomes
+
+SCORING GUIDE:
+- 0.9-1.0: Excellent descriptions (50+ words, detailed context), clear steps, perfect data
+- 0.7-0.8: Good descriptions (30-50 words), mostly clear steps, good data
+- 0.5-0.6: Basic descriptions (20-30 words), adequate steps, basic data
+- 0.0-0.4: Poor descriptions (<20 words), vague steps, missing data
 
 Return ONLY a number between 0 and 1.`;
 
@@ -277,7 +284,8 @@ Return quality score (0-1):`;
       'scenarioExpansion',
       'boundaryTesting',
       'errorInjection',
-      'contextShifting'
+      'contextShifting',
+      'descriptionEnhancement'
     ];
 
     // PARALLEL OPTIMIZATION: Apply mutations in parallel instead of sequentially
@@ -351,7 +359,8 @@ Return mutated tests as JSON array:`;
       scenarioExpansion: 'Expand test scenarios by adding more steps, alternative paths, or additional validations.',
       boundaryTesting: 'Add boundary value tests: minimum, maximum, zero, null, empty, overflow conditions.',
       errorInjection: 'Introduce error conditions: invalid inputs, missing data, unauthorized access, timeouts.',
-      contextShifting: 'Change test context: different users, environments, states, concurrent operations.'
+      contextShifting: 'Change test context: different users, environments, states, concurrent operations.',
+      descriptionEnhancement: 'CRITICAL: Enhance test descriptions to be MORE DETAILED (minimum 50 words). Use pattern: "Verify that [specific feature] works correctly when [detailed context]. Ensure that [specific validations] including [data checks], [UI state], and [system behavior]. This test validates [business requirement] and protects against [potential issues]." Add specific details about what is being tested, why it matters, and what could go wrong.'
     };
     return descriptions[strategy] || 'Improve test coverage through intelligent mutations.';
   }

@@ -243,7 +243,7 @@
 
 .test-stats {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 12px;
   flex-wrap: wrap;
 }
@@ -255,6 +255,154 @@
   border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
+}
+
+/* Clickable stat filters */
+.stat-filter {
+  background: #f1f5f9;
+  color: #475569;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 2px solid #e2e8f0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-filter:hover {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.stat-filter.active {
+  background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+  color: white;
+  border-color: #0284c7;
+  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
+  transform: scale(1.05);
+}
+
+/* Filter controls */
+.filter-controls {
+  display: flex;
+  gap: 12px; /* Reduced gap to prevent overflow */
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: white;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  align-items: center;
+  flex-wrap: nowrap; /* Prevent wrapping to keep elements in one line */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden; /* Prevent content from extending outside */
+}
+
+.search-box {
+  flex: 1 1 auto;
+  min-width: 150px; /* Reduced minimum width */
+  max-width: 300px; /* Further reduced to prevent overflow */
+}
+
+.qatalyst-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+  box-sizing: border-box; /* Include padding and border in width */
+}
+
+.qatalyst-search-input:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+.priority-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px; /* Slightly reduced gap */
+  min-width: 140px; /* Ensure minimum width for priority filter */
+  flex-shrink: 0; /* Prevent shrinking */
+  white-space: nowrap; /* Prevent label from wrapping */
+}
+
+.priority-filter label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.qatalyst-select {
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  background: white;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  box-sizing: border-box; /* Include padding and border in width */
+  min-width: 100px; /* Ensure minimum width for dropdown */
+}
+
+.qatalyst-select:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+/* No results message */
+.no-results {
+  text-align: center;
+  padding: 40px 20px;
+  background: #f8fafc;
+  border-radius: 8px;
+  margin: 20px 0;
+}
+
+.no-results p {
+  color: #64748b;
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+
+/* Filter status badge */
+.filter-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0; /* Prevent shrinking */
+}
+
+.filter-badge {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  box-shadow: 0 2px 4px rgba(16, 185, 129, 0.2);
+}
+
+#clear-filters-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  height: auto;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
 }
 
 .test-cases {
@@ -1093,4 +1241,44 @@
 
 .context-summary-item .status-text {
   font-weight: normal;
+}
+
+/* Responsive adjustments for filter controls */
+@media (max-width: 768px) {
+  .filter-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    flex-wrap: wrap; /* Allow wrapping on small screens */
+  }
+
+  .search-box {
+    max-width: none;
+    width: 100%;
+    min-width: unset;
+  }
+
+  .priority-filter {
+    width: 100%;
+    justify-content: space-between;
+    min-width: unset;
+  }
+
+  .filter-status {
+    width: 100%;
+    margin-left: 0;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 600px) {
+  .stat-filter {
+    font-size: 12px;
+    padding: 8px 10px;
+    min-width: auto;
+  }
+
+  .test-stats {
+    gap: 6px;
+  }
 }
