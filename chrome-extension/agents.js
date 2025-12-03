@@ -75,6 +75,7 @@ class AgentOrchestrator {
       new EdgeCaseAgent(),
       new RegressionTestAgent(),
       new IntegrationTestAgent(),
+      new AIFeatureTestAgent(),
       new ReviewAgent()
     ];
   }
@@ -93,6 +94,19 @@ class AgentOrchestrator {
       console.log(`[ORCHESTRATOR] 📊 Knowledge graph available with ${Object.keys(appContext.knowledgeGraph.pages || {}).length} pages`);
     } else {
       console.log(`[ORCHESTRATOR] ℹ️ No knowledge graph available (running without crawled data)`);
+    }
+
+    // Detect AI features in ticket
+    const aiDetection = AIFeatureTestAgent.detectAIFeatures(ticketData);
+    if (aiDetection.isAIFeature) {
+      console.log(`[ORCHESTRATOR] 🤖 AI features detected (${aiDetection.confidence} confidence):`, aiDetection.keywords);
+      // Enable AIFeatureTestAgent by setting flag
+      const aiAgent = this.agents.find(a => a instanceof AIFeatureTestAgent);
+      if (aiAgent) {
+        aiAgent.hasAIFeatures = true;
+      }
+    } else {
+      console.log(`[ORCHESTRATOR] ℹ️ No AI features detected - AIFeatureTestAgent will be skipped`);
     }
 
     const enabledAgents = this.agents.filter(agent => agent.isEnabled(this.settings));
@@ -117,7 +131,8 @@ class AgentOrchestrator {
                            agent instanceof NegativeTestAgent ||
                            agent instanceof EdgeCaseAgent ||
                            agent instanceof RegressionTestAgent ||
-                           agent instanceof IntegrationTestAgent;
+                           agent instanceof IntegrationTestAgent ||
+                           agent instanceof AIFeatureTestAgent;
 
         let agentResult;
         if (isTestAgent) {
@@ -312,6 +327,66 @@ class BaseAgent {
     // Fallback: If no summary, use raw appContext (legacy behavior)
     if (!appContext) {
       return '';
+    }
+
+    // NEW: Handle knowledge graph directly if present (when ContextAnalysisAgent is disabled)
+    if (appContext.knowledgeGraph) {
+      const kg = appContext.knowledgeGraph;
+      let formatted = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      formatted += '📱 APPLICATION CONTEXT (From Crawled Knowledge Graph)\n';
+      formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+
+      formatted += `🌐 Application: ${appContext.appUrl || 'Unknown'}\n`;
+      formatted += `📄 Total Pages Crawled: ${appContext.pageCount || Object.keys(kg.pages || {}).length}\n\n`;
+
+      // Add forms from knowledge graph
+      if (kg.forms && kg.forms.length > 0) {
+        formatted += '📝 FORMS FOUND:\n';
+        kg.forms.slice(0, 5).forEach((form, index) => {
+          formatted += `\n${index + 1}. Form on ${form.url}\n`;
+          formatted += `   • ID: ${form.id || 'N/A'}\n`;
+          formatted += `   • Action: ${form.action || 'N/A'}\n`;
+          formatted += `   • Method: ${form.method}\n`;
+          if (form.inputs && form.inputs.length > 0) {
+            formatted += `   • Fields:\n`;
+            form.inputs.slice(0, 10).forEach(input => {
+              const required = input.required ? ' (required)' : '';
+              formatted += `     - ${input.name || input.id}: ${input.type}${required}\n`;
+            });
+          }
+        });
+        if (kg.forms.length > 5) {
+          formatted += `\n   ... and ${kg.forms.length - 5} more forms\n`;
+        }
+        formatted += '\n';
+      }
+
+      // Add APIs from knowledge graph
+      if (kg.apis && kg.apis.length > 0) {
+        formatted += '🔌 API ENDPOINTS DETECTED:\n';
+        kg.apis.slice(0, 10).forEach((api, index) => {
+          formatted += `\n${index + 1}. ${api.method} ${api.endpoint}\n`;
+          formatted += `   • Page: ${api.url}\n`;
+        });
+        if (kg.apis.length > 10) {
+          formatted += `\n   ... and ${kg.apis.length - 10} more API endpoints\n`;
+        }
+        formatted += '\n';
+      }
+
+      // Add stats summary
+      if (kg.stats) {
+        formatted += '📊 CRAWL STATISTICS:\n';
+        formatted += `   • Total Features: ${kg.stats.totalFeatures || 0}\n`;
+        formatted += `   • Total APIs: ${kg.stats.totalApis || 0}\n`;
+        formatted += `   • Total Forms: ${kg.stats.totalForms || 0}\n`;
+        formatted += '\n';
+      }
+
+      formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      formatted += '💡 Use the ACTUAL field names, button labels, and API endpoints from above.\n';
+      formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+      return formatted;
     }
 
     let formatted = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
@@ -573,11 +648,32 @@ class PositiveTestAgent extends BaseAgent {
   constructor() {
     super('PositiveTest', 'Generates happy path and valid input test scenarios', true);
   }
-  
+
   getSystemMessage(previousResults) {
+    // Check if images are available for visual analysis
+    const hasVisualContext = this.hasImages?.figma || this.hasImages?.jira;
+
+    const visualAnalysisSection = hasVisualContext ? `
+**🎨 VISUAL ANALYSIS INSTRUCTIONS (Images Attached):**
+You have been provided with UI design images (Figma designs and/or screenshots). CAREFULLY ANALYZE these images to:
+1. Identify ALL visible UI elements: buttons, input fields, labels, icons, navigation items
+2. Note the EXACT text/labels on buttons and fields (use these in test steps)
+3. Observe the layout structure, spacing, and visual hierarchy
+4. Identify color schemes, typography, and branding elements
+5. Look for interactive elements: dropdowns, toggles, checkboxes, modals
+6. Note any error states, loading indicators, or status messages shown
+7. Identify responsive design breakpoints if multiple screen sizes are shown
+
+**CRITICAL: Generate UI/UX test cases based on WHAT YOU SEE in the images:**
+- Use the ACTUAL button text (e.g., "Submit Application" not generic "Submit")
+- Reference the EXACT field labels (e.g., "Email Address" not just "email")
+- Test the SPECIFIC layout and component arrangement you observe
+- Verify visual elements match the design (colors, fonts, spacing)
+` : '';
+
     return `You are a QA engineer specializing in positive test case generation.
 Create comprehensive happy path test scenarios that validate normal, expected behavior.
-
+${visualAnalysisSection}
 EXAMPLE HIGH-QUALITY TEST CASE:
 {
   "id": "TC-POS-001",
@@ -604,6 +700,10 @@ Focus on:
 - Normal user workflows and common use cases
 - Valid input combinations
 - Successful operations
+- **UI/UX Testing** - Visual appearance, responsiveness, accessibility, user experience
+- **Usability** - Intuitive navigation, clear labels, helpful error messages, loading states
+- **Responsive Design** - Mobile, tablet, desktop layouts and interactions
+- **Accessibility** - ARIA labels, keyboard navigation, screen reader compatibility
 
 **CRITICAL REQUIREMENT: Write DETAILED descriptions (minimum 50 words) that:**
 - Must be AT LEAST 50 WORDS to ensure comprehensive test documentation
@@ -613,7 +713,17 @@ Focus on:
 - Include the expected behavior, outcome, and validation points
 - Use pattern: "Verify that [feature] works correctly when [context]. Ensure that [validations] including [specific checks]. The user should be able to [actions] and the system should [behaviors]. This validates [business requirement]."
 
-Example: "Verify that the feature flag works correctly and user is able to toggle LLM functionality on/off at the site level. Ensure the toggle persists across sessions and affects all users in the site."
+Examples:
+- Functionality: "Verify that the feature flag works correctly and user is able to toggle LLM functionality on/off at the site level. Ensure the toggle persists across sessions and affects all users in the site."
+- UI/UX: "Verify that the login form displays correctly with proper visual hierarchy and responsive layout. Ensure that form labels are clearly visible, input fields have appropriate placeholders, error states show helpful feedback with red borders and icons, and the submit button displays loading state during authentication. The interface should be accessible via keyboard navigation and screen readers should announce all form elements properly."
+
+**UI/UX Test Cases Should Include:**
+- Visual verification (colors, spacing, alignment, typography)
+- Responsive behavior (mobile 375px, tablet 768px, desktop 1440px)
+- Loading states and transitions
+- Error state presentation
+- Accessibility compliance (WCAG 2.1 AA)
+- Interactive element states (hover, focus, active, disabled)
 
 Generate test cases in this EXACT JSON format:
 {
@@ -646,6 +756,12 @@ Return ONLY valid JSON, no markdown formatting.`;
     // Format app context if available (prefers intelligent summary over raw JSON)
     const appContextSection = this.formatAppContext(appContext || previousResults.appContext, previousResults);
 
+    // Check for visual context
+    const hasVisualContext = this.hasImages?.figma || this.hasImages?.jira;
+    const visualContextNote = hasVisualContext
+      ? '\n**📷 VISUAL CONTEXT:** UI designs/screenshots are attached. Generate UI/UX test cases based on the ACTUAL visual elements you see in the images. At least 30% of test cases should be UI/UX focused.'
+      : '';
+
     return `Based on this requirement analysis:
 
 ${previousResults.analysis || 'No prior analysis available'}
@@ -653,6 +769,7 @@ ${appContextSection}
 **Domain Context:**
 - Keywords: ${keywords.join(', ')}
 - User Personas: ${personas.join(', ')}
+${visualContextNote}
 
 **Already Generated Tests:**
 ${existingTests}
@@ -666,7 +783,7 @@ Generate ${testCount} UNIQUE positive test cases covering:
 - All happy path scenarios
 - Valid input combinations
 - Expected user workflows for ${personas.join(' and ')}
-- Standard feature usage
+- Standard feature usage${hasVisualContext ? '\n- UI/UX verification based on attached designs (colors, layout, components, accessibility)' : ''}
 - Use domain-specific terminology: ${keywords.join(', ')}
 ${appContextSection ? '\n**CRITICAL:** Use the ACTUAL field names, button labels, and API endpoints from the Application Context above. Do not make up field names or endpoints.' : ''}
 
@@ -680,6 +797,12 @@ Return as JSON array.`;
     const personas = this.inferPersonas(ticketData);
     const appContextSection = this.formatAppContext(appContext || previousResults.appContext, previousResults);
 
+    // Check for visual context
+    const hasVisualContext = this.hasImages?.figma || this.hasImages?.jira;
+    const visualContextNote = hasVisualContext
+      ? '\n**📷 VISUAL CONTEXT:** UI designs/screenshots are attached. Include UI/UX test cases based on the visual elements you see.'
+      : '';
+
     return `Based on this requirement analysis:
 
 ${previousResults.analysis || 'No prior analysis available'}
@@ -687,6 +810,7 @@ ${appContextSection}
 **Domain Context:**
 - Keywords: ${keywords.join(', ')}
 - User Personas: ${personas.join(', ')}
+${visualContextNote}
 
 **Already Generated Tests:**
 ${existingTests}
@@ -699,7 +823,7 @@ ${existingTests}
 Generate ${testsPerBatch} UNIQUE positive test cases for this batch covering:
 - Happy path scenarios
 - Valid input combinations
-- Expected user workflows
+- Expected user workflows${hasVisualContext ? '\n- UI/UX verification from attached designs' : ''}
 ${appContextSection ? '\n**CRITICAL:** Use the ACTUAL field names, button labels, and API endpoints from the Application Context above.' : ''}
 
 Return as JSON array.`;
@@ -1356,5 +1480,377 @@ Return your analysis as specified JSON format.`;
     }
 
     return result;
+  }
+}
+
+// 8. AI Feature Test Agent (15% of tests, only for AI/LLM features)
+class AIFeatureTestAgent extends BaseAgent {
+  constructor() {
+    super('AIFeature', 'Generates AI/LLM/ML-specific test scenarios', true);
+  }
+
+  /**
+   * Detect if ticket involves AI/LLM/ML features using semantic analysis
+   * Goes beyond simple keyword matching to understand context and reduce false positives
+   */
+  static detectAIFeatures(ticketData) {
+    const allText = [
+      ticketData.summary || '',
+      ticketData.description || '',
+      ticketData.acceptance_criteria || '',
+      ...(ticketData.feature_list || [])
+    ].join(' ').toLowerCase();
+
+    // ========== SEMANTIC DETECTION SYSTEM ==========
+
+    // HIGH CONFIDENCE patterns - these strongly indicate AI features
+    const highConfidencePatterns = [
+      // Explicit AI/LLM references
+      /\b(llm|large language model)\b/i,
+      /\b(gpt-?[34]|gpt-?4o|claude|gemini|bard|palm|openai|anthropic|chatgpt)\b/i,
+      /\b(machine learning|deep learning|neural network)\b/i,
+      /\bartificial intelligence\b/i,
+
+      // AI-specific operations
+      /\b(prompt|prompting)\s+(engineering|injection|template|design)\b/i,
+      /\b(text|content|response)\s+generation\b/i,
+      /\bgenerat(e|ing|ion)\s+(text|response|content|summary|insight)\b/i,
+      /\b(embeddings?|vector)\s+(search|store|database|index)\b/i,
+      /\b(rag|retrieval.augmented)\b/i,
+      /\bfine.?tun(e|ing)\b/i,
+      /\bmodel\s+(training|inference|serving|deployment)\b/i,
+
+      // AI concerns
+      /\bhallucination\b/i,
+      /\b(token|context)\s+(limit|window|count)\b/i,
+      /\b(temperature|top.?p|top.?k)\s*(=|:|\s+\d)/i,
+      /\bai\s+(bias|safety|ethics|moderation)\b/i,
+
+      // AI-specific features
+      /\bsemantic\s+(search|similarity|understanding)\b/i,
+      /\bnatural\s+language\s+(processing|understanding|generation)\b/i,
+      /\b(chatbot|conversational\s+ai|ai\s+assistant)\b/i,
+      /\bsentiment\s+(analysis|detection)\b/i,
+      /\b(summariz|translat)(e|ing|ion)\s+(using|with|via)\s+(ai|llm|model)\b/i
+    ];
+
+    // MEDIUM CONFIDENCE patterns - may indicate AI but need context
+    const mediumConfidencePatterns = [
+      /\bai\s+(feature|functionality|capability|integration)\b/i,
+      /\b(intelligent|smart)\s+(search|recommendation|suggestion)\b/i,
+      /\bmodel\s+(response|output|prediction)\b/i,
+      /\b(nlp|ml)\b/i,
+      /\bprediction\s+(model|engine|service)\b/i,
+      /\bclassification\s+(model|algorithm)\b/i,
+      /\b(auto|ai).?(generat|complet|suggest)\b/i,
+      /\bcontent\s+moderation\b/i,
+      /\b(chat|conversation)\s+(context|history|memory)\b/i
+    ];
+
+    // LOW CONFIDENCE patterns - common words that MIGHT indicate AI in context
+    const lowConfidencePatterns = [
+      /\bgeneration\b/i,  // Could be "lead generation", "report generation"
+      /\bmodel\b/i,       // Could be "data model", "business model"
+      /\btraining\b/i,    // Could be "user training", "employee training"
+      /\bprompt\b/i,      // Could be "prompt user to...", UI prompt
+      /\bagent\b/i,       // Could be "support agent", "agent application"
+      /\bassistant\b/i,   // Could be "assistant role", "office assistant"
+      /\bintelligent\b/i  // Could be "intelligent design", generic use
+    ];
+
+    // FALSE POSITIVE exclusion patterns - when these are present, lower confidence
+    const falsePositivePatterns = [
+      /\b(support|customer\s+service)\s+agent\b/i,  // Human agent
+      /\b(office|personal|admin)\s+assistant\b/i,    // Human assistant
+      /\b(data|database|business|domain)\s+model\b/i, // Non-AI model
+      /\b(user|employee|staff)\s+training\b/i,        // Human training
+      /\b(lead|report|invoice|pdf)\s+generation\b/i,  // Document generation
+      /\bprompt\s+(user|dialog|message|alert)\b/i,    // UI prompts
+      /\b(test|dev|staging)\s+model\b/i               // Non-AI context
+    ];
+
+    // Calculate semantic score
+    let score = 0;
+    let matchedPatterns = [];
+    let matchedKeywords = [];
+
+    // Check high confidence patterns (+30 points each)
+    highConfidencePatterns.forEach(pattern => {
+      const match = allText.match(pattern);
+      if (match) {
+        score += 30;
+        matchedPatterns.push({ pattern: pattern.source, match: match[0], confidence: 'HIGH' });
+        matchedKeywords.push(match[0]);
+      }
+    });
+
+    // Check medium confidence patterns (+15 points each)
+    mediumConfidencePatterns.forEach(pattern => {
+      const match = allText.match(pattern);
+      if (match) {
+        score += 15;
+        matchedPatterns.push({ pattern: pattern.source, match: match[0], confidence: 'MEDIUM' });
+        matchedKeywords.push(match[0]);
+      }
+    });
+
+    // Check low confidence patterns (+5 points each, only if no false positive)
+    lowConfidencePatterns.forEach(pattern => {
+      const match = allText.match(pattern);
+      if (match) {
+        // Check for false positives
+        const isFalsePositive = falsePositivePatterns.some(fp => fp.test(allText));
+        if (!isFalsePositive) {
+          score += 5;
+          matchedPatterns.push({ pattern: pattern.source, match: match[0], confidence: 'LOW' });
+          matchedKeywords.push(match[0]);
+        }
+      }
+    });
+
+    // Apply false positive penalty (-20 points for each)
+    falsePositivePatterns.forEach(pattern => {
+      if (pattern.test(allText)) {
+        score -= 20;
+        matchedPatterns.push({ pattern: pattern.source, confidence: 'FALSE_POSITIVE' });
+      }
+    });
+
+    // Ensure score doesn't go negative
+    score = Math.max(0, score);
+
+    // Determine confidence level based on semantic score
+    let confidence;
+    let isAIFeature;
+
+    if (score >= 50) {
+      confidence = 'HIGH';
+      isAIFeature = true;
+    } else if (score >= 25) {
+      confidence = 'MEDIUM';
+      isAIFeature = true;
+    } else if (score >= 10) {
+      confidence = 'LOW';
+      isAIFeature = true;  // Still enable but with warning
+    } else {
+      confidence = 'NONE';
+      isAIFeature = false;
+    }
+
+    // Deduplicate keywords
+    const uniqueKeywords = [...new Set(matchedKeywords)];
+
+    console.log(`🤖 [AI Detection] Semantic analysis complete:`, {
+      score,
+      confidence,
+      isAIFeature,
+      patterns: matchedPatterns.length,
+      keywords: uniqueKeywords
+    });
+
+    return {
+      isAIFeature,
+      keywords: uniqueKeywords,
+      confidence,
+      score,
+      patterns: matchedPatterns,
+      analysis: {
+        highConfidenceMatches: matchedPatterns.filter(p => p.confidence === 'HIGH').length,
+        mediumConfidenceMatches: matchedPatterns.filter(p => p.confidence === 'MEDIUM').length,
+        lowConfidenceMatches: matchedPatterns.filter(p => p.confidence === 'LOW').length,
+        falsePositiveMatches: matchedPatterns.filter(p => p.confidence === 'FALSE_POSITIVE').length
+      }
+    };
+  }
+
+  /**
+   * Only enable this agent if AI features are detected
+   */
+  isEnabled(settings) {
+    // Agent can be disabled in settings
+    if (settings.disableAIFeatureAgent === true) {
+      return false;
+    }
+
+    // Check if ticket has AI features (this will be set by orchestrator)
+    return this.hasAIFeatures === true;
+  }
+
+  getSystemMessage(previousResults) {
+    return `You are a QA engineer specializing in AI/LLM/ML feature testing.
+Create comprehensive test scenarios specifically for AI-powered features, covering reliability, safety, and quality aspects.
+
+EXAMPLE HIGH-QUALITY AI TEST CASE:
+{
+  "id": "TC-AI-001",
+  "title": "LLM generates consistent responses for identical prompts",
+  "category": "AIFeature",
+  "priority": "P1",
+  "description": "Verify that the AI model produces consistent and deterministic responses when given the same prompt multiple times with temperature=0. Ensure that the system maintains response consistency across multiple invocations, and the output format, structure, and key content remain stable. This validates the reliability and predictability of the AI feature for production use cases where consistency is critical.",
+  "preconditions": "AI model configured with temperature=0, API endpoint accessible",
+  "steps": [
+    "Send identical prompt 'Summarize the key benefits of cloud computing' to AI endpoint",
+    "Record the response",
+    "Wait 5 seconds",
+    "Send the same prompt again",
+    "Record the second response",
+    "Repeat 3 more times (total 5 requests)",
+    "Compare all 5 responses for consistency"
+  ],
+  "expected_result": "All 5 responses should be identical or near-identical (95%+ similarity), maintaining same structure and key points",
+  "test_data": "Prompt: 'Summarize the key benefits of cloud computing', Temperature: 0, Model: gpt-4",
+  "ai_test_type": "Consistency"
+}
+
+**AI Test Categories:**
+
+1. **Prompt Testing** (20%)
+   - Prompt injection attacks (jailbreaking, system prompt leakage)
+   - Prompt manipulation and adversarial inputs
+   - Multi-turn conversation context maintenance
+   - Prompt format variations (JSON, XML, plain text)
+   - Edge case prompts (very long, very short, special characters)
+
+2. **Hallucination Detection** (25%)
+   - Factual accuracy validation (verifiable claims)
+   - Citation and source verification
+   - Detection of fabricated data/references
+   - Grounding to provided context only
+   - Confidence scoring and uncertainty handling
+
+3. **Consistency & Reliability** (20%)
+   - Response consistency for identical prompts
+   - Deterministic behavior with temperature=0
+   - Output format stability (JSON schema adherence)
+   - API reliability under load
+   - Timeout and retry handling
+
+4. **Bias & Safety** (15%)
+   - Bias detection (gender, racial, cultural)
+   - Toxicity and harmful content filtering
+   - PII (Personal Identifiable Information) leakage prevention
+   - Content moderation and guardrails
+   - Ethical AI behavior
+
+5. **Token & Context Limits** (10%)
+   - Context window boundary testing
+   - Token limit handling (input and output)
+   - Truncation behavior
+   - Streaming response handling
+   - Cost optimization (token usage)
+
+6. **Model Parameter Validation** (10%)
+   - Temperature, top-p, top-k parameter effects
+   - Max tokens configuration
+   - Stop sequences and delimiters
+   - System prompt effectiveness
+   - Model version consistency
+
+**CRITICAL REQUIREMENTS:**
+
+1. **Detailed Descriptions (minimum 60 words):**
+   - Start with "Verify that the AI/LLM/model..."
+   - Explain WHAT is being tested and WHY it matters for AI
+   - Mention specific AI concerns (hallucination, bias, consistency, etc.)
+   - Include expected AI behavior and failure modes
+   - Pattern: "Verify that the AI [feature] correctly [behavior] when [context]. Ensure that [AI-specific validations] including [checks for hallucination/bias/consistency]. The model should [expected AI behavior] and prevent [AI failure mode]. This validates [AI quality aspect]."
+
+2. **AI-Specific Test Data:**
+   - Include actual prompts/inputs to test
+   - Specify model parameters (temperature, max_tokens, etc.)
+   - Define expected output formats
+   - Include adversarial/edge case examples
+
+3. **Measurable Success Criteria:**
+   - Quantify consistency (e.g., "95%+ similarity")
+   - Define acceptable hallucination rates (e.g., "0 fabricated citations")
+   - Specify performance thresholds (e.g., "response within 5 seconds")
+   - Measure bias metrics where applicable
+
+Generate test cases in this EXACT JSON format:
+{
+  "testCases": [
+    {
+      "id": "TC-AI-001",
+      "title": "Clear AI test case title",
+      "category": "AIFeature",
+      "priority": "P0|P1|P2|P3",
+      "description": "Detailed 60+ word description starting with 'Verify that the AI/LLM/model...'",
+      "preconditions": "AI model setup, API access, test environment",
+      "steps": ["Step 1", "Step 2", "Step 3"],
+      "expected_result": "Expected AI behavior with measurable criteria",
+      "test_data": "Prompts, parameters, model configuration",
+      "ai_test_type": "PromptTesting|Hallucination|Consistency|Bias|TokenLimits|Parameters"
+    }
+  ]
+}
+
+**IMPORTANT:** Only generate tests relevant to the ACTUAL AI features mentioned in the ticket. Do not create generic tests.
+
+Return ONLY valid JSON, no markdown formatting.`;
+  }
+
+  getUserMessage(ticketData, previousResults, appContext = null) {
+    const testCount = Math.floor((this.settings?.testCount || 30) * 0.15); // 15% of total tests
+    const existingTests = previousResults.testCases?.map(tc => `- ${tc.title}`).join('\n') || 'None yet';
+
+    // Extract AI-specific context
+    const aiDetection = AIFeatureTestAgent.detectAIFeatures(ticketData);
+    const aiKeywords = aiDetection.keywords.join(', ');
+
+    // Format app context if available
+    const appContextSection = this.formatAppContext(appContext || previousResults.appContext, previousResults);
+
+    return `Based on this AI feature requirement:
+
+**Ticket Summary:** ${ticketData.summary}
+
+**Description:** ${ticketData.description || 'Not provided'}
+
+**AI Keywords Detected:** ${aiKeywords}
+
+**Acceptance Criteria:**
+${ticketData.acceptance_criteria || 'Not provided'}
+
+**Feature List:**
+${ticketData.feature_list?.join('\n') || 'Not provided'}
+
+${appContextSection}
+
+**Existing Test Cases:**
+${existingTests}
+
+**YOUR TASK:**
+Generate ${testCount} AI-specific test cases that cover:
+1. **Prompt Testing** - Injection, manipulation, context handling
+2. **Hallucination Detection** - Factual accuracy, grounding, citations
+3. **Consistency** - Response stability, deterministic behavior
+4. **Bias & Safety** - Fairness, toxicity, PII protection
+5. **Token Limits** - Context windows, truncation
+6. **Parameters** - Temperature, top-p, model configuration
+
+**CRITICAL:**
+- Focus ONLY on AI/LLM aspects of the feature
+- Use ACTUAL AI keywords from the ticket: ${aiKeywords}
+- Every test must have 60+ word description
+- Include specific prompts, model parameters, and measurable success criteria
+- DO NOT generate generic tests - only AI-specific scenarios
+${appContextSection ? '\n**Use ACTUAL field names, API endpoints, and model configurations from the Application Context above.**' : ''}
+
+Return as JSON array with "testCases" key.`;
+  }
+
+  parseResponse(response) {
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON found in response');
+
+      const parsed = parseRobustJSON(jsonMatch[0]);
+      return parsed.testCases || [];
+    } catch (error) {
+      console.error('Failed to parse AI feature test cases:', error);
+      console.error('Response preview:', response.substring(0, 500));
+      return [];
+    }
   }
 }

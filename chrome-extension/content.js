@@ -120,6 +120,9 @@
     if (request.action === 'enhancementProgress') {
       handleEnhancementProgress(request.status);
     }
+    if (request.action === 'contextQualityAssessment') {
+      handleContextQualityAssessment(request.assessment);
+    }
     if (request.action === 'historicalMiningProgress') {
       handleHistoricalMiningProgress(request.status);
     }
@@ -491,6 +494,87 @@
     resultsContainer.innerHTML = evolutionProgressHTML;
   }
   
+  /**
+   * Handle context quality assessment from background script
+   * Shows real-time quality indicator during test generation
+   */
+  function handleContextQualityAssessment(assessment) {
+    const resultsContainer = document.getElementById('results-container');
+    if (!resultsContainer) return;
+
+    // Determine quality color and icon
+    let qualityColor, qualityIcon, qualityMessage;
+    switch (assessment.qualityLevel) {
+      case 'EXCELLENT':
+        qualityColor = '#28a745';
+        qualityIcon = '🟢';
+        qualityMessage = 'Excellent context - high quality tests expected';
+        break;
+      case 'GOOD':
+        qualityColor = '#17a2b8';
+        qualityIcon = '🔵';
+        qualityMessage = 'Good context - quality tests expected';
+        break;
+      case 'FAIR':
+        qualityColor = '#ffc107';
+        qualityIcon = '🟡';
+        qualityMessage = 'Fair context - some tests may be generic';
+        break;
+      case 'POOR':
+        qualityColor = '#fd7e14';
+        qualityIcon = '🟠';
+        qualityMessage = 'Poor context - tests will be largely generic';
+        break;
+      default:
+        qualityColor = '#dc3545';
+        qualityIcon = '🔴';
+        qualityMessage = 'Insufficient context - consider crawling your app first';
+    }
+
+    // Build recommendations list - handle both string and object formats
+    let recommendationsHTML = '';
+    if (assessment.recommendations?.length > 0) {
+      const recItems = assessment.recommendations.slice(0, 3).map(r => {
+        // Handle object format: { priority, category, message, actions }
+        if (typeof r === 'object' && r.message) {
+          return `<li><strong>${r.category || 'Tip'}:</strong> ${r.message}</li>`;
+        }
+        // Handle string format
+        return `<li>${r}</li>`;
+      }).join('');
+
+      recommendationsHTML = `<ul style="margin: 8px 0 0 0; padding-left: 20px; font-size: 12px;">
+           ${recItems}
+         </ul>`;
+    }
+
+    const qualityHTML = `
+      <div class="context-quality-indicator" style="
+        background: ${qualityColor}15;
+        border: 1px solid ${qualityColor};
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 12px;
+      ">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">${qualityIcon}</span>
+          <div>
+            <div style="font-weight: 600; color: ${qualityColor};">
+              Context Quality: ${assessment.qualityLevel} (${assessment.qualityScore}/100)
+            </div>
+            <div style="font-size: 12px; color: #666;">
+              ${qualityMessage}
+            </div>
+          </div>
+        </div>
+        ${recommendationsHTML}
+      </div>
+      <div class="qatalyst-loading">🧬 Generating test cases with ${assessment.qualityLevel.toLowerCase()} context...</div>
+    `;
+
+    resultsContainer.innerHTML = qualityHTML;
+  }
+
   function handleEnhancementProgress(status) {
     const resultsContainer = document.getElementById('results-container');
     if (!resultsContainer) return;
@@ -927,12 +1011,38 @@
     const linkedPages = [];
     const processedUrls = new Set();
 
-    // Find all links in description and comments
+    // Find all links in description, comments, and Jira linked pages sections
+    // NOTE: Jira has multiple UI locations for Confluence/external links:
+    // - Description content
+    // - Comments
+    // - Linked Pages panel (Confluence pages section)
+    // - Issue links section
+    // - Web links section
     const linkElements = document.querySelectorAll(
+      // Description
       '[data-testid="issue.views.issue-base.foundation.description.description-content"] a,' +
       '.user-content-block a,' +
       '.description a,' +
-      '.comment-body a'
+      // Comments
+      '.comment-body a,' +
+      // Jira Linked Pages / Confluence pages panel
+      '[data-testid="issue.views.field.confluence-pages"] a,' +
+      '[data-testid*="confluence"] a,' +
+      '[data-test-id*="confluence"] a,' +
+      '[data-testid="linked-pages-group"] a,' +
+      // Issue links section
+      '[data-testid="issue.views.issue-base.content.issue-links.group-container"] a,' +
+      '[data-testid*="issue-links"] a,' +
+      '.link-content a,' +
+      // Web links section
+      '[data-testid="issue.views.field.web-links"] a,' +
+      '[data-testid*="web-links"] a,' +
+      // Generic link panels - cover more Jira UI variations
+      '[data-testid*="remote-link"] a,' +
+      '.issuelinks a,' +
+      '.links-list a,' +
+      // Attachments area sometimes has linked pages
+      '[data-testid="issue.views.issue-base.context.context-group"] a'
     );
 
     console.log(`🔗 Found ${linkElements.length} link elements in the page`);
@@ -958,6 +1068,31 @@
         });
       }
     });
+
+    // Fallback: If no Confluence pages found, scan all links on the page for external sources
+    // This handles cases where Jira UI structure varies
+    if (!linkedPages.some(p => p.type === 'confluence' || p.type === 'figma' || p.type === 'google_docs')) {
+      console.log('🔗 No integration links found via selectors, scanning all page links...');
+      const allLinks = document.querySelectorAll('a[href]');
+      allLinks.forEach((linkEl, index) => {
+        const url = linkEl.href;
+        if (!url || processedUrls.has(url) || url.includes('/browse/')) return;
+
+        const pageType = determinePageType(url);
+        // Only add external integration links (not generic external links)
+        if (pageType === 'confluence' || pageType === 'figma' || pageType === 'google_docs' || pageType === 'google_drive') {
+          processedUrls.add(url);
+          const text = linkEl.textContent.trim();
+          console.log(`🔗 Fallback found: Type=${pageType}, URL=${url}`);
+          linkedPages.push({
+            id: linkedPages.length + 1,
+            title: text || url,
+            url: url,
+            type: pageType
+          });
+        }
+      });
+    }
 
     console.log(`🔗 Total linked pages extracted: ${linkedPages.length}`);
     if (linkedPages.length > 0) {
@@ -1428,6 +1563,21 @@
         } else {
           console.log('⚠️ [CRAWL DATA] No crawled app context found - proceeding without it');
           console.log('   💡 Tip: Crawl your app first using the popup or settings page');
+
+          // Show warning to user about missing crawled data
+          const shouldProceed = await showNoCrawlDataWarning();
+          if (!shouldProceed) {
+            resultsContainer.innerHTML = `
+              <div class="qatalyst-warning-box" style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 16px; margin: 10px 0;">
+                <h4 style="color: #856404; margin: 0 0 8px 0;">⚠️ Test Generation Cancelled</h4>
+                <p style="color: #856404; margin: 0;">Please crawl your application first for better test quality.</p>
+                <p style="color: #856404; margin: 8px 0 0 0; font-size: 12px;">
+                  💡 Use the popup or settings page to start crawling your web application.
+                </p>
+              </div>
+            `;
+            return;
+          }
         }
       } else {
         console.log('❌ [CRAWL DATA] Feature disabled in settings - skipping app context extraction');
@@ -1491,14 +1641,16 @@
           }, response => {
             console.log('📥 Received response from background script:', response);
             if (chrome.runtime.lastError) {
-              console.error('❌ Chrome runtime error:', chrome.runtime.lastError);
-              reject(new Error(chrome.runtime.lastError.message));
+              const errorMsg = chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError);
+              console.error('❌ Chrome runtime error:', errorMsg);
+              reject(new Error(errorMsg));
             } else if (!response) {
               console.error('❌ No response received');
               reject(new Error('No response received from extension'));
             } else if (response.error) {
-              console.error('❌ Response contains error:', response.error);
-              reject(new Error(response.error));
+              const errorMsg = typeof response.error === 'string' ? response.error : (response.error.message || JSON.stringify(response.error));
+              console.error('❌ Response contains error:', errorMsg);
+              reject(new Error(errorMsg));
             } else {
               console.log('✅ Response successful, displaying results');
               resolve(response);
@@ -1527,17 +1679,19 @@
             }
           }, response => {
             if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
+              const errorMsg = chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError);
+              reject(new Error(errorMsg));
             } else if (!response) {
               reject(new Error('No response received from extension'));
             } else if (response.error) {
-              reject(new Error(response.error));
+              const errorMsg = typeof response.error === 'string' ? response.error : (response.error.message || JSON.stringify(response.error));
+              reject(new Error(errorMsg));
             } else {
               resolve(response);
             }
           });
         });
-        
+
         // Stream is complete
         isStreaming = false;
         currentStreamingRequestId = null;
@@ -1557,17 +1711,19 @@
             }
           }, response => {
             if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
+              const errorMsg = chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError);
+              reject(new Error(errorMsg));
             } else if (!response) {
               reject(new Error('No response received from extension'));
             } else if (response.error) {
-              reject(new Error(response.error));
+              const errorMsg = typeof response.error === 'string' ? response.error : (response.error.message || JSON.stringify(response.error));
+              reject(new Error(errorMsg));
             } else {
               resolve(response);
             }
           });
         });
-        
+
         displayTestCasesResults(response);
       }
       
@@ -2739,6 +2895,123 @@ Expected Result: ${expectedResult}`;
     return colors[category] || '#666';
   }
 
+  /**
+   * Show warning modal when no crawled data is available
+   * Returns true if user wants to proceed anyway, false if they cancel
+   */
+  async function showNoCrawlDataWarning() {
+    return new Promise((resolve) => {
+      // Create modal overlay
+      const overlay = document.createElement('div');
+      overlay.id = 'qatalyst-crawl-warning-overlay';
+      overlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 10000000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      `;
+
+      // Create modal content
+      const modal = document.createElement('div');
+      modal.style.cssText = `
+        background: white;
+        border-radius: 12px;
+        padding: 24px;
+        max-width: 500px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      `;
+
+      modal.innerHTML = `
+        <div style="text-align: center; margin-bottom: 16px;">
+          <span style="font-size: 48px;">⚠️</span>
+        </div>
+        <h3 style="margin: 0 0 12px 0; color: #856404; text-align: center; font-size: 18px;">
+          No Crawled Application Data Found
+        </h3>
+        <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+          <p style="margin: 0 0 8px 0; color: #856404; font-size: 14px; font-weight: 600;">
+            Test Quality Impact:
+          </p>
+          <ul style="margin: 0; padding-left: 20px; color: #856404; font-size: 13px;">
+            <li>Tests may reference non-existent fields, buttons, or APIs</li>
+            <li>No validation against actual application structure</li>
+            <li>Higher risk of hallucinated test data</li>
+            <li>Coverage mapping will not work</li>
+          </ul>
+        </div>
+        <div style="background: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 12px; margin-bottom: 20px;">
+          <p style="margin: 0 0 8px 0; color: #155724; font-size: 14px; font-weight: 600;">
+            💡 Recommended: Crawl your application first
+          </p>
+          <ol style="margin: 0; padding-left: 20px; color: #155724; font-size: 13px;">
+            <li>Open the QAtalyst popup (click extension icon)</li>
+            <li>Enter your application URL</li>
+            <li>Click "Start Crawl" and wait for completion</li>
+            <li>Then generate test cases with full context</li>
+          </ol>
+        </div>
+        <div style="display: flex; gap: 12px; justify-content: center;">
+          <button id="qatalyst-crawl-cancel" style="
+            padding: 10px 20px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+          ">
+            🔍 Crawl First (Recommended)
+          </button>
+          <button id="qatalyst-crawl-proceed" style="
+            padding: 10px 20px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+          ">
+            ⚡ Generate Anyway
+          </button>
+        </div>
+        <p style="margin: 12px 0 0 0; text-align: center; font-size: 11px; color: #6c757d;">
+          Quality rating without crawl: 3-4/10 | With crawl: 8-9/10
+        </p>
+      `;
+
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+
+      // Handle button clicks
+      document.getElementById('qatalyst-crawl-cancel').addEventListener('click', () => {
+        overlay.remove();
+        resolve(false); // Don't proceed
+      });
+
+      document.getElementById('qatalyst-crawl-proceed').addEventListener('click', () => {
+        overlay.remove();
+        resolve(true); // Proceed anyway
+      });
+
+      // Allow clicking overlay to cancel
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+          overlay.remove();
+          resolve(false);
+        }
+      });
+    });
+  }
+
   function showNotification(message, type = 'success') {
     const container = document.getElementById('results-container');
     if (!container) return;
@@ -2922,168 +3195,8 @@ Expected Result: ${expectedResult}`;
   }
 
   function showHelp() {
-    const helpContent = `
-╔══════════════════════════════════════════╗
-║        🚀 QAtalyst v11.2.1 - Help        ║
-╚══════════════════════════════════════════╝
-
-📋 CORE FEATURES:
-
-1️⃣  Analyse Requirements
-   • AI-powered extraction of requirements from Jira tickets
-   • Enriched with Confluence, Figma, and Google Docs
-   • Structured analysis ready for test planning
-
-2️⃣  Generate Test Scope
-   • Comprehensive test planning document
-   • Test objectives, in-scope/out-scope items
-   • Risk assessment and success criteria
-
-3️⃣  Generate Test Cases
-   • Multi-agent AI system generates 20-30 test cases
-   • Distributed across categories: Positive, Negative, Edge, Regression, Integration
-   • Includes preconditions, steps, expected results, test data
-
-🎯 ADVANCED FEATURES:
-
-🧬 Multi-Agent System (Settings → Enable Multi-Agent)
-   • Specialized AI agents for each test category
-   • Review agent validates test quality
-   • Parallel generation for faster results
-
-🔬 Evolutionary Optimization (Settings → Enable Evolution)
-   • Genetic algorithm improves test coverage
-   • Intensity levels: Light, Balanced, Intensive, Exhaustive
-   • Adds optimized tests through mutation & crossover
-
-🎯 Enhanced Features (Settings → Enable Enhanced)
-   • Gap Analysis: Identifies missing test scenarios
-   • Complexity Scaling: Adjusts test count based on ticket complexity
-   • Context-Aware Generation: Uses ticket patterns
-
-💬 USER REVIEW & FEEDBACK:
-   • Provide feedback after generation
-   • Click "Regenerate with Feedback" to improve results
-   • AI incorporates your suggestions
-
-📝 ADD TO JIRA:
-   • Direct posting to Jira comments via REST API
-   • Rich formatting with color-coded priorities
-   • Automatic fallback to clipboard if needed
-   • Works for Requirements, Test Scope, and Test Cases
-
-⚙️ SETTINGS:
-
-LLM Provider Options:
-   • OpenAI (GPT-4o, GPT-4o-mini)
-   • Google Gemini (2.0 Flash, 1.5 Pro)
-   • Anthropic Claude (Sonnet, Opus)
-
-External Integrations:
-   • Confluence API for linked pages
-   • Figma API for design specs
-   • Google Docs API for requirement docs
-
-🎨 CUSTOMIZATION:
-
-Test Distribution:
-   • Adjust percentage for each category
-   • Set total test count (10-100)
-
-Evolution Intensity:
-   • Light: 2 generations, quick results
-   • Balanced: 3 generations, good quality
-   • Intensive: 5 generations, thorough
-   • Exhaustive: 7 generations, maximum coverage
-
-Agent Selection:
-   • Enable/disable individual agents
-   • Customize test generation strategy
-
-📊 PROGRESS TRACKING:
-   • Real-time agent progress indicators
-   • Evolution generation tracking
-   • Enhancement analysis status
-   • Visual progress bars
-
-✨ TIPS:
-   • Start with "Analyse Requirements" for best results
-   • Use feedback feature to refine outputs
-   • Enable evolution for comprehensive coverage
-   • Configure external integrations for enriched context
-
-🔧 TROUBLESHOOTING:
-   • Ensure API key is configured in Settings
-   • Check Jira permissions for posting comments
-   • Use clipboard fallback if direct posting fails
-   • See browser console for detailed errors
-
-    `.trim();
-
-    // Create modal for better formatting
-    const modal = document.createElement('div');
-    modal.style.cssText = `
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: white;
-      padding: 30px;
-      border-radius: 12px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-      z-index: 10000000;
-      max-width: 700px;
-      max-height: 80vh;
-      overflow-y: auto;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-    `;
-
-    modal.innerHTML = `
-      <div style="position: relative;">
-        <button id="close-help-modal" style="
-          position: absolute;
-          top: -10px;
-          right: -10px;
-          background: #ef4444;
-          color: white;
-          border: none;
-          width: 30px;
-          height: 30px;
-          border-radius: 50%;
-          cursor: pointer;
-          font-size: 18px;
-          font-weight: bold;
-        ">×</button>
-        <pre style="margin: 0; font-family: 'Courier New', monospace; font-size: 12px;">${helpContent}</pre>
-      </div>
-    `;
-
-    document.body.appendChild(modal);
-
-    // Add backdrop
-    const backdrop = document.createElement('div');
-    backdrop.style.cssText = `
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0,0,0,0.5);
-      z-index: 9999999;
-    `;
-    document.body.appendChild(backdrop);
-
-    // Close handlers
-    const closeModal = () => {
-      modal.remove();
-      backdrop.remove();
-    };
-
-    document.getElementById('close-help-modal').addEventListener('click', closeModal);
-    backdrop.addEventListener('click', closeModal);
+    // Open options page with Help tab selected
+    chrome.runtime.sendMessage({ action: 'openOptionsPage', tab: 'help' });
   }
 
   // Handle evolution completion
@@ -3550,7 +3663,19 @@ Agent Selection:
         action: 'getAllApps'
       });
 
-      if (!response || !response.success || !response.apps || response.apps.length === 0) {
+      console.log('[CRAWL DATA] 📨 Response from getAllApps:', JSON.stringify(response, null, 2));
+
+      if (!response) {
+        console.log('⚠️ [CRAWL DATA] No response from background script');
+        return null;
+      }
+
+      if (!response.success) {
+        console.log('⚠️ [CRAWL DATA] getAllApps failed:', response.error || 'Unknown error');
+        return null;
+      }
+
+      if (!response.apps || response.apps.length === 0) {
         console.log('⚠️ [CRAWL DATA] No crawled apps found in database');
         console.log('   💡 Use the popup or settings page to crawl your application first');
         return null;
@@ -3561,16 +3686,30 @@ Agent Selection:
         console.log(`   ${i + 1}. ${app.url} - ${app.pages} pages, ${app.features} features`);
       });
 
-      // ALWAYS use crawled data if available (intelligent matching with fallback)
-      const matchedApp = findMatchingApp(response.apps, ticketData);
+      // SIMPLIFIED: Use the first available crawled data (user typically has one source)
+      // Prioritize: merged graphs > largest app > first app
+      let selectedApp = response.apps[0]; // Default to first app
 
-      if (!matchedApp) {
-        console.error('❌ [CRAWL DATA] ERROR: findMatchingApp returned null despite apps existing!');
-        console.error('   This should never happen. Please report this bug.');
-        return null;
+      // Prefer merged graphs (most comprehensive)
+      const mergedApps = response.apps.filter(app => app.url.startsWith('merged_'));
+      if (mergedApps.length > 0) {
+        // Use the largest merged graph
+        selectedApp = mergedApps.reduce((prev, current) =>
+          (current.pages > prev.pages) ? current : prev
+        );
+        console.log(`📌 [CRAWL DATA] Using merged graph: ${selectedApp.url}`);
+      } else if (response.apps.length > 1) {
+        // Use the largest app by page count
+        selectedApp = response.apps.reduce((prev, current) =>
+          (current.pages > prev.pages) ? current : prev
+        );
+        console.log(`📌 [CRAWL DATA] Using largest app: ${selectedApp.url}`);
+      } else {
+        console.log(`📌 [CRAWL DATA] Using only available app: ${selectedApp.url}`);
       }
 
-      console.log(`✅ Matched crawled app: ${matchedApp.url}`);
+      console.log(`✅ Selected crawled app: ${selectedApp.url} (${selectedApp.pages} pages, ${selectedApp.features} features)`);
+      const matchedApp = selectedApp;
 
       // Load the knowledge graph from background script
       // Pass ticketData for smart keyword-based filtering
@@ -3584,9 +3723,17 @@ Agent Selection:
         }
       });
 
-      if (!kgResponse || !kgResponse.success) {
+      console.log('[CRAWL DATA] 📨 loadEmbeddings response:', kgResponse ? 'received' : 'null');
+
+      if (!kgResponse) {
+        console.error('❌ [CRAWL DATA] No response from loadEmbeddings');
+        return null;
+      }
+
+      if (!kgResponse.success) {
         console.error('❌ [CRAWL DATA] Failed to load knowledge graph');
-        console.error('   Response:', kgResponse);
+        console.error('   Error:', kgResponse.error || 'Unknown error');
+        console.error('   Full response:', JSON.stringify(kgResponse, null, 2));
         return null;
       }
 

@@ -327,43 +327,44 @@ class IntegrationManager {
       }
     }
 
+    // Track which tasks were actually added (to properly map results)
+    const taskTypes = [];
+    if (confluenceUrls.length > 0 && this.settings.confluenceUrl && this.settings.confluenceEmail && this.settings.confluenceToken) {
+      taskTypes.push('confluence');
+    }
+    if (figmaUrls.length > 0 && this.settings.figmaToken) {
+      taskTypes.push('figma');
+    }
+    if (googleDocsUrls.length > 0 && this.settings.googleApiKey) {
+      taskTypes.push('googleDocs');
+    }
+
     // Wait for all integrations to complete (use allSettled to not fail on errors)
     const fetchResults = await Promise.allSettled(fetchTasks);
 
-    // Process results
-    let taskIndex = 0;
+    // Process results - match by task type, not URL presence
     const errors = [];
-    
-    if (confluenceUrls.length > 0) {
-      if (fetchResults[taskIndex].status === 'fulfilled') {
-        results.confluence = fetchResults[taskIndex].value;
-        console.log('✅ [IntegrationManager] Confluence fetch successful:', results.confluence.length, 'pages');
+
+    taskTypes.forEach((taskType, index) => {
+      const result = fetchResults[index];
+      if (!result) return;
+
+      if (result.status === 'fulfilled') {
+        if (taskType === 'confluence') {
+          results.confluence = result.value;
+          console.log('✅ [IntegrationManager] Confluence fetch successful:', results.confluence.length, 'pages');
+        } else if (taskType === 'figma') {
+          results.figma = result.value;
+          console.log('✅ [IntegrationManager] Figma fetch successful:', results.figma.length, 'files');
+        } else if (taskType === 'googleDocs') {
+          results.googleDocs = result.value;
+          console.log('✅ [IntegrationManager] Google Docs fetch successful:', results.googleDocs.length, 'documents');
+        }
       } else {
-        console.error('❌ [IntegrationManager] Confluence fetch failed:', fetchResults[taskIndex].reason);
-        errors.push({ type: 'Confluence', error: fetchResults[taskIndex].reason?.message || 'Unknown error' });
+        console.error(`❌ [IntegrationManager] ${taskType} fetch failed:`, result.reason);
+        errors.push({ type: taskType, error: result.reason?.message || 'Unknown error' });
       }
-      taskIndex++;
-    }
-    if (figmaUrls.length > 0) {
-      if (fetchResults[taskIndex].status === 'fulfilled') {
-        results.figma = fetchResults[taskIndex].value;
-        console.log('✅ [IntegrationManager] Figma fetch successful:', results.figma.length, 'files');
-      } else {
-        console.error('❌ [IntegrationManager] Figma fetch failed:', fetchResults[taskIndex].reason);
-        errors.push({ type: 'Figma', error: fetchResults[taskIndex].reason?.message || 'Unknown error' });
-      }
-      taskIndex++;
-    }
-    if (googleDocsUrls.length > 0) {
-      if (fetchResults[taskIndex].status === 'fulfilled') {
-        results.googleDocs = fetchResults[taskIndex].value;
-        console.log('✅ [IntegrationManager] Google Docs fetch successful:', results.googleDocs.length, 'documents');
-      } else {
-        console.error('❌ [IntegrationManager] Google Docs fetch failed:', fetchResults[taskIndex].reason);
-        errors.push({ type: 'Google Docs', error: fetchResults[taskIndex].reason?.message || 'Unknown error' });
-      }
-      taskIndex++;
-    }
+    });
     
     // Log any errors
     if (errors.length > 0) {

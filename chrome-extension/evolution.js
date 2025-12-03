@@ -332,18 +332,48 @@ ${JSON.stringify(testsToMutate, null, 2)}
 Return mutated tests as JSON array:`;
 
       const response = await this.callAI(systemMessage, userMessage, this.settings);
-      
+
       // Parse mutated tests
       const jsonMatch = response.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
-        const mutatedTests = JSON.parse(jsonMatch[0]);
-        
-        // Replace mutated tests in original array
-        indicesToMutate.forEach((idx, i) => {
-          if (mutatedTests[i]) {
-            testCases[idx] = mutatedTests[i];
-          }
-        });
+        let jsonStr = jsonMatch[0];
+
+        // Fix common JSON escape issues from LLM responses
+        // 1. Fix unescaped newlines inside strings
+        jsonStr = jsonStr.replace(/(?<=":[\s]*"[^"]*)\n(?=[^"]*")/g, '\\n');
+        // 2. Fix unescaped tabs inside strings
+        jsonStr = jsonStr.replace(/(?<=":[\s]*"[^"]*)\t(?=[^"]*")/g, '\\t');
+        // 3. Fix unescaped backslashes that aren't already escape sequences
+        jsonStr = jsonStr.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+
+        try {
+          const mutatedTests = JSON.parse(jsonStr);
+
+          // Replace mutated tests in original array
+          indicesToMutate.forEach((idx, i) => {
+            if (mutatedTests[i]) {
+              testCases[idx] = mutatedTests[i];
+            }
+          });
+        } catch (parseError) {
+          // Try more aggressive JSON cleanup if initial parse fails
+          console.warn(`Mutation ${strategy} JSON parse failed, attempting cleanup:`, parseError.message);
+
+          // Remove control characters that break JSON
+          jsonStr = jsonStr.replace(/[\x00-\x1F\x7F]/g, (char) => {
+            if (char === '\n') return '\\n';
+            if (char === '\r') return '\\r';
+            if (char === '\t') return '\\t';
+            return '';
+          });
+
+          const mutatedTests = JSON.parse(jsonStr);
+          indicesToMutate.forEach((idx, i) => {
+            if (mutatedTests[i]) {
+              testCases[idx] = mutatedTests[i];
+            }
+          });
+        }
       }
     } catch (error) {
       console.error(`Mutation ${strategy} failed:`, error);

@@ -117,6 +117,21 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // Load saved settings
 document.addEventListener('DOMContentLoaded', async () => {
+  // Handle URL hash to switch to specific tab (e.g., options.html#help)
+  const hash = window.location.hash.replace('#', '');
+  if (hash) {
+    const targetTab = document.querySelector(`.tab[data-tab="${hash}"]`);
+    const targetContent = document.getElementById(`${hash}-tab`);
+    if (targetTab && targetContent) {
+      // Remove active from all tabs and content
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      // Activate the target tab
+      targetTab.classList.add('active');
+      targetContent.classList.add('active');
+    }
+  }
+
   // Test count slider live update
   document.getElementById('testCount')?.addEventListener('input', (e) => {
     document.getElementById('testCountValue').textContent = e.target.value;

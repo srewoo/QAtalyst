@@ -18,6 +18,12 @@ importScripts('integrations.js');
 importScripts('enhancements.js');
 importScripts('historical-mining.js');
 
+// Import NEW validation and quality systems
+importScripts('test-validator.js');
+importScripts('context-checker.js');
+importScripts('semantic-duplicate-detector.js');
+importScripts('coverage-mapper.js');
+
 // Import web crawler modules
 importScripts('crawler.js');
 importScripts('dom-extractor.js');
@@ -325,6 +331,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Open options page
   if (request.action === 'openOptions') {
     chrome.runtime.openOptionsPage();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Open options page with specific tab (e.g., help)
+  if (request.action === 'openOptionsPage') {
+    const tab = request.tab || 'api';
+    // Open options page with tab parameter in URL hash
+    const optionsUrl = chrome.runtime.getURL(`options.html#${tab}`);
+    chrome.tabs.create({ url: optionsUrl });
     sendResponse({ success: true });
     return true;
   }
@@ -1545,18 +1561,67 @@ async function handleAnalyzeRequirements(data) {
     const integrationManager = new IntegrationManager(settings);
     externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
 
-    // Use enriched description if external content was found
-    if (externalContent.enrichedDescription !== ticketData.description) {
-      enrichedTicketData = {
-        ...ticketData,
-        description: externalContent.enrichedDescription,
-        externalSources: {
-          confluence: externalContent.confluence.length,
-          figma: externalContent.figma.length,
-          googleDocs: externalContent.googleDocs.length
-        }
-      };
+    // Build linkedPages from fetched content for context checker
+    const fetchedLinkedPages = [];
+    if (externalContent.confluence.length > 0) {
+      externalContent.confluence.forEach((page, i) => {
+        fetchedLinkedPages.push({
+          id: `confluence-${i}`,
+          title: page.title || 'Confluence Page',
+          url: page.url || '',
+          type: 'confluence',
+          fetched: true
+        });
+      });
     }
+    if (externalContent.figma.length > 0) {
+      externalContent.figma.forEach((file, i) => {
+        fetchedLinkedPages.push({
+          id: `figma-${i}`,
+          title: file.name || 'Figma File',
+          url: file.url || '',
+          type: 'figma',
+          fetched: true
+        });
+      });
+    }
+    if (externalContent.googleDocs.length > 0) {
+      externalContent.googleDocs.forEach((doc, i) => {
+        fetchedLinkedPages.push({
+          id: `googledocs-${i}`,
+          title: doc.title || 'Google Doc',
+          url: doc.url || '',
+          type: 'google_docs',
+          fetched: true
+        });
+      });
+    }
+
+    // Merge fetched pages with existing linked pages
+    const existingUrls = new Set((ticketData.linkedPages || []).map(p => p.url));
+    const mergedLinkedPages = [
+      ...(ticketData.linkedPages || []),
+      ...fetchedLinkedPages.filter(p => !existingUrls.has(p.url))
+    ];
+
+    // ALWAYS update enrichedTicketData with fetched content info
+    enrichedTicketData = {
+      ...ticketData,
+      description: externalContent.enrichedDescription || ticketData.description,
+      linkedPages: mergedLinkedPages,
+      externalSources: {
+        confluence: externalContent.confluence.length,
+        figma: externalContent.figma.length,
+        googleDocs: externalContent.googleDocs.length
+      }
+    };
+
+    console.log('📄 [Analyze] Enriched ticket with external sources:', {
+      linkedPages: mergedLinkedPages.length,
+      confluence: externalContent.confluence.length,
+      figma: externalContent.figma.length,
+      googleDocs: externalContent.googleDocs.length
+    });
   }
 
   const systemMessage = `You are a senior business analyst and requirements quality expert specializing in requirement analysis.
@@ -1712,14 +1777,57 @@ async function handleGenerateTestScope(data) {
 
         console.log('✅ [Test Scope] External sources fetched:', currentExternalSources);
 
-        // Use enriched description if external content was found
-        if (externalContent.enrichedDescription !== ticketData.description) {
-          enrichedTicketData = {
-            ...ticketData,
-            description: externalContent.enrichedDescription,
-          };
-          console.log('📝 [Test Scope] Using enriched description');
+        // Build linkedPages from fetched content
+        const fetchedLinkedPages = [];
+        if (externalContent.confluence.length > 0) {
+          externalContent.confluence.forEach((page, i) => {
+            fetchedLinkedPages.push({
+              id: `confluence-${i}`,
+              title: page.title || 'Confluence Page',
+              url: page.url || '',
+              type: 'confluence',
+              fetched: true
+            });
+          });
         }
+        if (externalContent.figma.length > 0) {
+          externalContent.figma.forEach((file, i) => {
+            fetchedLinkedPages.push({
+              id: `figma-${i}`,
+              title: file.name || 'Figma File',
+              url: file.url || '',
+              type: 'figma',
+              fetched: true
+            });
+          });
+        }
+        if (externalContent.googleDocs.length > 0) {
+          externalContent.googleDocs.forEach((doc, i) => {
+            fetchedLinkedPages.push({
+              id: `googledocs-${i}`,
+              title: doc.title || 'Google Doc',
+              url: doc.url || '',
+              type: 'google_docs',
+              fetched: true
+            });
+          });
+        }
+
+        // Merge fetched pages with existing linked pages
+        const existingUrls = new Set((ticketData.linkedPages || []).map(p => p.url));
+        const mergedLinkedPages = [
+          ...(ticketData.linkedPages || []),
+          ...fetchedLinkedPages.filter(p => !existingUrls.has(p.url))
+        ];
+
+        // ALWAYS update enrichedTicketData with fetched content info
+        enrichedTicketData = {
+          ...ticketData,
+          description: externalContent.enrichedDescription || ticketData.description,
+          linkedPages: mergedLinkedPages,
+          externalSources: currentExternalSources
+        };
+        console.log('📝 [Test Scope] Enriched ticket with external sources:', mergedLinkedPages.length, 'linked pages');
       } catch (integrationError) {
         console.warn('⚠️ [Test Scope] Integration fetch failed, continuing with ticket data only:', integrationError.message);
         // Continue with original ticket data
@@ -2262,14 +2370,15 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   console.log('✅ Background: settings validated');
 
   const { ticketKey, ticketData, settings, externalSources: initialExternalSources } = data;
-  
+
   // Fetch external content if integrations are configured and not already provided
   let enrichedTicketData = ticketData;
   let currentExternalSources = initialExternalSources;
+  let externalContent = null; // Store at function scope for agent access
 
   if (!currentExternalSources && (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey)) {
     const integrationManager = new IntegrationManager(settings);
-    const externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+    externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
 
     // Set external sources count (always, regardless of description change)
     currentExternalSources = {
@@ -2278,12 +2387,64 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       googleDocs: externalContent.googleDocs.length
     };
 
-    if (externalContent.enrichedDescription !== ticketData.description) {
-      enrichedTicketData = {
-        ...ticketData,
-        description: externalContent.enrichedDescription,
-      };
+    // Build linkedPages from fetched content for context checker
+    // This ensures the context quality assessment reflects actually fetched content
+    const fetchedLinkedPages = [];
+    if (externalContent.confluence.length > 0) {
+      externalContent.confluence.forEach((page, i) => {
+        fetchedLinkedPages.push({
+          id: `confluence-${i}`,
+          title: page.title || 'Confluence Page',
+          url: page.url || '',
+          type: 'confluence',
+          fetched: true
+        });
+      });
     }
+    if (externalContent.figma.length > 0) {
+      externalContent.figma.forEach((file, i) => {
+        fetchedLinkedPages.push({
+          id: `figma-${i}`,
+          title: file.name || 'Figma File',
+          url: file.url || '',
+          type: 'figma',
+          fetched: true
+        });
+      });
+    }
+    if (externalContent.googleDocs.length > 0) {
+      externalContent.googleDocs.forEach((doc, i) => {
+        fetchedLinkedPages.push({
+          id: `googledocs-${i}`,
+          title: doc.title || 'Google Doc',
+          url: doc.url || '',
+          type: 'google_docs',
+          fetched: true
+        });
+      });
+    }
+
+    // Merge fetched pages with existing linked pages (avoid duplicates)
+    const existingUrls = new Set((ticketData.linkedPages || []).map(p => p.url));
+    const mergedLinkedPages = [
+      ...(ticketData.linkedPages || []),
+      ...fetchedLinkedPages.filter(p => !existingUrls.has(p.url))
+    ];
+
+    // ALWAYS update enrichedTicketData with fetched content info
+    enrichedTicketData = {
+      ...ticketData,
+      description: externalContent.enrichedDescription || ticketData.description,
+      linkedPages: mergedLinkedPages,
+      fetchedExternalSources: currentExternalSources
+    };
+
+    console.log('📄 [Multi-Agent] Enriched ticket with external sources:', {
+      linkedPages: mergedLinkedPages.length,
+      confluence: currentExternalSources.confluence,
+      figma: currentExternalSources.figma,
+      googleDocs: currentExternalSources.googleDocs
+    });
   }
 
   // Define vision models that support image inputs
@@ -2312,19 +2473,46 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
         { type: 'text', text: userMessage }
       ];
 
-      // Add Jira image attachments if available and using vision model
+      // Add images for vision-capable models
       const currentSettings = agentSettings || settings;
       const isVisionModel = visionModels.some(model => currentSettings.llmModel?.includes(model));
-      if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
-        console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to agent API call`);
-        enrichedTicketData.imageAttachments.forEach(image => {
-          contentParts.push({ type: 'image_url', image_url: { url: image.data } });
-        });
+
+      if (isVisionModel) {
+        let imageCount = 0;
+
+        // Add Figma images if available (for UI/UX test generation)
+        if (externalContent && externalContent.figma) {
+          externalContent.figma.forEach(figmaFile => {
+            if (figmaFile.images && figmaFile.images.length > 0) {
+              figmaFile.images.forEach(base64Image => {
+                contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+                imageCount++;
+              });
+            }
+          });
+          if (imageCount > 0) {
+            console.log(`🎨 Adding ${imageCount} Figma images to ${agent.name} agent API call`);
+          }
+        }
+
+        // Add Jira image attachments if available
+        if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+          console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to ${agent.name} agent API call`);
+          enrichedTicketData.imageAttachments.forEach(image => {
+            contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+          });
+        }
       }
 
       return await callAI(contentParts, currentSettings);
     };
     agent.settings = settings;
+
+    // Pass image availability info to agent for prompt customization
+    agent.hasImages = {
+      figma: externalContent?.figma?.some(f => f.images?.length > 0) || false,
+      jira: enrichedTicketData.imageAttachments?.length > 0 || false
+    };
   };
 
   // Create orchestrator with progress callback
@@ -2340,6 +2528,25 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   orchestrator.agents.forEach(bindCallAI);
 
   try {
+    // ========== NEW: CHECK CONTEXT QUALITY BEFORE GENERATION ==========
+    console.log('🔍 [QualityCheck] Checking context quality...');
+    const contextChecker = new ContextQualityChecker();
+    const contextAssessment = contextChecker.checkContext(data.appContext, enrichedTicketData);
+
+    // Send context quality assessment to UI
+    safeSendMessageToTab(tabId, {
+      action: 'contextQualityAssessment',
+      assessment: contextAssessment
+    });
+
+    console.log('📊 [QualityCheck] Context quality:', contextAssessment.qualityLevel, `(${contextAssessment.qualityScore}/100)`);
+
+    // Warn if insufficient context (but allow generation to proceed)
+    if (contextAssessment.shouldWarn) {
+      console.warn('⚠️ [QualityCheck] Low context quality - tests may be generic');
+      console.log(contextChecker.formatAssessmentForDisplay(contextAssessment));
+    }
+
     // First, analyze requirements if not already done
     let analysis = data.analysis;
     if (!analysis) {
@@ -2439,6 +2646,79 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     // Store original test count for comparison
     const originalTestCount = results.testCases.length;
 
+    // ========== NEW: VALIDATE TESTS AGAINST KNOWLEDGE GRAPH ==========
+    console.log('✅ [Validation] Validating generated tests against knowledge graph...');
+    const validator = new TestCaseValidator(data.appContext?.knowledgeGraph);
+    const validationResults = validator.validateTestSuite(results.testCases);
+    const validationReport = validator.generateReport(validationResults);
+
+    console.log('📊 [Validation] Validation complete:', {
+      total: validationResults.total,
+      highConfidence: validationResults.highConfidence,
+      lowConfidence: validationResults.lowConfidence,
+      hallucinations: validationResults.totalHallucinations
+    });
+
+    // Log validation warnings
+    validationResults.testValidations.forEach(v => {
+      if (v.warnings.length > 0 || v.hallucinations.length > 0) {
+        console.warn(`⚠️ [Validation] Test "${v.testId}":`, {
+          confidence: v.confidence,
+          warnings: v.warnings,
+          hallucinations: v.hallucinations
+        });
+      }
+    });
+
+    // Attach validation info to each test case
+    results.testCases.forEach((testCase, index) => {
+      const validation = validationResults.testValidations[index];
+      if (validation) {
+        testCase.validation = {
+          confidence: validation.confidence,
+          warnings: validation.warnings,
+          hallucinations: validation.hallucinations,
+          grounding: validation.grounding
+        };
+      }
+    });
+
+    // ========== NEW: SEMANTIC DUPLICATE DETECTION ==========
+    console.log('🔍 [Duplicates] Running semantic duplicate detection...');
+    const semanticDetector = new SemanticDuplicateDetector(0.85);
+    const duplicateAnalysis = semanticDetector.removeDuplicates(results.testCases);
+
+    console.log('📊 [Duplicates] Duplicate detection complete:', duplicateAnalysis.summary);
+
+    // Replace with deduplicated tests
+    if (duplicateAnalysis.cleaned.length < results.testCases.length) {
+      console.log(`🗑️ [Duplicates] Removed ${duplicateAnalysis.removedCount} duplicate tests`);
+      results.testCases = duplicateAnalysis.cleaned;
+    }
+
+    // ========== NEW: COVERAGE MAPPING ==========
+    console.log('📊 [Coverage] Mapping test coverage to knowledge graph...');
+    const coverageMapper = new CoverageMapper(data.appContext?.knowledgeGraph);
+    const coverageAnalysis = coverageMapper.mapCoverage(results.testCases);
+    const coverageReport = coverageMapper.generateReport(coverageAnalysis);
+
+    console.log('📊 [Coverage] Coverage analysis complete:', {
+      overall: `${coverageAnalysis.overall.coveragePercentage}%`,
+      forms: `${coverageAnalysis.forms.percentage}%`,
+      apis: `${coverageAnalysis.apis.percentage}%`
+    });
+
+    // Send validation and coverage reports to UI
+    safeSendMessageToTab(tabId, {
+      action: 'qualityReports',
+      reports: {
+        validation: validationReport,
+        coverage: coverageReport,
+        duplicates: duplicateAnalysis.summary,
+        contextQuality: contextAssessment
+      }
+    });
+
     // Return base results immediately (don't wait for evolution)
     const baseResponse = {
       testCases: results.testCases,
@@ -2452,7 +2732,12 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       enhancements: enhancementResults,
       historicalInsights: historicalResults?.insights || null,
       historicalBugs: historicalResults?.historicalBugs || [],
-      externalSources: currentExternalSources // Include external sources in the response
+      externalSources: currentExternalSources,
+      // NEW: Add validation and coverage data
+      validation: validationReport,
+      coverage: coverageReport,
+      duplicatesRemoved: duplicateAnalysis.removedCount,
+      contextQuality: contextAssessment
     };
 
     // Start evolution in background (non-blocking)

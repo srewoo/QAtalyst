@@ -1,5 +1,5 @@
 {
-  "version": "12.0.1",
+  "version": "12.5.0",
   "appName": "QAtalyst - AI Test Case Generator",
   "description": "Configuration file for QAtalyst extension",
 
@@ -603,6 +603,80 @@
       "enhancedSPADetection": true,
       "sitemapParsing": true,
       "incrementalCrawl": true
+    }
+  },
+
+  "testGeneration": {
+    "description": "Test Generation Agent Configuration",
+
+    "agents": {
+      "positive": {
+        "enabled": true,
+        "percentage": 40,
+        "includesUIUX": true,
+        "description": "Happy path tests including UI/UX validation"
+      },
+      "negative": {
+        "enabled": true,
+        "percentage": 30,
+        "description": "Error handling and validation tests"
+      },
+      "edgeCase": {
+        "enabled": true,
+        "percentage": 20,
+        "description": "Boundary and edge case tests"
+      },
+      "regression": {
+        "enabled": true,
+        "percentage": 5,
+        "description": "Backward compatibility tests"
+      },
+      "integration": {
+        "enabled": true,
+        "percentage": 5,
+        "description": "API and service integration tests"
+      },
+      "aiFeature": {
+        "enabled": true,
+        "percentage": 15,
+        "description": "AI/LLM/ML-specific tests (only when AI features detected)",
+        "autoDetect": true,
+        "keywords": [
+          "ai", "artificial intelligence", "machine learning", "ml", "deep learning",
+          "llm", "large language model", "language model", "gpt", "claude", "gemini",
+          "openai", "anthropic", "chatgpt", "bard", "palm",
+          "prompt", "completion", "generation", "inference", "prediction",
+          "embeddings", "vector", "semantic search", "rag", "retrieval augmented",
+          "fine-tuning", "training", "model",
+          "natural language", "nlp", "text generation", "content generation",
+          "sentiment analysis", "classification", "summarization", "translation",
+          "conversation", "chatbot", "assistant", "agent",
+          "hallucination", "bias", "toxicity", "moderation", "safety",
+          "grounding", "factual", "accuracy", "consistency", "reliability",
+          "token", "context window", "temperature", "top-p", "parameters"
+        ]
+      }
+    },
+
+    "categories": {
+      "aiFeature": {
+        "testTypes": [
+          "PromptTesting",
+          "Hallucination",
+          "Consistency",
+          "Bias",
+          "TokenLimits",
+          "Parameters"
+        ],
+        "distribution": {
+          "PromptTesting": 20,
+          "Hallucination": 25,
+          "Consistency": 20,
+          "Bias": 15,
+          "TokenLimits": 10,
+          "Parameters": 10
+        }
+      }
     }
   }
 }

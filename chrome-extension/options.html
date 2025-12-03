@@ -1286,13 +1286,37 @@
     <div class="tab-content" id="help-tab">
       <div class="section">
         <h2>❓ Help & Documentation</h2>
-        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v11.2.1 - AI-powered test case generation with advanced features.</p>
+        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v12.5.0 - AI-powered test case generation with advanced features.</p>
 
         <!-- What's New -->
         <div class="help-card" style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border-color: #86efac;">
-          <h3 style="color: #16a34a;">✨ What's New in v11.2.1</h3>
+          <h3 style="color: #16a34a;">✨ What's New in v12.5.0</h3>
 
-          <h4 style="color: #15803d;">🎯 Context Analysis Agent (NEW - v11.2.1)</h4>
+          <h4 style="color: #15803d;">🎨 Visual UI/UX Test Generation from Figma & Screenshots (NEW - v12.5.0)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Direct Image Analysis:</strong> PositiveTestAgent now receives and analyzes Figma designs & Jira screenshots directly</li>
+            <li><strong>Accurate UI Tests:</strong> Uses ACTUAL button labels, field names, and layouts from your designs</li>
+            <li><strong>30% UI/UX Coverage:</strong> Automatically generates visual verification, accessibility, and responsive design tests</li>
+            <li><strong>Vision Model Support:</strong> Works with GPT-4o, Claude Sonnet, Gemini 2.5 (models with image understanding)</li>
+            <li><strong>How It Works:</strong> Link Figma files or attach screenshots to Jira → Extension sends images to AI → Tests reference real UI elements</li>
+          </ul>
+
+          <h4 style="color: #15803d;">🤖 AI Feature Test Agent (NEW - v12.4.0)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Specialized AI Testing:</strong> Generates test cases for AI/LLM features (prompt testing, anti-hallucination, consistency)</li>
+            <li><strong>Smart Detection:</strong> Only activates when Jira ticket describes an AI-powered feature</li>
+            <li><strong>Semantic Analysis:</strong> Uses pattern scoring to avoid false positives (e.g., "support agent" ≠ AI feature)</li>
+            <li><strong>6 Test Categories:</strong> Consistency, Hallucination Prevention, Prompt Injection, Response Quality, Edge Cases, Performance</li>
+          </ul>
+
+          <h4 style="color: #15803d;">⚠️ No Crawl Data Warning (NEW - v12.4.0)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Quality Alert:</strong> Shows warning modal when generating tests without crawled application data</li>
+            <li><strong>Impact Explanation:</strong> Explains risks of hallucinated field names and non-existent endpoints</li>
+            <li><strong>User Choice:</strong> Option to proceed anyway or crawl first for better quality</li>
+          </ul>
+
+          <h4 style="color: #15803d;">🎯 Context Analysis Agent (v11.2.1)</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>Intelligent Feature Summarization:</strong> Creates concise 200-500 word summaries of crawled app data</li>
             <li><strong>500x Size Reduction:</strong> Replaces 1-2 MB of raw JSON with 2-5 KB summary - solves quota exceeded errors!</li>
@@ -1646,38 +1670,107 @@
           </ul>
 
           <h4 style="margin-top: 24px;">🕷️ How to Use the Web Crawler:</h4>
+
+          <!-- Visual Popup Guide -->
+          <div style="background: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 16px 0;">
+            <h5 style="margin: 0 0 16px 0; color: #1e40af;">📱 Extension Popup Interface</h5>
+            <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+              <!-- Left: Popup mockup -->
+              <div style="flex: 1; min-width: 280px; background: white; border-radius: 8px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <div style="text-align: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 12px; margin-bottom: 12px;">
+                  <span style="font-size: 20px;">🚀</span> <strong>QAtalyst Settings</strong>
+                  <div style="font-size: 11px; color: #64748b;">Quick configuration for test case generation</div>
+                </div>
+
+                <!-- Last Crawl Summary -->
+                <div style="background: #f0fdf4; border: 1px solid #86efac; border-radius: 6px; padding: 10px; margin-bottom: 12px;">
+                  <div style="color: #16a34a; font-weight: 600; font-size: 13px;">✅ Last Crawl Summary</div>
+                  <div style="font-size: 12px; color: #166534;"><strong>14 pages</strong> • 474 features • 10 APIs</div>
+                  <div style="font-size: 11px; color: #22c55e;">23 days ago • Took 519.1s</div>
+                </div>
+
+                <!-- Start Crawl Button -->
+                <div style="margin-bottom: 12px;">
+                  <div style="font-size: 12px; color: #475569; margin-bottom: 6px;">Crawl Entire Web Application:</div>
+                  <button style="width: 100%; background: #3b82f6; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: 600; cursor: pointer;">Start Full Application Crawl</button>
+                  <div style="font-size: 10px; color: #64748b; margin-top: 4px;">Recursively crawls the entire web application starting from the current tab</div>
+                </div>
+
+                <!-- Manage Crawl Data -->
+                <div style="margin-bottom: 12px;">
+                  <div style="font-size: 12px; color: #475569; margin-bottom: 6px;">Manage Crawl Data:</div>
+                  <div style="display: flex; gap: 8px;">
+                    <button style="flex: 1; background: white; border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px; font-size: 11px; cursor: pointer;">📥 Import Data</button>
+                    <button style="flex: 1; background: white; border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px; font-size: 11px; cursor: pointer;">📤 Export All</button>
+                    <button style="flex: 1; background: white; border: 1px solid #fca5a5; color: #dc2626; padding: 8px; border-radius: 4px; font-size: 11px; cursor: pointer;">🗑️ Delete All</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right: Instructions -->
+              <div style="flex: 1; min-width: 280px;">
+                <div style="background: #eff6ff; border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+                  <strong style="color: #1e40af;">Step 1: Open Popup</strong>
+                  <p style="margin: 4px 0 0 0; font-size: 13px; color: #1e3a8a;">Click the QAtalyst extension icon in your browser toolbar</p>
+                </div>
+                <div style="background: #f0fdf4; border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+                  <strong style="color: #16a34a;">Step 2: Navigate to Your App</strong>
+                  <p style="margin: 4px 0 0 0; font-size: 13px; color: #166534;">Open the web application you want to crawl in your browser tab</p>
+                </div>
+                <div style="background: #fef3c7; border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+                  <strong style="color: #d97706;">Step 3: Click "Start Full Application Crawl"</strong>
+                  <p style="margin: 4px 0 0 0; font-size: 13px; color: #92400e;">The crawler will discover all pages, forms, buttons, and API endpoints</p>
+                </div>
+                <div style="background: #fce7f3; border-radius: 6px; padding: 12px;">
+                  <strong style="color: #be185d;">Step 4: Wait for Completion</strong>
+                  <p style="margin: 4px 0 0 0; font-size: 13px; color: #9d174d;">Progress shows in popup. Takes 1-10 minutes depending on app size</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <ol style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Open Extension Popup:</strong> Click QAtalyst icon → Opens settings popup</li>
-            <li><strong>Navigate to App:</strong> Open the web app you want to crawl in your browser</li>
+            <li><strong>Open Extension Popup:</strong> Click QAtalyst icon in browser toolbar → Opens settings popup</li>
+            <li><strong>Navigate to App:</strong> Open the web app you want to crawl in your browser tab</li>
             <li><strong>Configure Settings (Optional):</strong>
               <ul style="margin-left: 20px; margin-top: 6px;">
-                <li>Go to Options → Crawler Settings tab</li>
+                <li>Click "Open Advanced Settings" in popup OR go to Options → Crawler Settings tab</li>
                 <li>Enable/disable duplicate detection features</li>
                 <li>Adjust samples per pattern (1 = fastest, 3 = more thorough)</li>
               </ul>
             </li>
             <li><strong>Start Crawl:</strong>
               <ul style="margin-left: 20px; margin-top: 6px;">
-                <li>Click "Start Crawl" button in popup</li>
+                <li>Click the blue <strong>"Start Full Application Crawl"</strong> button</li>
                 <li>Watch progress window (shows current page, features found, APIs detected)</li>
-                <li>Crawl completes in 1-5 minutes depending on app size</li>
+                <li>Crawl completes in 1-10 minutes depending on app size</li>
               </ul>
             </li>
             <li><strong>View Results:</strong>
               <ul style="margin-left: 20px; margin-top: 6px;">
-                <li>Popup shows: "help.mindtickle.com: 1097 pages • 4540 features"</li>
-                <li>Export knowledge graph as JSON for analysis</li>
+                <li>Green box shows: <strong>"✅ Last Crawl Summary"</strong> with pages, features, APIs count</li>
+                <li>Click "Export All" to save knowledge graph as JSON for backup</li>
               </ul>
             </li>
             <li><strong>Use with Test Generation:</strong>
               <ul style="margin-left: 20px; margin-top: 6px;">
-                <li>Open Jira ticket mentioning the app URL</li>
-                <li>Generate tests as normal</li>
-                <li>Extension automatically matches ticket to crawled app</li>
-                <li>Tests reference actual forms, buttons, and features found!</li>
+                <li>Open any Jira ticket</li>
+                <li>Generate tests as normal - crawled data is automatically used!</li>
+                <li>Tests reference actual forms, buttons, and features found in your app</li>
               </ul>
             </li>
           </ol>
+
+          <!-- Import/Export Info Box -->
+          <div style="background: #f0f9ff; border: 1px solid #0ea5e9; border-radius: 8px; padding: 16px; margin: 16px 0;">
+            <h5 style="margin: 0 0 8px 0; color: #0369a1;">💡 Managing Crawl Data</h5>
+            <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: #0c4a6e;">
+              <li><strong>Import Data:</strong> Load previously exported crawl data (useful for team sharing)</li>
+              <li><strong>Export All:</strong> Save all crawled apps as JSON backup</li>
+              <li><strong>Delete All:</strong> Remove all stored crawl data to start fresh</li>
+              <li><strong>Merge Knowledge Graphs:</strong> Combine multiple crawls (e.g., help site + main app)</li>
+            </ul>
+          </div>
 
           <h4 style="margin-top: 16px;">📊 When to Use the Crawler:</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
@@ -1752,7 +1845,7 @@
           <h4>Panel Issues:</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>Panel doesn't appear:</strong> Refresh Jira page, ensure you're on a ticket page (not board)</li>
-            <li><strong>Settings button error:</strong> Update to v11.2.1+</li>
+            <li><strong>Settings button error:</strong> Update to v12.5.0+</li>
             <li><strong>Panel position wrong:</strong> Resize browser window</li>
           </ul>
           
