@@ -950,38 +950,208 @@
     return attachments;
   }
 
-  // Fetch image attachments as base64 (for vision models)
+  /**
+   * Extract inline images embedded directly in Jira description/comments
+   * These are images pasted directly into the rich text editor (not as attachments)
+   * @returns {array} Array of {name, url, isInline} objects
+   */
+  function extractInlineImages() {
+    const inlineImages = [];
+    const processedUrls = new Set();
+
+    // Selectors for inline images in Jira description and comments
+    // Jira Cloud uses different structures for inline images
+    const inlineImageSelectors = [
+      // Jira Cloud - Description panel inline images
+      '[data-testid="issue.views.field.rich-text.description"] img',
+      '[data-testid="issue-description"] img',
+      // Jira Cloud - Media elements in description
+      '[data-testid="issue.views.field.rich-text.description"] [data-testid="media-image"]',
+      '[data-testid="issue.views.field.rich-text.description"] [data-node-type="media"] img',
+      '[data-testid="issue.views.field.rich-text.description"] [data-node-type="mediaSingle"] img',
+      // Jira Server/Data Center
+      '.user-content-block img',
+      '.description-content img',
+      '#description-val img',
+      '.field-ignore-highlight img',
+      // ADF (Atlassian Document Format) rendered content
+      '.ak-renderer-document img',
+      '[data-renderer-start-pos] img',
+      // Comments section inline images
+      '[data-testid="issue-activity-feed"] img',
+      '.activity-comment img',
+      '#activitymodule img',
+      // Generic rich text areas
+      '.rich-text-container img',
+      '.wiki-content img'
+    ];
+
+    // Query all inline images
+    const allInlineImages = document.querySelectorAll(inlineImageSelectors.join(','));
+
+    console.log(`🔍 [InlineImages] Found ${allInlineImages.length} potential inline images`);
+
+    allInlineImages.forEach((img, index) => {
+      const src = img.src || img.getAttribute('data-src') || img.getAttribute('data-original');
+
+      if (!src || processedUrls.has(src)) {
+        return;
+      }
+
+      // Skip tiny images (likely icons, avatars, etc.)
+      const width = img.naturalWidth || img.width || parseInt(img.getAttribute('width')) || 0;
+      const height = img.naturalHeight || img.height || parseInt(img.getAttribute('height')) || 0;
+
+      // Skip images smaller than 50x50 (likely icons)
+      if ((width > 0 && width < 50) || (height > 0 && height < 50)) {
+        console.log(`⏭️ [InlineImages] Skipping small image: ${width}x${height}`);
+        return;
+      }
+
+      // Skip known non-content images (avatars, icons, emojis)
+      const skipPatterns = [
+        '/avatar/', '/avatars/',
+        '/icons/', '/icon/',
+        '/emoji/', '/emojis/',
+        '/secure/useravatar',
+        '/images/icons/',
+        'emoticon',
+        'avatar-small',
+        'avatar-xsmall'
+      ];
+
+      if (skipPatterns.some(pattern => src.toLowerCase().includes(pattern))) {
+        console.log(`⏭️ [InlineImages] Skipping non-content image: ${src.substring(0, 100)}`);
+        return;
+      }
+
+      // Skip data URIs that are too small (base64 icons)
+      if (src.startsWith('data:') && src.length < 500) {
+        console.log(`⏭️ [InlineImages] Skipping small data URI`);
+        return;
+      }
+
+      processedUrls.add(src);
+
+      // Try to get a meaningful name
+      const alt = img.alt || img.getAttribute('title') || '';
+      const fileName = alt || `inline-image-${index + 1}`;
+
+      inlineImages.push({
+        id: `inline-${index + 1}`,
+        name: fileName,
+        url: src,
+        type: 'image',
+        isImage: true,
+        isInline: true
+      });
+
+      console.log(`✅ [InlineImages] Found inline image: "${fileName}" (${src.substring(0, 80)}...)`);
+    });
+
+    console.log(`📷 [InlineImages] Total inline images extracted: ${inlineImages.length}`);
+    return inlineImages;
+  }
+
+  /**
+   * Collect and process images from attachments and inline images
+   * - Jira images (authenticated) are converted to base64
+   * - Public URLs can be passed directly to LLM
+   * - Data URIs are passed as-is
+   */
   async function fetchImageAttachments(attachments) {
     const imageAttachments = attachments.filter(att => att.isImage);
     const imageData = [];
 
-    console.log(`📷 Found ${imageAttachments.length} image attachments to fetch`);
+    // Also extract inline images from description
+    const inlineImages = extractInlineImages();
+    const allImages = [...imageAttachments, ...inlineImages];
 
-    for (const attachment of imageAttachments) {
+    // Deduplicate by URL
+    const seenUrls = new Set();
+    const uniqueImages = allImages.filter(img => {
+      if (!img.url || seenUrls.has(img.url)) return false;
+      seenUrls.add(img.url);
+      return true;
+    });
+
+    console.log(`📷 Found ${imageAttachments.length} attachment images + ${inlineImages.length} inline images = ${uniqueImages.length} unique images`);
+
+    for (const attachment of uniqueImages) {
       try {
-        console.log(`📥 Fetching image: ${attachment.name}`);
-        const response = await fetch(attachment.url);
+        // For data URIs (already base64), keep as-is
+        if (attachment.url.startsWith('data:')) {
+          const mimeMatch = attachment.url.match(/data:([^;]+);/);
+          const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
 
-        if (!response.ok) {
-          console.warn(`⚠️ Failed to fetch ${attachment.name}: ${response.status}`);
+          imageData.push({
+            name: attachment.name,
+            data: attachment.url,
+            url: attachment.url,
+            mimeType: mimeType,
+            isInline: attachment.isInline || false
+          });
+          console.log(`✅ Added data URI image: ${attachment.name}`);
           continue;
         }
 
-        const blob = await response.blob();
-        const base64 = await blobToBase64(blob);
+        // Check if this is a Jira/Atlassian URL (requires authentication)
+        const isAuthenticatedUrl = attachment.url.includes('atlassian.net') ||
+                                    attachment.url.includes('jira.com') ||
+                                    attachment.url.includes('atlassian.com');
 
-        imageData.push({
-          name: attachment.name,
-          data: base64,
-          mimeType: blob.type
-        });
+        if (isAuthenticatedUrl) {
+          // Jira images need base64 conversion because LLM can't access authenticated URLs
+          console.log(`🔐 Converting authenticated image to base64: ${attachment.name}`);
 
-        console.log(`✅ Fetched ${attachment.name} (${(blob.size / 1024).toFixed(2)} KB)`);
+          try {
+            // Try fetching with credentials (content script has session cookies)
+            const response = await fetch(attachment.url, {
+              credentials: 'include',
+              mode: 'cors'
+            });
+
+            if (response.ok) {
+              const blob = await response.blob();
+
+              // Skip very small images
+              if (blob.size < 1024) {
+                console.warn(`⚠️ Skipping ${attachment.name} - too small (${blob.size} bytes)`);
+                continue;
+              }
+
+              const base64 = await blobToBase64(blob);
+              imageData.push({
+                name: attachment.name,
+                data: base64,
+                url: attachment.url,
+                mimeType: blob.type,
+                isInline: attachment.isInline || false
+              });
+              console.log(`✅ Converted to base64: ${attachment.name} (${(blob.size / 1024).toFixed(2)} KB)`);
+            } else {
+              console.warn(`⚠️ Failed to fetch ${attachment.name}: ${response.status}`);
+            }
+          } catch (fetchError) {
+            console.warn(`⚠️ Cannot fetch authenticated image ${attachment.name}: ${fetchError.message}`);
+          }
+        } else {
+          // Public URLs can be passed directly to LLM
+          imageData.push({
+            name: attachment.name,
+            data: attachment.url,  // Pass URL directly
+            url: attachment.url,
+            mimeType: 'image/png',
+            isInline: attachment.isInline || false
+          });
+          console.log(`✅ Added public image URL: ${attachment.name}`);
+        }
       } catch (error) {
-        console.warn(`⚠️ Error fetching ${attachment.name}:`, error.message);
+        console.warn(`⚠️ Error processing ${attachment.name}:`, error.message);
       }
     }
 
+    console.log(`📷 Total images ready for LLM: ${imageData.length}`);
     return imageData;
   }
 

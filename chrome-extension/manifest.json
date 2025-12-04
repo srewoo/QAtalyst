@@ -26,7 +26,11 @@
     "https://accounts.google.com/*",
     "https://oauth2.googleapis.com/*",
     "https://www.googleapis.com/*",
-    "https://figma-alpha-api.s3.us-west-2.amazonaws.com/*"
+    "https://figma-alpha-api.s3.us-west-2.amazonaws.com/*",
+    "https://media-api.atlassian.com/*",
+    "https://*.media.atlassian.com/*",
+    "https://api.media.atlassian.com/*",
+    "https://*.amazonaws.com/*"
   ],
   "background": {
     "service_worker": "background.js"

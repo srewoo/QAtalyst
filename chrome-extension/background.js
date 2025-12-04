@@ -227,8 +227,75 @@ function safeSendMessageToTab(tabId, message) {
   });
 }
 
+/**
+ * Fetch image from URL using background script's broader permissions
+ * This bypasses CORS restrictions that content scripts face
+ * @param {string} url - Image URL to fetch
+ * @returns {object} - {success, data (base64), mimeType} or {success: false, error}
+ */
+async function fetchImageFromBackground(url) {
+  console.log(`📷 [Background] Fetching image: ${url.substring(0, 80)}...`);
+
+  try {
+    const response = await fetch(url, {
+      credentials: 'include',
+      headers: {
+        'Accept': 'image/*'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+
+    // Check if it's actually an image
+    if (!blob.type.startsWith('image/')) {
+      throw new Error(`Not an image: ${blob.type}`);
+    }
+
+    // Skip very small images (less than 1KB)
+    if (blob.size < 1024) {
+      throw new Error(`Image too small: ${blob.size} bytes`);
+    }
+
+    // Convert to base64
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    console.log(`✅ [Background] Fetched image (${(blob.size / 1024).toFixed(2)} KB)`);
+
+    return {
+      success: true,
+      data: base64,
+      mimeType: blob.type,
+      size: blob.size
+    };
+  } catch (error) {
+    console.warn(`⚠️ [Background] Failed to fetch image: ${error.message}`);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // Fetch image from URL (background script has broader permissions)
+  // Used for CORS-blocked images in Jira
+  if (request.action === 'fetchImage') {
+    fetchImageFromBackground(request.url)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
   // Get filtered crawl data based on Jira ticket keywords
   if (request.action === 'getFilteredCrawlData') {
     getFilteredCrawlData(request.keywords, request.maxSizeKB)
