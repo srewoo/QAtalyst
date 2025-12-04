@@ -1,6 +1,6 @@
 {
   "name": "qatalyst",
-  "version": "12.0.1",
+  "version": "12.5.1",
   "description": "From QA Analyst to QA Visionary — Powered by QAtalyst. AI-Powered Test Case Generation for Jira - Advanced Chrome Extension with Multi-Agent System & Evolutionary Optimization",
   "main": "chrome-extension/background.js",
   "scripts": {
