@@ -20,6 +20,7 @@ if (typeof DuplicateDetector === 'undefined') {
 
 /**
  * Robust JSON parser that handles common AI-generated JSON errors
+ * Including truncated responses from LLMs
  */
 function parseRobustJSON(jsonString) {
   // Try direct parse first
@@ -45,7 +46,17 @@ function parseRobustJSON(jsonString) {
     try {
       return JSON.parse(fixed);
     } catch (e2) {
-      // Last resort: try to extract valid JSON portion
+      // Try to handle truncated array responses
+      // Extract complete objects from a truncated array like [{...}, {...}, {incomplete...
+      if (fixed.trim().startsWith('[')) {
+        const completeObjects = extractCompleteObjectsFromArray(fixed);
+        if (completeObjects.length > 0) {
+          console.log(`[parseRobustJSON] Recovered ${completeObjects.length} complete objects from truncated response`);
+          return completeObjects;
+        }
+      }
+
+      // Last resort: try to extract valid JSON object
       const match = fixed.match(/\{[\s\S]*\}/);
       if (match) {
         try {
@@ -57,6 +68,62 @@ function parseRobustJSON(jsonString) {
       throw e2;
     }
   }
+}
+
+/**
+ * Extract complete JSON objects from a truncated array response
+ * Handles cases like: [{...}, {...}, {incomplete...
+ */
+function extractCompleteObjectsFromArray(jsonString) {
+  const objects = [];
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  let objectStart = -1;
+
+  for (let i = 0; i < jsonString.length; i++) {
+    const char = jsonString[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === '\\' && inString) {
+      escapeNext = true;
+      continue;
+    }
+
+    if (char === '"' && !escapeNext) {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === '{') {
+      if (depth === 0) {
+        objectStart = i;
+      }
+      depth++;
+    } else if (char === '}') {
+      depth--;
+      if (depth === 0 && objectStart !== -1) {
+        // Found a complete object
+        const objectStr = jsonString.substring(objectStart, i + 1);
+        try {
+          const parsed = JSON.parse(objectStr);
+          objects.push(parsed);
+        } catch (parseErr) {
+          // Skip malformed objects
+          console.warn('[extractCompleteObjects] Skipping malformed object');
+        }
+        objectStart = -1;
+      }
+    }
+  }
+
+  return objects;
 }
 
 class AgentOrchestrator {
@@ -1364,11 +1431,21 @@ Return as JSON array.`;
 
   parseResponse(response) {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found in response');
+      // Try to find {"testCases": [...]} format first
+      const objectMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
+      if (objectMatch) {
+        const parsed = parseRobustJSON(objectMatch[0]);
+        return parsed.testCases || [];
+      }
 
-      const parsed = parseRobustJSON(jsonMatch[0]);
-      return parsed.testCases || [];
+      // Fallback: try to find direct array format [...]
+      const arrayMatch = response.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        const parsed = parseRobustJSON(arrayMatch[0]);
+        return Array.isArray(parsed) ? parsed : [];
+      }
+
+      throw new Error('No JSON found in response');
     } catch (error) {
       console.error('Failed to parse edge case test cases:', error);
       console.error('Response preview:', response.substring(0, 500));
@@ -1515,11 +1592,21 @@ Return as JSON array.`;
 
   parseResponse(response) {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found in response');
+      // Try to find {"testCases": [...]} format first
+      const objectMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
+      if (objectMatch) {
+        const parsed = parseRobustJSON(objectMatch[0]);
+        return parsed.testCases || [];
+      }
 
-      const parsed = parseRobustJSON(jsonMatch[0]);
-      return parsed.testCases || [];
+      // Fallback: try to find direct array format [...]
+      const arrayMatch = response.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        const parsed = parseRobustJSON(arrayMatch[0]);
+        return Array.isArray(parsed) ? parsed : [];
+      }
+
+      throw new Error('No JSON found in response');
     } catch (error) {
       console.error('Failed to parse regression test cases:', error);
       console.error('Response preview:', response.substring(0, 500));
@@ -1680,11 +1767,21 @@ Return as JSON array.`;
 
   parseResponse(response) {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found in response');
+      // Try to find {"testCases": [...]} format first
+      const objectMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
+      if (objectMatch) {
+        const parsed = parseRobustJSON(objectMatch[0]);
+        return parsed.testCases || [];
+      }
 
-      const parsed = parseRobustJSON(jsonMatch[0]);
-      return parsed.testCases || [];
+      // Fallback: try to find direct array format [...]
+      const arrayMatch = response.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        const parsed = parseRobustJSON(arrayMatch[0]);
+        return Array.isArray(parsed) ? parsed : [];
+      }
+
+      throw new Error('No JSON found in response');
     } catch (error) {
       console.error('Failed to parse integration test cases:', error);
       console.error('Response preview:', response.substring(0, 500));

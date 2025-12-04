@@ -634,7 +634,26 @@ class ConfluenceIntegration {
 class FigmaIntegration {
   constructor(settings) {
     this.token = settings.figmaToken;
-    this.imageMode = settings.figmaImageMode || 'single'; // 'single' or 'children'
+    // Default to 'children' mode to extract all child frames
+    this.imageMode = settings.figmaImageMode || 'children';
+
+    // UI-related keywords for smart filtering (prioritize these frames)
+    this.uiPriorityKeywords = [
+      // Screens and pages
+      'screen', 'page', 'view', 'layout', 'template',
+      // UI components
+      'modal', 'dialog', 'popup', 'drawer', 'sidebar', 'panel',
+      'header', 'footer', 'navbar', 'nav', 'menu', 'toolbar',
+      'form', 'input', 'button', 'card', 'list', 'table', 'grid',
+      // States
+      'state', 'hover', 'active', 'disabled', 'loading', 'error', 'success', 'empty',
+      // Flows
+      'flow', 'step', 'wizard', 'onboarding', 'login', 'signup', 'checkout', 'settings',
+      // Mobile/responsive
+      'mobile', 'tablet', 'desktop', 'responsive',
+      // Features
+      'dashboard', 'profile', 'notification', 'search', 'filter', 'detail', 'edit', 'create'
+    ];
 
     console.log('🎨 [Figma] Integration initialized with:', {
       hasToken: !!this.token,
@@ -642,7 +661,7 @@ class FigmaIntegration {
       settingsKeys: Object.keys(settings)
     });
   }
-  
+
   extractUrls(text) {
     // Match Figma URLs - support file, design, and proto with query parameters
     // Include ? for query strings and capture node-id parameter
@@ -651,36 +670,102 @@ class FigmaIntegration {
     // Clean up any trailing punctuation or HTML entities
     return [...new Set(matches.map(url => url.replace(/[<>"'\s]+$/, '')))];
   }
-  
+
+  /**
+   * Calculate priority score for a node based on UI-relevance
+   * Higher score = more likely to be an important UI screen
+   * @param {object} node - Figma node with name and type
+   * @returns {number} - Priority score (higher is better)
+   */
+  calculateNodePriority(node) {
+    const name = (node.name || '').toLowerCase();
+    let score = 0;
+
+    // Base score by type
+    if (node.type === 'FRAME') score += 10;
+    if (node.type === 'COMPONENT') score += 8;
+    if (node.type === 'COMPONENT_SET') score += 9;
+    if (node.type === 'INSTANCE') score += 5;
+
+    // Boost score for UI-related keywords in name
+    for (const keyword of this.uiPriorityKeywords) {
+      if (name.includes(keyword)) {
+        score += 15; // Significant boost for UI keywords
+      }
+    }
+
+    // Boost for numbered/versioned screens (e.g., "Screen 1", "Step 2")
+    if (/\d+/.test(name) && (name.includes('screen') || name.includes('step') || name.includes('page'))) {
+      score += 10;
+    }
+
+    // Penalize generic/utility names
+    const genericNames = ['group', 'rectangle', 'ellipse', 'line', 'vector', 'image', 'text', 'auto layout', 'frame'];
+    for (const generic of genericNames) {
+      if (name === generic || name.startsWith(generic + ' ')) {
+        score -= 20;
+      }
+    }
+
+    // Penalize very short names (likely auto-generated)
+    if (name.length < 3) {
+      score -= 10;
+    }
+
+    // Boost for descriptive names (longer, more specific)
+    if (name.length > 10) {
+      score += 5;
+    }
+
+    return score;
+  }
+
   /**
    * Extract child nodes (frames/components) from a Figma node
+   * Uses smart filtering to prioritize UI-relevant frames
    * @param {array} children - Array of child nodes from Figma API
-   * @returns {array} - Array of {id, name, type} objects for frames and components
+   * @returns {array} - Array of {id, name, type} objects for frames and components, sorted by priority
    */
   extractChildNodes(children) {
     const childNodes = [];
-    const validTypes = ['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE'];
-    
-    const traverse = (nodes) => {
+    const validTypes = ['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'GROUP'];
+
+    const traverse = (nodes, depth = 0) => {
       for (const node of nodes) {
-        // Include frames and components
+        // Include frames, components, and groups (added GROUP type)
         if (validTypes.includes(node.type)) {
           childNodes.push({
             id: node.id,
             name: node.name,
-            type: node.type
+            type: node.type,
+            depth: depth,
+            priority: this.calculateNodePriority(node)
           });
         }
-        
-        // Recursively check children (but only go 2 levels deep to avoid too many images)
-        if (node.children && childNodes.length < CONFIG.MAX_FIGMA_IMAGES) {
-          traverse(node.children);
+
+        // Recursively check children (go up to 4 levels deep for better coverage)
+        if (node.children && depth < 4) {
+          traverse(node.children, depth + 1);
         }
       }
     };
-    
+
     traverse(children);
-    
+
+    // Sort by priority (highest first), then by depth (shallower first)
+    childNodes.sort((a, b) => {
+      if (b.priority !== a.priority) {
+        return b.priority - a.priority;
+      }
+      return a.depth - b.depth;
+    });
+
+    // Log what we found for debugging
+    console.log(`🎨 [Figma] Found ${childNodes.length} nodes, top 10 by priority:`);
+    childNodes.slice(0, 10).forEach((node, i) => {
+      console.log(`   ${i + 1}. "${node.name}" (${node.type}, priority: ${node.priority}, depth: ${node.depth})`);
+    });
+
     // Limit to MAX_FIGMA_IMAGES
     return childNodes.slice(0, CONFIG.MAX_FIGMA_IMAGES);
   }
