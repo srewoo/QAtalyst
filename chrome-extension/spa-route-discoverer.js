@@ -74,7 +74,9 @@ class SPARouteDiscoverer {
               for (const selector of selectors) {
                 try {
                   elements.push(...document.querySelectorAll(selector));
-                } catch (e) {}
+                } catch (e) {
+                  // Invalid selector syntax - skip silently as this is expected for some dynamic selectors
+                }
               }
 
               return elements.filter(el => {

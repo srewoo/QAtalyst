@@ -29,19 +29,18 @@ class ConfigLoader {
       this.config = await response.json();
       this.isLoaded = true;
 
-      console.log('✅ Configuration loaded successfully');
-      console.log(`   Version: ${this.config.version}`);
-      console.log(`   Crawler enabled: ${this.config.crawler.enabled}`);
+      // Initialize logger with config settings
+      this._initializeLogger();
 
       return this.config;
     } catch (error) {
-      console.error('❌ Failed to load configuration:', error);
+      // Use console.error directly here since logger may not be initialized yet
+      console.error('[ConfigLoader] Failed to load configuration:', error.message);
 
       // Return default configuration as fallback
       this.config = this.getDefaultConfig();
       this.isLoaded = true;
 
-      console.warn('⚠️ Using default configuration');
       return this.config;
     }
   }
@@ -53,7 +52,6 @@ class ConfigLoader {
    */
   get(path, defaultValue = null) {
     if (!this.isLoaded) {
-      console.warn('⚠️ Config not loaded yet. Call await CONFIG.load() first.');
       return defaultValue;
     }
 
@@ -78,7 +76,6 @@ class ConfigLoader {
    */
   set(path, value) {
     if (!this.isLoaded) {
-      console.warn('⚠️ Config not loaded yet. Call await CONFIG.load() first.');
       return;
     }
 
@@ -291,6 +288,22 @@ class ConfigLoader {
   }
 
   /**
+   * Initialize logger with configuration settings
+   * @private
+   */
+  _initializeLogger() {
+    if (typeof logger !== 'undefined' && logger) {
+      const logLevel = this.get('logging.level', 'warn');
+      const productionMode = this.get('logging.productionMode', true);
+      const enabled = this.get('logging.enabled', true);
+
+      logger.setLevel(logLevel);
+      logger.setProductionMode(productionMode);
+      logger.setEnabled(enabled);
+    }
+  }
+
+  /**
    * Validate configuration structure
    */
   validate() {
@@ -302,7 +315,9 @@ class ConfigLoader {
     const requiredKeys = ['version', 'crawler', 'embeddings', 'network', 'storage'];
     for (const key of requiredKeys) {
       if (!(key in this.config)) {
-        console.error(`❌ Missing required config key: ${key}`);
+        if (typeof logger !== 'undefined') {
+          logger.error(`Missing required config key: ${key}`);
+        }
         return false;
       }
     }

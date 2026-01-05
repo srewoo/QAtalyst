@@ -1,22 +1,20 @@
 // Popup script for quick settings
 
+// Model options - keep in sync with options.js
 const modelOptions = {
   openai: [
     { value: 'gpt-4o', label: 'GPT-4o (Recommended)' },
-    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
     { value: 'gpt-4o-mini', label: 'GPT-4o Mini (Fast & Cheap)' },
-    { value: 'gpt-4', label: 'GPT-4' }
+    { value: 'o1', label: 'O1 (Reasoning)' }
   ],
   claude: [
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (Recommended)' },
-    { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus (Best Quality)' },
-    { value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet' },
-    { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Fast & Cheap)' }
+    { value: 'claude-sonnet-4-20250514', label: 'Claude 4.5 Sonnet (Latest)' },
+    { value: 'claude-sonnet-4-20250111', label: 'Claude 4.1 Sonnet' },
+    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.7 Sonnet' }
   ],
   gemini: [
-    { value: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash Exp (Free, Recommended)' },
-    { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (Fast)' }
+    { value: 'gemini-2.5-pro-exp-03', label: 'Gemini 2.5 Pro (Recommended)' },
+    { value: 'gemini-2.5-flash-exp', label: 'Gemini 2.5 Flash (Fast & Cheap)' }
   ]
 };
 
@@ -302,6 +300,40 @@ function showCrawlStatus(message, type) {
   }, 5000);
 }
 
+// Show popup notification (for modals and general messages)
+function showPopupNotification(message, type = 'info') {
+  // Remove existing notification if any
+  const existing = document.querySelector('.popup-notification');
+  if (existing) existing.remove();
+
+  const notification = document.createElement('div');
+  notification.className = 'popup-notification';
+  notification.style.cssText = `
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    z-index: 10001;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    animation: slideIn 0.3s ease;
+    background: ${type === 'error' ? '#fee2e2' : type === 'warning' ? '#fef3c7' : '#dbeafe'};
+    color: ${type === 'error' ? '#dc2626' : type === 'warning' ? '#d97706' : '#2563eb'};
+    border: 1px solid ${type === 'error' ? '#fecaca' : type === 'warning' ? '#fde68a' : '#bfdbfe'};
+  `;
+  notification.textContent = message;
+  document.body.appendChild(notification);
+
+  setTimeout(() => {
+    notification.style.opacity = '0';
+    notification.style.transition = 'opacity 0.3s ease';
+    setTimeout(() => notification.remove(), 300);
+  }, 3000);
+}
+
 // Listen for crawl progress updates
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'crawlProgress') {
@@ -530,7 +562,7 @@ function showMergeSelectionUI(apps) {
   document.getElementById('confirmMergeBtn').addEventListener('click', async () => {
     const checkboxes = modal.querySelectorAll('.merge-app-checkbox:checked');
     if (checkboxes.length < 2) {
-      alert('Please select at least 2 apps to merge');
+      showPopupNotification('Please select at least 2 apps to merge', 'warning');
       return;
     }
 
@@ -746,8 +778,12 @@ document.getElementById('stopCrawlBtn').addEventListener('click', async () => {
 // Listen for crawl completion to hide active status
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'crawlComplete' || message.action === 'crawlError' || message.action === 'crawlStopped') {
-    // Clear active crawl flag
-    chrome.storage.local.remove('activeCrawl').catch(() => {});
+    // Clear active crawl flag - errors are non-critical for cleanup
+    chrome.storage.local.remove('activeCrawl').catch(err => {
+      if (typeof logger !== 'undefined') {
+        logger.warn('Failed to clear activeCrawl flag:', err.message);
+      }
+    });
     hideActiveCrawlStatus();
 
     // Show appropriate status message

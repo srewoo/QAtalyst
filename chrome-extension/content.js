@@ -1354,11 +1354,11 @@
       const keywords = extractTicketKeywords(ticketData);
 
       if (keywords.length === 0) {
-        console.log('ℹ️ No keywords extracted from ticket for crawl data filtering');
-        return null;
+        console.log('ℹ️ No keywords extracted from ticket, requesting general crawl context');
+        // Still request crawl data - background will provide fallback summary
+      } else {
+        console.log(`🔍 Extracted ${keywords.length} keywords from ticket:`, keywords.slice(0, 10));
       }
-
-      console.log(`🔍 Extracted ${keywords.length} keywords from ticket:`, keywords.slice(0, 10));
 
       // Request filtered crawl data from background
       const response = await chrome.runtime.sendMessage({
@@ -1959,7 +1959,7 @@
     document.getElementById('regenerate-analysis-btn')?.addEventListener('click', async () => {
       const review = document.getElementById('analysis-review-input').value.trim();
       if (!review) {
-        alert('⚠️ Please provide some feedback before regenerating.');
+        showNotification('Please provide some feedback before regenerating.', 'warning');
         return;
       }
       await handleRegenerateAnalysis(review);
@@ -2035,7 +2035,7 @@
     document.getElementById('regenerate-scope-btn')?.addEventListener('click', async () => {
       const review = document.getElementById('scope-review-input').value.trim();
       if (!review) {
-        alert('⚠️ Please provide some feedback before regenerating.');
+        showNotification('Please provide some feedback before regenerating.', 'warning');
         return;
       }
       await handleRegenerateTestScope(review);
@@ -2267,7 +2267,7 @@
     document.getElementById('regenerate-testcases-btn')?.addEventListener('click', async () => {
       const review = document.getElementById('testcases-review-input').value.trim();
       if (!review) {
-        alert('⚠️ Please provide some feedback before regenerating.');
+        showNotification('Please provide some feedback before regenerating.', 'warning');
         return;
       }
       await handleRegenerateTestCases(review);
@@ -2481,7 +2481,7 @@
       }, 2000);
     }).catch(err => {
       console.error('Failed to copy to clipboard:', err);
-      alert('Failed to copy test cases to clipboard. Please try again.');
+      showNotification('Failed to copy test cases to clipboard. Please try again.', 'error');
     });
   }
   
@@ -2637,8 +2637,8 @@
       
       console.log(`✅ Exported ${testCases.length} test cases to ${filename}`);
     } catch (error) {
-      console.error('❌ Error exporting to CSV:', error);
-      alert('Failed to export test cases to CSV. Please try again.');
+      console.error('Error exporting to CSV:', error);
+      showNotification('Failed to export test cases to CSV. Please try again.', 'error');
     }
   }
 
@@ -2740,8 +2740,12 @@
           });
         }
 
-        alert(message);
-        console.log('✅ Export results:', response.results);
+        // Show success notification with summary
+        const notificationType = failedCount > 0 ? 'warning' : 'success';
+        const summaryMsg = `Exported ${successCount} test cases to test management` +
+          (failedCount > 0 ? ` (${failedCount} failed, ${skippedCount} skipped)` : '');
+        showNotification(summaryMsg, notificationType);
+        console.log('Export results:', response.results);
       } else {
         throw new Error(response.error || 'Export failed');
       }
@@ -2765,7 +2769,7 @@
         }, 3000);
       }
 
-      alert(`Failed to export to test management: ${error.message}\n\nPlease check your Test Management settings in the extension options.`);
+      showNotification(`Export failed: ${error.message}. Check your Test Management settings.`, 'error');
     }
   }
 

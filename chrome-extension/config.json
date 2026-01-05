@@ -582,8 +582,9 @@
   "logging": {
     "description": "Logging Configuration",
     "enabled": true,
-    "level": "info",
-    "levels": ["debug", "info", "warn", "error"],
+    "level": "warn",
+    "productionMode": true,
+    "levels": ["debug", "info", "warn", "error", "none"],
     "console": true,
     "storage": false,
     "maxLogs": 1000

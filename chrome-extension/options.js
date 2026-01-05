@@ -1,5 +1,6 @@
 // Options page script
 
+// Model options - keep in sync with popup.js
 const modelOptions = {
   openai: [
     { value: 'gpt-4o', label: 'GPT-4o (Recommended)' },

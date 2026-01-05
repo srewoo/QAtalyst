@@ -135,10 +135,12 @@ async function handleStartCrawl(data) {
       result: result
     };
   } catch (error) {
-    console.error('❌ Crawl failed:', error);
+    console.error('Crawl failed:', error.message);
 
-    // Clear active crawl flag
-    await chrome.storage.local.remove('activeCrawl').catch(() => {});
+    // Clear active crawl flag - non-critical cleanup
+    await chrome.storage.local.remove('activeCrawl').catch(cleanupErr => {
+      console.warn('Failed to clear activeCrawl flag during error handling:', cleanupErr.message);
+    });
 
     // Broadcast error to progress window
     broadcastMessage({
@@ -180,8 +182,10 @@ async function handleStopCrawl() {
     await activeCrawler.stop();
     activeCrawler = null;
 
-    // Clear active crawl flag from storage
-    await chrome.storage.local.remove('activeCrawl').catch(() => {});
+    // Clear active crawl flag from storage - non-critical cleanup
+    await chrome.storage.local.remove('activeCrawl').catch(err => {
+      console.warn('Failed to clear activeCrawl flag:', err.message);
+    });
 
     // Broadcast stop message to all extension windows
     broadcastMessage({

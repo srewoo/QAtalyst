@@ -7,9 +7,11 @@ importScripts('config-loader.js');
 
 // Import configuration and utilities
 importScripts('config.js');
+importScripts('logger.js');
 importScripts('security.js');
 importScripts('rate-limiter.js');
 importScripts('token-counter.js');
+importScripts('context-manager.js');
 importScripts('graph-filter.js');
 importScripts('duplicate-detector.js');
 importScripts('agents.js');
@@ -41,6 +43,10 @@ importScripts('crawler-handlers.js');
 const REQUEST_TIMEOUT = APP_CONFIG.REQUEST_TIMEOUT;
 const MAX_RETRIES = APP_CONFIG.MAX_RETRIES;
 const RETRY_DELAY = APP_CONFIG.RETRY_DELAY;
+
+// Streaming safeguards
+const STREAMING_TIMEOUT_MS = 300000; // 5 minutes max for streaming
+const MAX_STREAMING_ITERATIONS = 50000; // Max chunks to prevent infinite loops
 
 // Active streaming controllers for cancellation
 const activeStreams = new Map();
@@ -87,8 +93,10 @@ globalResourceBlocker.initialize().catch(err => console.error('Resource blocker 
 // This handles cases where extension was reloaded during a crawl
 chrome.storage.local.get(['activeCrawl'], (result) => {
   if (result.activeCrawl) {
-    console.warn('⚠️ Found stale crawl flag on startup, clearing...');
-    chrome.storage.local.remove('activeCrawl').catch(() => {});
+    logger.warn('Found stale crawl flag on startup, clearing...');
+    chrome.storage.local.remove('activeCrawl').catch(err => {
+      logger.error('Failed to clear stale crawl flag:', err.message);
+    });
   }
 });
 
@@ -115,13 +123,15 @@ function startCrawlHeartbeat() {
       const checkpoint = createCheckpoint(activeCrawler);
 
       await chrome.storage.local.set({ crawlCheckpoint: checkpoint });
-      console.log(`💓 Heartbeat: checkpoint saved (${checkpoint.visitedCount} visited, ${checkpoint.queueSize} queued)`);
+      logger.debug(`Heartbeat: checkpoint saved (${checkpoint.visitedCount} visited, ${checkpoint.queueSize} queued)`);
     } catch (error) {
-      console.error('❌ Failed to save heartbeat checkpoint:', error);
+      logger.error('Failed to save heartbeat checkpoint:', error.message);
       // If storage quota exceeded, try clearing old data
       if (error.message?.includes('QUOTA')) {
-        console.warn('⚠️ Storage quota exceeded, clearing old checkpoints...');
-        chrome.storage.local.remove('crawlCheckpoint').catch(() => {});
+        logger.warn('Storage quota exceeded, clearing old checkpoints...');
+        chrome.storage.local.remove('crawlCheckpoint').catch(clearErr => {
+          logger.error('Failed to clear checkpoint:', clearErr.message);
+        });
       }
     }
   }, 10000); // Every 10 seconds
@@ -131,11 +141,13 @@ function stopCrawlHeartbeat() {
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval);
     heartbeatInterval = null;
-    console.log('💓 Stopped crawl heartbeat');
+    logger.debug('Stopped crawl heartbeat');
   }
 
-  // Clear checkpoint
-  chrome.storage.local.remove('crawlCheckpoint').catch(() => {});
+  // Clear checkpoint - non-critical cleanup
+  chrome.storage.local.remove('crawlCheckpoint').catch(err => {
+    logger.warn('Failed to clear crawl checkpoint:', err.message);
+  });
 }
 
 /**
@@ -982,8 +994,22 @@ async function callOpenAIStream(contentParts, settings, onChunk, requestId) {
     const decoder = new TextDecoder();
     let buffer = '';
     const responseChunks = [];
+    const streamStartTime = Date.now();
+    let iterationCount = 0;
 
     while (true) {
+      // Timeout safeguard
+      if (Date.now() - streamStartTime > STREAMING_TIMEOUT_MS) {
+        logger.warn('OpenAI streaming timeout reached');
+        break;
+      }
+
+      // Iteration safeguard
+      if (++iterationCount > MAX_STREAMING_ITERATIONS) {
+        logger.warn('OpenAI streaming max iterations reached');
+        break;
+      }
+
       const {done, value} = await reader.read();
       if (done) break;
 
@@ -1085,8 +1111,22 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
     const decoder = new TextDecoder();
     let buffer = '';
     const responseChunks = [];
+    const streamStartTime = Date.now();
+    let iterationCount = 0;
 
     while (true) {
+      // Timeout safeguard
+      if (Date.now() - streamStartTime > STREAMING_TIMEOUT_MS) {
+        logger.warn('Claude streaming timeout reached');
+        break;
+      }
+
+      // Iteration safeguard
+      if (++iterationCount > MAX_STREAMING_ITERATIONS) {
+        logger.warn('Claude streaming max iterations reached');
+        break;
+      }
+
       const {done, value} = await reader.read();
       if (done) break;
 
@@ -1181,8 +1221,22 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
     const decoder = new TextDecoder();
     let buffer = '';
     const responseChunks = [];
+    const streamStartTime = Date.now();
+    let iterationCount = 0;
 
     while (true) {
+      // Timeout safeguard
+      if (Date.now() - streamStartTime > STREAMING_TIMEOUT_MS) {
+        logger.warn('Gemini streaming timeout reached');
+        break;
+      }
+
+      // Iteration safeguard
+      if (++iterationCount > MAX_STREAMING_ITERATIONS) {
+        logger.warn('Gemini streaming max iterations reached');
+        break;
+      }
+
       const {done, value} = await reader.read();
       if (done) break;
 
@@ -1458,7 +1512,24 @@ async function getFilteredCrawlData(keywords, maxSizeKB = 10) {
     const relevantPages = scoredPages.filter(p => p.score > 0);
 
     if (relevantPages.length === 0) {
-      console.log('ℹ️ No relevant pages found for the given keywords');
+      console.log('ℹ️ No keyword-matched pages found, providing general crawl summary');
+      // Fallback: Return a basic summary of available crawl data
+      const topPages = scoredPages.slice(0, 10);
+      if (topPages.length > 0) {
+        let fallbackSummary = `\n\n## 🌐 Application Context (General Overview)\n\n`;
+        fallbackSummary += `**Note:** No pages specifically matched ticket keywords, showing general app structure\n`;
+        fallbackSummary += `**Total Crawled Pages:** ${crawledPages.length}\n\n`;
+
+        topPages.forEach(({ page }) => {
+          fallbackSummary += `- **${page.title || page.url}**`;
+          if (page.forms && page.forms.length > 0) {
+            fallbackSummary += ` (${page.forms.length} forms)`;
+          }
+          fallbackSummary += `\n`;
+        });
+
+        return { summary: fallbackSummary, matchedPages: topPages.length, fallback: true };
+      }
       return { summary: null, matchedPages: 0 };
     }
 
@@ -2068,6 +2139,52 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
 }
 
 // Streaming handlers - send chunks back to content script in real-time
+
+/**
+ * Ensure content fits within model limits using ContextManager
+ * Uses graceful truncation to prioritize important content
+ */
+function ensureContentFitsLimits(contentParts, settings) {
+  const model = settings.llmModel || 'gpt-4o';
+  const ctx = new ContextManager(model);
+
+  // Separate text and image parts
+  const textParts = contentParts.filter(p => p.type === 'text');
+  const imageParts = contentParts.filter(p => p.type === 'image_url');
+
+  // Add text content with priority (system message first, then user message)
+  textParts.forEach((part, index) => {
+    const priority = index === 0 ? CONTENT_PRIORITY.JIRA_SUMMARY : CONTENT_PRIORITY.JIRA_DESCRIPTION;
+    ctx.addContext(part.text, priority, `TextPart-${index}`);
+  });
+
+  // Add images
+  imageParts.forEach((part, index) => {
+    ctx.addImage(part.image_url.url, `Image-${index}`, CONTENT_PRIORITY.FIGMA_IMAGES);
+  });
+
+  // Build context with automatic truncation
+  const result = ctx.buildContext();
+
+  if (result.stats.truncated) {
+    console.warn('⚠️ [Context Manager] Content truncated to fit model limits:', {
+      model,
+      originalTokens: result.stats.totalTokens,
+      available: result.stats.available,
+      truncationLog: result.stats.truncationLog
+    });
+  } else {
+    console.log('✅ [Context Manager] Content fits within limits:', {
+      model,
+      tokens: result.stats.totalTokens,
+      available: result.stats.available,
+      usage: `${((result.stats.totalTokens / result.stats.available) * 100).toFixed(1)}%`
+    });
+  }
+
+  return result.contentParts;
+}
+
 async function handleAnalyzeRequirementsStream(data, tabId) {
   validateSettings(data.settings);
 
@@ -2204,7 +2321,10 @@ Provide comprehensive requirement analysis.`;
     });
   }
 
-  const analysis = await callAIStream(contentParts, settings, (chunk) => {
+  // Ensure content fits within model limits (with graceful truncation)
+  const fittedContentParts = ensureContentFitsLimits(contentParts, settings);
+
+  const analysis = await callAIStream(fittedContentParts, settings, (chunk) => {
     // Send each chunk to content script
     safeSendMessageToTab(tabId, {
       action: 'streamChunk',
@@ -2310,8 +2430,11 @@ Provide detailed test scope covering all aspects.`;
       });
     }
 
-    console.log('🤖 [Test Scope Stream] Calling AI provider with', contentParts.length, 'content parts...');
-    const testScope = await callAIStream(contentParts, settings, (chunk) => {
+    // Ensure content fits within model limits (with graceful truncation)
+    const fittedContentParts = ensureContentFitsLimits(contentParts, settings);
+
+    console.log('🤖 [Test Scope Stream] Calling AI provider with', fittedContentParts.length, 'content parts...');
+    const testScope = await callAIStream(fittedContentParts, settings, (chunk) => {
       safeSendMessageToTab(tabId, {
         action: 'streamChunk',
         requestId: requestId,
@@ -2339,10 +2462,40 @@ Provide detailed test scope covering all aspects.`;
 
 async function handleGenerateTestCasesStream(data, tabId) {
   validateSettings(data.settings);
-  
+
   const { ticketKey, ticketData, settings } = data;
   const requestId = `testcases-${Date.now()}`;
-  
+
+  // Fetch external content if integrations are configured
+  let enrichedTicketData = ticketData;
+  let currentExternalSources = null;
+  let externalContent = null;
+  if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
+    console.log('🔗 [Test Cases Stream] Fetching external integrations...');
+    try {
+      const integrationManager = new IntegrationManager(settings);
+      externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+
+      currentExternalSources = {
+        confluence: externalContent.confluence.length,
+        figma: externalContent.figma.length,
+        googleDocs: externalContent.googleDocs.length
+      };
+
+      console.log('✅ [Test Cases Stream] External sources fetched:', currentExternalSources);
+
+      if (externalContent.enrichedDescription !== ticketData.description) {
+        enrichedTicketData = {
+          ...ticketData,
+          description: externalContent.enrichedDescription,
+        };
+        console.log('📝 [Test Cases Stream] Using enriched description');
+      }
+    } catch (integrationError) {
+      console.warn('⚠️ [Test Cases Stream] Integration fetch failed, continuing with ticket data only:', integrationError.message);
+    }
+  }
+
   const systemMessage = `You are an expert QA engineer generating comprehensive test cases.
 
 **IMPORTANT: Write DETAILED descriptions (2-3 sentences) that:**
@@ -2380,12 +2533,42 @@ Generate ${settings.testCount || 30} test cases total.`;
   const userMessage = `Generate test cases for:
 
 **Ticket:** ${ticketKey}
-**Summary:** ${ticketData.summary || 'N/A'}
-**Description:** ${ticketData.description || 'N/A'}`;
+**Summary:** ${enrichedTicketData.summary || 'N/A'}
+**Description:** ${enrichedTicketData.description || 'N/A'}
+${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
+${data.crawledContext || ''}`;
 
+  const contentParts = [
+    { type: 'text', text: systemMessage },
+    { type: 'text', text: userMessage }
+  ];
+
+  // Add Figma images if available
+  if (externalContent && externalContent.figma) {
+    externalContent.figma.forEach(figmaFile => {
+      if (figmaFile.images && figmaFile.images.length > 0) {
+        figmaFile.images.forEach(base64Image => {
+          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+        });
+      }
+    });
+  }
+
+  // Add Jira image attachments if available
+  if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+    console.log(`📷 [Test Cases Stream] Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments`);
+    enrichedTicketData.imageAttachments.forEach(image => {
+      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+    });
+  }
+
+  // Ensure content fits within model limits (with graceful truncation)
+  const fittedContentParts = ensureContentFitsLimits(contentParts, settings);
+
+  console.log('🤖 [Test Cases Stream] Calling AI provider with', fittedContentParts.length, 'content parts...');
   let accumulatedText = '';
 
-  const testCasesResponse = await callAIStream(systemMessage, userMessage, settings, (chunk) => {
+  const testCasesResponse = await callAIStream(fittedContentParts, settings, (chunk) => {
     accumulatedText += chunk;
     safeSendMessageToTab(tabId, {
       action: 'streamChunk',
@@ -2420,7 +2603,7 @@ Generate ${settings.testCount || 30} test cases total.`;
       }, {})
     };
     
-    return { testCases, ...stats, requestId };
+    return { testCases, ...stats, externalSources: currentExternalSources, requestId };
   } catch (error) {
     throw new Error(`Failed to parse test cases: ${error.message}`);
   }
