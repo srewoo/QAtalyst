@@ -426,6 +426,13 @@ class WebAppCrawler {
   async crawlPage(url, depth, tabId) {
     console.log(`📄 Crawling: ${url} (depth: ${depth}, queue: ${this.queue.length}) [tab ${tabId}]`);
 
+    // Validate URL before crawling
+    if (!this.isInjectableUrl(url)) {
+      console.warn(`⚠️ Skipping non-injectable URL: ${url}`);
+      this.visited.add(url);
+      return;
+    }
+
     // CRITICAL FIX: Validate tab before using it
     const tabValid = await this.isTabValid(tabId);
     if (!tabValid) {
@@ -462,7 +469,16 @@ class WebAppCrawler {
     }
 
     // Verify content script is loaded BEFORE trying to communicate with it
-    await this.verifyContentScript(tabId);
+    const scriptInjected = await this.verifyContentScript(tabId);
+    if (!scriptInjected) {
+      console.warn(`⚠️ Could not inject content script for ${actualUrl}, skipping page`);
+      this.visited.add(url);
+      if (actualUrl !== url) {
+        this.visited.add(actualUrl);
+      }
+      this.stats.errors++;
+      return;
+    }
 
     // P2.8: Wait for SPA framework hydration (React, Vue, Angular)
     // Must be AFTER verifyContentScript since it sends messages to content script
@@ -556,6 +572,20 @@ class WebAppCrawler {
       }
     }
 
+    // NEW: Get enhanced data from DOM extractor
+    const errorPatterns = await this.getErrorPatterns(tabId);
+    const pageHints = await this.getPageHints(tabId);
+
+    // NEW: Get enhanced API data (with null safety)
+    let apiSummary = { endpoints: [], errors: [], pagination: [] };
+    try {
+      if (this.networkMonitor && typeof this.networkMonitor.getEnhancedApiSummary === 'function') {
+        apiSummary = this.networkMonitor.getEnhancedApiSummary() || apiSummary;
+      }
+    } catch (e) {
+      console.warn('⚠️ Failed to get API summary:', e.message);
+    }
+
     // Store page data (use actual URL if redirected)
     const pageData = {
       url: actualUrl,
@@ -567,9 +597,15 @@ class WebAppCrawler {
       features,
       apis: apis.filter(api => this.isRelevantApi(api)),
       links,
-      spaDiscoveries: spaDiscoveries.length > 0 ? spaDiscoveries : undefined, // Include SPA discoveries
+      spaDiscoveries: spaDiscoveries.length > 0 ? spaDiscoveries : undefined,
       timestamp: Date.now(),
-      loadTime: metadata.loadTime
+      loadTime: metadata.loadTime,
+      // NEW: Enhanced metadata (optional fields prefixed with _)
+      _errorPatterns: errorPatterns && errorPatterns.length > 0 ? errorPatterns : undefined,
+      _pageHints: pageHints && Object.keys(pageHints).length > 0 ? pageHints : undefined,
+      _apiSchemas: apiSummary.endpoints && apiSummary.endpoints.length > 0 ? apiSummary.endpoints : undefined,
+      _apiErrors: apiSummary.errors && apiSummary.errors.length > 0 ? apiSummary.errors : undefined,
+      _pagination: apiSummary.pagination && apiSummary.pagination.length > 0 ? apiSummary.pagination : undefined
     };
 
     // WEEK 1: Track page load time for adaptive scaling
@@ -728,6 +764,228 @@ class WebAppCrawler {
   }
 
   /**
+   * Blacklisted domains by category - never crawl these
+   */
+  static BLACKLIST_CATEGORIES = {
+    socialNetworks: [
+      'facebook.com', 'www.facebook.com', 'm.facebook.com', 'fb.com', 'fbcdn.net',
+      'linkedin.com', 'www.linkedin.com',
+      'twitter.com', 'www.twitter.com', 'x.com', 'www.x.com',
+      'instagram.com', 'www.instagram.com',
+      'pinterest.com', 'www.pinterest.com', 'pin.it',
+      'tiktok.com', 'www.tiktok.com',
+      'snapchat.com', 'www.snapchat.com',
+      'reddit.com', 'www.reddit.com', 'old.reddit.com',
+      'tumblr.com', 'www.tumblr.com',
+      'threads.net', 'www.threads.net',
+      'whatsapp.com', 'web.whatsapp.com',
+      'telegram.org', 'web.telegram.org',
+      'discord.com', 'discord.gg'
+    ],
+
+    googleServices: [
+      'google.com', 'www.google.com',
+      'google.co.uk', 'google.de', 'google.fr', 'google.es', 'google.it',
+      'google.ca', 'google.com.au', 'google.co.in', 'google.co.jp',
+      'youtube.com', 'www.youtube.com', 'm.youtube.com',
+      'maps.google.com', 'mail.google.com', 'drive.google.com',
+      'play.google.com', 'news.google.com', 'calendar.google.com',
+      'translate.google.com', 'photos.google.com'
+    ],
+
+    analytics: [
+      'googletagmanager.com', 'google-analytics.com', 'analytics.google.com',
+      'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
+      'facebook.net', 'connect.facebook.net',
+      'hotjar.com', 'mixpanel.com', 'segment.com', 'segment.io',
+      'newrelic.com', 'nr-data.net',
+      'sentry.io', 'browser.sentry-cdn.com',
+      'amplitude.com', 'heapanalytics.com', 'fullstory.com',
+      'clarity.ms', 'mouseflow.com', 'crazyegg.com',
+      'optimizely.com', 'launchdarkly.com'
+    ],
+
+    cdnAssets: [
+      'cloudflare.com', 'cdn.cloudflare.com', 'cdnjs.cloudflare.com',
+      'amazonaws.com', 's3.amazonaws.com', 'cloudfront.net',
+      'akamai.net', 'akamaihd.net', 'akamaized.net',
+      'fastly.net', 'fastly.com',
+      'unpkg.com', 'jsdelivr.net', 'bootstrapcdn.com',
+      'fontawesome.com', 'fonts.googleapis.com', 'fonts.gstatic.com',
+      'gravatar.com', 'wp.com', 'staticflickr.com'
+    ],
+
+    authProviders: [
+      'auth0.com', 'okta.com', 'onelogin.com',
+      'login.microsoftonline.com', 'accounts.google.com',
+      'appleid.apple.com', 'id.apple.com',
+      'cognito-idp.amazonaws.com', 'cognito-identity.amazonaws.com',
+      'firebase.google.com', 'firebaseapp.com'
+    ],
+
+    paymentProviders: [
+      'stripe.com', 'js.stripe.com', 'm.stripe.com',
+      'paypal.com', 'www.paypal.com', 'paypalobjects.com',
+      'braintreegateway.com', 'braintree-api.com',
+      'checkout.shopify.com', 'square.com', 'squareup.com',
+      'adyen.com', 'checkout.adyen.com'
+    ],
+
+    chatSupport: [
+      'intercom.io', 'widget.intercom.io', 'intercomcdn.com',
+      'zendesk.com', 'zopim.com', 'zdassets.com',
+      'drift.com', 'driftt.com',
+      'crisp.chat', 'tawk.to',
+      'livechatinc.com', 'livechat.com',
+      'freshdesk.com', 'freshchat.com',
+      'hubspot.com', 'hs-scripts.com', 'hsforms.com'
+    ],
+
+    mediaNews: [
+      'cnn.com', 'bbc.com', 'bbc.co.uk', 'nytimes.com', 'theguardian.com',
+      'forbes.com', 'bloomberg.com', 'reuters.com', 'wsj.com',
+      'washingtonpost.com', 'huffpost.com', 'buzzfeed.com',
+      'techcrunch.com', 'theverge.com', 'wired.com', 'arstechnica.com'
+    ],
+
+    developerSites: [
+      'github.com', 'www.github.com', 'raw.githubusercontent.com',
+      'gitlab.com', 'www.gitlab.com',
+      'bitbucket.org', 'www.bitbucket.org',
+      'stackoverflow.com', 'www.stackoverflow.com', 'stackexchange.com',
+      'medium.com', 'www.medium.com',
+      'dev.to', 'www.dev.to',
+      'hashnode.com', 'hashnode.dev'
+    ],
+
+    majorPlatforms: [
+      'apple.com', 'www.apple.com',
+      'microsoft.com', 'www.microsoft.com',
+      'amazon.com', 'www.amazon.com',
+      'ebay.com', 'www.ebay.com',
+      'yahoo.com', 'www.yahoo.com',
+      'bing.com', 'www.bing.com',
+      'baidu.com', 'www.baidu.com',
+      'aliexpress.com', 'alibaba.com'
+    ]
+  };
+
+  /**
+   * Get active blacklisted domains based on config
+   */
+  getBlacklistedDomains() {
+    const blacklistConfig = CONFIG.get('crawler.blacklist', {});
+
+    // If blacklist is disabled, return empty array
+    if (blacklistConfig.enabled === false) {
+      return [];
+    }
+
+    const categories = blacklistConfig.categories || {
+      socialNetworks: true,
+      googleServices: true,
+      analytics: true,
+      cdnAssets: true,
+      authProviders: true,
+      paymentProviders: true,
+      chatSupport: true,
+      mediaNews: false,
+      developerSites: false,
+      majorPlatforms: true
+    };
+
+    let domains = [];
+
+    // Add domains from enabled categories
+    for (const [category, isEnabled] of Object.entries(categories)) {
+      if (isEnabled && Crawler.BLACKLIST_CATEGORIES[category]) {
+        domains.push(...Crawler.BLACKLIST_CATEGORIES[category]);
+      }
+    }
+
+    // Add custom domains from config
+    const customDomains = blacklistConfig.customDomains || [];
+    domains.push(...customDomains);
+
+    // Remove duplicates
+    return [...new Set(domains)];
+  }
+
+  /**
+   * Check if URL is on the blacklist
+   */
+  isBlacklistedUrl(url) {
+    if (!url) return false;
+
+    try {
+      const urlObj = new URL(url);
+      const hostname = urlObj.hostname.toLowerCase();
+
+      const blacklistedDomains = this.getBlacklistedDomains();
+
+      // Check exact match and subdomain match
+      return blacklistedDomains.some(domain => {
+        return hostname === domain || hostname.endsWith('.' + domain);
+      });
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * Check if URL can have scripts injected
+   */
+  isInjectableUrl(url) {
+    if (!url) return false;
+
+    // Check blacklist first
+    if (this.isBlacklistedUrl(url)) {
+      console.log(`🚫 Skipping blacklisted URL: ${url}`);
+      return false;
+    }
+
+    // URLs that cannot have content scripts injected
+    const nonInjectablePatterns = [
+      /^chrome:/,
+      /^chrome-extension:/,
+      /^about:/,
+      /^edge:/,
+      /^brave:/,
+      /^opera:/,
+      /^file:/,
+      /^data:/,
+      /^blob:/,
+      /^javascript:/,
+      /^view-source:/,
+      /^devtools:/,
+      /^chrome-search:/,
+      /^chrome-untrusted:/
+    ];
+
+    // Check for non-injectable URL schemes
+    if (nonInjectablePatterns.some(pattern => pattern.test(url))) {
+      return false;
+    }
+
+    // Check for non-HTML content types (rough check by extension)
+    const nonHtmlExtensions = ['.pdf', '.xml', '.json', '.txt', '.csv', '.zip', '.tar', '.gz',
+                               '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.ico',
+                               '.mp3', '.mp4', '.wav', '.avi', '.mov', '.webm',
+                               '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'];
+
+    try {
+      const urlPath = new URL(url).pathname.toLowerCase();
+      if (nonHtmlExtensions.some(ext => urlPath.endsWith(ext))) {
+        return false;
+      }
+    } catch (e) {
+      // URL parsing failed, assume injectable
+    }
+
+    return true;
+  }
+
+  /**
    * Verify content script is loaded before sending messages
    */
   async verifyContentScript(tabId) {
@@ -742,19 +1000,69 @@ class WebAppCrawler {
       return false;
     }
 
+    // Get tab URL to check if injectable
+    let tabUrl = '';
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tabId },
-        files: ['config.js', 'security.js', 'dom-extractor.js', 'content.js']
-      });
+      const tab = await chrome.tabs.get(tabId);
+      tabUrl = tab.url || '';
 
-      await this.sleep(500);
-      this.scriptInjectedTabs.add(tabId);
-      return true;
-    } catch (error) {
-      console.error(`Failed to inject content script in tab ${tabId}:`, error.message);
-      return false;
+      if (!this.isInjectableUrl(tabUrl)) {
+        console.warn(`⚠️ Cannot inject into non-injectable URL: ${tabUrl}`);
+        return false;
+      }
+    } catch (e) {
+      console.warn(`⚠️ Failed to get tab URL:`, e.message);
     }
+
+    // Retry logic for script injection
+    const maxRetries = 2;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tabId },
+          files: ['config.js', 'security.js', 'dom-extractor.js', 'content.js']
+        });
+
+        await this.sleep(300);
+        this.scriptInjectedTabs.add(tabId);
+        return true;
+      } catch (error) {
+        lastError = error;
+        console.warn(`⚠️ Script injection attempt ${attempt}/${maxRetries} failed:`, error.message);
+
+        // Check for specific error types
+        if (error.message.includes('Cannot access') ||
+            error.message.includes('Extension manifest must request permission')) {
+          // Permission issue - won't be fixed by retry
+          console.error(`❌ Permission denied for ${tabUrl}`);
+          break;
+        }
+
+        if (error.message.includes('No frame with id') ||
+            error.message.includes('No tab with id')) {
+          // Tab/frame no longer exists
+          console.error(`❌ Tab ${tabId} no longer exists`);
+          break;
+        }
+
+        if (error.message.includes('Cannot access a chrome://') ||
+            error.message.includes('Cannot access contents of url')) {
+          // Special URL that can't be accessed
+          console.warn(`⚠️ Skipping non-accessible URL: ${tabUrl}`);
+          break;
+        }
+
+        // Wait before retry
+        if (attempt < maxRetries) {
+          await this.sleep(500 * attempt);
+        }
+      }
+    }
+
+    console.error(`❌ Failed to inject content script in tab ${tabId} after ${maxRetries} attempts:`, lastError?.message);
+    return false;
   }
 
   /**
@@ -860,6 +1168,50 @@ class WebAppCrawler {
             console.warn(`  ⚠️ No text content extracted`, response?.error || 'Unknown reason');
           }
           resolve(textContent);
+        }
+      });
+    });
+  }
+
+  /**
+   * NEW: Get error patterns from DOM extractor
+   */
+  async getErrorPatterns(tabId) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve([]);
+      }, 5000);
+
+      chrome.tabs.sendMessage(tabId, {
+        action: 'getErrorPatterns'
+      }, (response) => {
+        clearTimeout(timeout);
+        if (chrome.runtime.lastError) {
+          resolve([]);
+        } else {
+          resolve(response?.errorPatterns || []);
+        }
+      });
+    });
+  }
+
+  /**
+   * NEW: Get page hints from DOM extractor
+   */
+  async getPageHints(tabId) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve({});
+      }, 5000);
+
+      chrome.tabs.sendMessage(tabId, {
+        action: 'getPageHints'
+      }, (response) => {
+        clearTimeout(timeout);
+        if (chrome.runtime.lastError) {
+          resolve({});
+        } else {
+          resolve(response?.pageHints || {});
         }
       });
     });
@@ -1065,7 +1417,27 @@ class WebAppCrawler {
    * Prevents infinite crawl loops (SPAs with infinite scroll, pagination, etc.)
    */
   checkInfiniteQueue() {
-    const queueWarningThreshold = CONFIG.get('crawler.limits.queueWarningThreshold', 10000);
+    const queueWarningThreshold = CONFIG.get('crawler.limits.queueWarningThreshold', 1500);
+    const maxQueueSize = CONFIG.get('crawler.limits.maxQueueSize', 2000);
+
+    // CRITICAL: Hard stop if queue exceeds max
+    if (this.queue.length >= maxQueueSize) {
+      console.error(`🛑 QUEUE LIMIT REACHED: ${this.queue.length} URLs - pruning queue!`);
+
+      // Prune queue: keep only high-priority unique URLs
+      this.pruneQueue();
+
+      // Send warning to UI
+      this.sendProgress({
+        status: 'warning',
+        message: `⚠️ Queue pruned from ${this.queue.length} URLs to prevent overflow`,
+        visited: this.visited.size,
+        queueSize: this.queue.length,
+        warning: 'queue_pruned'
+      });
+
+      return true;
+    }
 
     if (this.queue.length >= queueWarningThreshold) {
       console.warn(`⚠️ QUEUE OVERFLOW WARNING: ${this.queue.length} URLs in queue!`);
@@ -1085,6 +1457,58 @@ class WebAppCrawler {
     }
 
     return false;
+  }
+
+  /**
+   * Prune queue to remove low-priority and duplicate-pattern URLs
+   */
+  pruneQueue() {
+    const maxQueueSize = CONFIG.get('crawler.limits.maxQueueSize', 2000);
+    const targetSize = Math.floor(maxQueueSize * 0.5); // Reduce to 50% of max
+
+    console.log(`🔪 Pruning queue from ${this.queue.length} to ~${targetSize} URLs`);
+
+    // Group URLs by pattern to detect over-represented patterns
+    const patternCounts = new Map();
+    for (const item of this.queue) {
+      const pattern = this.getParameterizedPattern(item.url) || item.url;
+      patternCounts.set(pattern, (patternCounts.get(pattern) || 0) + 1);
+    }
+
+    // Find patterns with too many URLs (likely pagination/products)
+    const overRepresentedPatterns = new Set();
+    for (const [pattern, count] of patternCounts) {
+      if (count > 10) { // More than 10 URLs of same pattern
+        overRepresentedPatterns.add(pattern);
+        console.log(`   ⏩ Limiting pattern (${count} URLs): ${pattern}`);
+      }
+    }
+
+    // Filter queue: limit each pattern to 3 samples
+    const patternSamples = new Map();
+    const prunedQueue = [];
+
+    for (const item of this.queue) {
+      const pattern = this.getParameterizedPattern(item.url) || item.url;
+
+      if (overRepresentedPatterns.has(pattern)) {
+        const sampleCount = patternSamples.get(pattern) || 0;
+        if (sampleCount < 3) {
+          patternSamples.set(pattern, sampleCount + 1);
+          prunedQueue.push(item);
+        }
+        // Skip if already have 3 samples
+      } else {
+        prunedQueue.push(item);
+      }
+
+      // Stop if we've reached target size
+      if (prunedQueue.length >= targetSize) break;
+    }
+
+    const removedCount = this.queue.length - prunedQueue.length;
+    this.queue = prunedQueue;
+    console.log(`✅ Pruned ${removedCount} URLs, queue now has ${this.queue.length} URLs`);
   }
 
   /**
@@ -1182,6 +1606,48 @@ class WebAppCrawler {
    * @returns {boolean} true if should queue, false if should skip
    */
   shouldQueueUrl(url) {
+    // First check if URL is valid and injectable
+    if (!url || typeof url !== 'string') {
+      return false;
+    }
+
+    // Skip non-injectable URLs
+    if (!this.isInjectableUrl(url)) {
+      return false;
+    }
+
+    // Skip URLs with common non-crawlable patterns
+    const skipPatterns = [
+      /^mailto:/i,
+      /^tel:/i,
+      /^sms:/i,
+      /^whatsapp:/i,
+      /^skype:/i,
+      /#$/,  // Hash-only links
+      /\.(pdf|zip|rar|exe|dmg|pkg|deb|rpm)(\?|$)/i,  // Direct file downloads
+      /logout|signout|sign-out|log-out/i,  // Logout URLs
+      /unsubscribe/i,  // Unsubscribe links
+      /\?.*utm_/i,  // Skip if only tracking params
+    ];
+
+    if (skipPatterns.some(pattern => pattern.test(url))) {
+      return false;
+    }
+
+    // Skip external social media / third-party links
+    try {
+      const urlObj = new URL(url);
+      const startUrlObj = new URL(this.startUrl);
+
+      // Only crawl same origin
+      if (urlObj.origin !== startUrlObj.origin) {
+        return false;
+      }
+    } catch (e) {
+      return false; // Invalid URL
+    }
+
+    // Check parameterized URL detection
     if (!this.detectParameterizedUrls) {
       return true; // Detection disabled, queue everything
     }
@@ -1233,8 +1699,40 @@ class WebAppCrawler {
         return path.replace(alphanumericPattern, '/{id}');
       }
 
-      // Pattern 4: ID in middle (/user/123/profile, /recording/456/transcript)
-      // Only if the ID segment is purely numeric
+      // Pattern 4: E-commerce product/item pages
+      // /products/product-slug, /items/item-name, /p/product-name
+      const ecommercePatterns = [
+        /^\/(products?|items?|p|goods|merchandise|shop)\/([^/]+)$/i,
+        /^\/(collections?|categories?|c|cat)\/([^/]+)\/([^/]+)$/i,  // /collections/category/product
+        /^\/(product|item|p)\/([^/]+)\/([^/]+)$/i  // /product/category/slug
+      ];
+
+      for (const pattern of ecommercePatterns) {
+        if (pattern.test(path)) {
+          // Replace the last segment (product slug) with {slug}
+          const segments = path.split('/').filter(s => s.length > 0);
+          if (segments.length >= 2) {
+            segments[segments.length - 1] = '{slug}';
+            return '/' + segments.join('/');
+          }
+        }
+      }
+
+      // Pattern 5: Collection/Category pages with pagination
+      // /collections/flowers?page=2, /category/gifts?sort=price
+      if (/^\/(collections?|categories?|c|cat|tags?|brands?)\/([^/]+)$/i.test(path)) {
+        const segments = path.split('/').filter(s => s.length > 0);
+        return '/' + segments[0] + '/{category}';
+      }
+
+      // Pattern 6: Blog/Article pages
+      // /blog/article-slug, /news/story-title, /posts/post-slug
+      if (/^\/(blog|news|posts?|articles?|stories|updates?)\/([^/]+)$/i.test(path)) {
+        const segments = path.split('/').filter(s => s.length > 0);
+        return '/' + segments[0] + '/{slug}';
+      }
+
+      // Pattern 7: ID in middle (/user/123/profile, /recording/456/transcript)
       const segments = path.split('/').filter(s => s.length > 0);
       let hasIdSegment = false;
       const normalizedSegments = segments.map(segment => {

@@ -15,6 +15,7 @@
     "downloads"
   ],
   "host_permissions": [
+    "<all_urls>",
     "https://*.atlassian.net/*",
     "https://*.jira.com/*",
     "https://*.confluence.com/*",

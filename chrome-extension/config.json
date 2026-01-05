@@ -8,12 +8,13 @@
     "enabled": true,
 
     "limits": {
-      "maxPages": 2000,
-      "maxDepth": 10,
-      "maxQueueSize": 2000,
-      "queueWarningThreshold": 1500,
+      "maxPages": 500,
+      "maxDepth": 5,
+      "maxQueueSize": 1000,
+      "queueWarningThreshold": 500,
       "timeout": 600000,
-      "pageTimeout": 40000
+      "pageTimeout": 40000,
+      "description": "Reduced limits to prevent queue overflow on large e-commerce sites. Increase maxPages for thorough crawls."
     },
 
     "delays": {
@@ -244,6 +245,23 @@
         "javascript:"
       ],
       "maxQueryLength": 200
+    },
+
+    "blacklist": {
+      "enabled": true,
+      "description": "Domains that should never be crawled. Add custom domains to extend the default list.",
+      "customDomains": [],
+      "categories": {
+        "socialNetworks": true,
+        "googleServices": true,
+        "analytics": true,
+        "cdnAssets": true,
+        "authProviders": true,
+        "paymentProviders": true,
+        "chatSupport": true,
+        "mediaNews": false,
+        "developerSites": false
+      }
     },
 
     "spaDiscovery": {

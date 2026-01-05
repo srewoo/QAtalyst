@@ -1,6 +1,6 @@
 /**
  * Network Monitor - Capture API calls and network requests
- * Version: 11.0.0
+ * Version: 12.0.0 - Enhanced with schema inference and error cataloging
  * Monitors fetch/XHR requests to capture API endpoints
  */
 
@@ -9,6 +9,10 @@ class NetworkMonitor {
     this.requests = [];
     this.isMonitoring = false;
     this.tabId = null;
+    // NEW: Schema inference tracking
+    this.endpointSchemas = new Map();
+    this.errorResponses = [];
+    this.paginationPatterns = new Map();
   }
 
   /**
@@ -87,12 +91,38 @@ class NetworkMonitor {
 
     const index = this.requests.findIndex(r => r.id === details.requestId);
     if (index >= 0) {
+      const request = this.requests[index];
       this.requests[index] = {
-        ...this.requests[index],
+        ...request,
         statusCode: details.statusCode,
         responseHeaders: this.extractHeaders(details.responseHeaders),
-        responseTime: details.timeStamp - this.requests[index].timestamp
+        responseTime: details.timeStamp - request.timestamp
       };
+
+      // NEW: Update endpoint schema with this request
+      try {
+        const urlObj = new URL(request.url);
+        const endpoint = urlObj.pathname;
+
+        // Update schema inference
+        this.updateEndpointSchema(
+          endpoint,
+          request.method,
+          request.requestBody,
+          null, // Response body not available in webRequest API
+          details.statusCode
+        );
+
+        // Detect pagination patterns
+        this.detectPaginationPattern(request.url, urlObj.searchParams);
+
+        // Catalog error responses
+        if (details.statusCode >= 400) {
+          this.catalogErrorResponse(endpoint, request.method, details.statusCode, null);
+        }
+      } catch (e) {
+        // URL parsing failed, skip
+      }
     }
   }
 
@@ -266,6 +296,9 @@ class NetworkMonitor {
    */
   clear() {
     this.requests = [];
+    this.endpointSchemas.clear();
+    this.errorResponses = [];
+    this.paginationPatterns.clear();
     console.log('🗑️ Network monitor cleared');
   }
 
@@ -298,6 +331,258 @@ class NetworkMonitor {
     }
 
     return stats;
+  }
+
+  /**
+   * NEW: Infer schema from request/response body
+   */
+  inferSchema(data, depth = 0) {
+    if (depth > 3) return { type: 'object', truncated: true };
+
+    if (data === null) return { type: 'null' };
+    if (data === undefined) return { type: 'undefined' };
+
+    const type = typeof data;
+
+    if (type === 'string') {
+      // Detect special string formats
+      if (data.match(/^\d{4}-\d{2}-\d{2}/)) return { type: 'string', format: 'date' };
+      if (data.match(/^[^@]+@[^@]+\.[^@]+$/)) return { type: 'string', format: 'email' };
+      if (data.match(/^https?:\/\//)) return { type: 'string', format: 'url' };
+      if (data.match(/^[a-f0-9-]{36}$/i)) return { type: 'string', format: 'uuid' };
+      return { type: 'string', example: data.substring(0, 50) };
+    }
+
+    if (type === 'number') {
+      return { type: Number.isInteger(data) ? 'integer' : 'number', example: data };
+    }
+
+    if (type === 'boolean') return { type: 'boolean' };
+
+    if (Array.isArray(data)) {
+      if (data.length === 0) return { type: 'array', items: { type: 'unknown' } };
+      return {
+        type: 'array',
+        items: this.inferSchema(data[0], depth + 1),
+        length: data.length
+      };
+    }
+
+    if (type === 'object') {
+      const properties = {};
+      const keys = Object.keys(data).slice(0, 20); // Limit to 20 properties
+      for (const key of keys) {
+        properties[key] = this.inferSchema(data[key], depth + 1);
+      }
+      return {
+        type: 'object',
+        properties,
+        propertyCount: Object.keys(data).length
+      };
+    }
+
+    return { type };
+  }
+
+  /**
+   * NEW: Update endpoint schema with new request data
+   */
+  updateEndpointSchema(endpoint, method, requestBody, responseBody, statusCode) {
+    const key = `${method} ${endpoint}`;
+
+    if (!this.endpointSchemas.has(key)) {
+      this.endpointSchemas.set(key, {
+        endpoint,
+        method,
+        requestSchemas: [],
+        responseSchemas: [],
+        statusCodes: new Set(),
+        sampleCount: 0
+      });
+    }
+
+    const schema = this.endpointSchemas.get(key);
+    schema.sampleCount++;
+    schema.statusCodes.add(statusCode);
+
+    // Infer request schema (limit samples)
+    if (requestBody && schema.requestSchemas.length < 3) {
+      try {
+        const reqSchema = this.inferSchema(
+          typeof requestBody === 'string' ? JSON.parse(requestBody) : requestBody.data || requestBody
+        );
+        if (!this.schemaExists(schema.requestSchemas, reqSchema)) {
+          schema.requestSchemas.push(reqSchema);
+        }
+      } catch (e) {
+        // Not JSON, skip
+      }
+    }
+
+    // Infer response schema (limit samples)
+    if (responseBody && schema.responseSchemas.length < 3) {
+      try {
+        const respSchema = this.inferSchema(
+          typeof responseBody === 'string' ? JSON.parse(responseBody) : responseBody
+        );
+        if (!this.schemaExists(schema.responseSchemas, respSchema)) {
+          schema.responseSchemas.push(respSchema);
+        }
+      } catch (e) {
+        // Not JSON, skip
+      }
+    }
+  }
+
+  /**
+   * Check if similar schema already exists
+   */
+  schemaExists(schemas, newSchema) {
+    if (schemas.length === 0) return false;
+    // Simple check based on top-level properties
+    const newProps = newSchema.properties ? Object.keys(newSchema.properties).sort().join(',') : '';
+    return schemas.some(s => {
+      const existingProps = s.properties ? Object.keys(s.properties).sort().join(',') : '';
+      return existingProps === newProps;
+    });
+  }
+
+  /**
+   * NEW: Get inferred API schemas
+   */
+  getApiSchemas() {
+    const schemas = [];
+    for (const [key, schema] of this.endpointSchemas) {
+      schemas.push({
+        endpoint: schema.endpoint,
+        method: schema.method,
+        sampleCount: schema.sampleCount,
+        statusCodes: Array.from(schema.statusCodes),
+        requestSchema: schema.requestSchemas[0] || null,
+        responseSchema: schema.responseSchemas[0] || null,
+        hasMultipleSchemas: schema.requestSchemas.length > 1 || schema.responseSchemas.length > 1
+      });
+    }
+    return schemas;
+  }
+
+  /**
+   * NEW: Catalog error responses
+   */
+  catalogErrorResponse(endpoint, method, statusCode, errorBody) {
+    if (statusCode >= 400) {
+      let errorMessage = '';
+      let errorCode = '';
+
+      try {
+        const parsed = typeof errorBody === 'string' ? JSON.parse(errorBody) : errorBody;
+        errorMessage = parsed.message || parsed.error || parsed.detail || JSON.stringify(parsed).substring(0, 100);
+        errorCode = parsed.code || parsed.errorCode || '';
+      } catch (e) {
+        errorMessage = typeof errorBody === 'string' ? errorBody.substring(0, 100) : 'Unknown error';
+      }
+
+      // Avoid duplicates
+      const exists = this.errorResponses.some(e =>
+        e.endpoint === endpoint && e.statusCode === statusCode && e.message === errorMessage
+      );
+
+      if (!exists && this.errorResponses.length < 50) {
+        this.errorResponses.push({
+          endpoint,
+          method,
+          statusCode,
+          message: errorMessage,
+          code: errorCode,
+          category: this.categorizeHttpError(statusCode),
+          timestamp: Date.now()
+        });
+      }
+    }
+  }
+
+  /**
+   * Categorize HTTP error
+   */
+  categorizeHttpError(statusCode) {
+    if (statusCode === 400) return 'bad-request';
+    if (statusCode === 401) return 'unauthorized';
+    if (statusCode === 403) return 'forbidden';
+    if (statusCode === 404) return 'not-found';
+    if (statusCode === 409) return 'conflict';
+    if (statusCode === 422) return 'validation';
+    if (statusCode === 429) return 'rate-limit';
+    if (statusCode >= 500) return 'server-error';
+    return 'client-error';
+  }
+
+  /**
+   * NEW: Get cataloged error responses
+   */
+  getErrorResponses() {
+    return this.errorResponses;
+  }
+
+  /**
+   * NEW: Detect pagination patterns
+   */
+  detectPaginationPattern(endpoint, queryParams) {
+    if (!queryParams) return;
+
+    const paginationParams = ['page', 'offset', 'limit', 'skip', 'cursor', 'after', 'before', 'start', 'count'];
+
+    for (const param of paginationParams) {
+      if (queryParams.has(param)) {
+        const baseEndpoint = endpoint.split('?')[0];
+
+        if (!this.paginationPatterns.has(baseEndpoint)) {
+          this.paginationPatterns.set(baseEndpoint, {
+            endpoint: baseEndpoint,
+            type: this.detectPaginationType(param),
+            params: new Set()
+          });
+        }
+
+        this.paginationPatterns.get(baseEndpoint).params.add(param);
+      }
+    }
+  }
+
+  /**
+   * Detect pagination type from parameter
+   */
+  detectPaginationType(param) {
+    if (['cursor', 'after', 'before'].includes(param)) return 'cursor';
+    if (['offset', 'skip', 'start'].includes(param)) return 'offset';
+    if (param === 'page') return 'page-number';
+    return 'unknown';
+  }
+
+  /**
+   * NEW: Get detected pagination patterns
+   */
+  getPaginationPatterns() {
+    const patterns = [];
+    for (const [endpoint, pattern] of this.paginationPatterns) {
+      patterns.push({
+        endpoint: pattern.endpoint,
+        type: pattern.type,
+        params: Array.from(pattern.params)
+      });
+    }
+    return patterns;
+  }
+
+  /**
+   * NEW: Get enhanced API summary with schemas
+   */
+  getEnhancedApiSummary() {
+    return {
+      endpoints: this.getApiSchemas(),
+      errors: this.getErrorResponses(),
+      pagination: this.getPaginationPatterns(),
+      stats: this.getStats()
+    };
   }
 }
 

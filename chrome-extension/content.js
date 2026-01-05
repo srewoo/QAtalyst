@@ -163,6 +163,16 @@
       handleDetectSPAFramework(sendResponse);
       return true;
     }
+    // NEW: Get error patterns from page
+    if (request.action === 'getErrorPatterns') {
+      handleGetErrorPatterns(sendResponse);
+      return true;
+    }
+    // NEW: Get page hints for testing
+    if (request.action === 'getPageHints') {
+      handleGetPageHints(sendResponse);
+      return true;
+    }
   });
 
   // Helper function to load and decrypt settings
@@ -3519,6 +3529,36 @@ Expected Result: ${expectedResult}`;
     } catch (error) {
       console.error('Error extracting DOM:', error);
       sendResponse({ features: [], error: error.message });
+    }
+  }
+
+  /**
+   * NEW: Handle get error patterns request
+   */
+  function handleGetErrorPatterns(sendResponse) {
+    try {
+      const extractor = new DOMExtractor();
+      extractor.extract(); // This populates errorPatterns
+      const errorPatterns = extractor.getErrorPatterns();
+      sendResponse({ errorPatterns });
+    } catch (error) {
+      console.error('Error getting error patterns:', error);
+      sendResponse({ errorPatterns: [], error: error.message });
+    }
+  }
+
+  /**
+   * NEW: Handle get page hints request
+   */
+  function handleGetPageHints(sendResponse) {
+    try {
+      const extractor = new DOMExtractor();
+      extractor.extract(); // This populates pageHints
+      const pageHints = extractor.getPageHints();
+      sendResponse({ pageHints });
+    } catch (error) {
+      console.error('Error getting page hints:', error);
+      sendResponse({ pageHints: {}, error: error.message });
     }
   }
 

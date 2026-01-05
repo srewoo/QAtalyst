@@ -1,14 +1,31 @@
 /**
  * DOM Extractor - Extract features from web pages
- * Version: 11.0.0
+ * Version: 12.0.0 - Enhanced with intent detection, accessibility, and interaction patterns
  * Identifies forms, tables, buttons, navigation, and other UI elements
  */
 
 // Prevent redeclaration errors if script is injected multiple times
 if (typeof DOMExtractor === 'undefined') {
+
+  /**
+   * Safe config getter - handles cases where CONFIG is not available
+   */
+  function getConfig(path, defaultValue) {
+    try {
+      if (typeof CONFIG !== 'undefined' && typeof CONFIG.get === 'function') {
+        return CONFIG.get(path, defaultValue);
+      }
+    } catch (e) {
+      // CONFIG not available, use default
+    }
+    return defaultValue;
+  }
+
   class DOMExtractor {
     constructor() {
       this.features = [];
+      this.errorPatterns = [];
+      this.pageHints = {};
     }
 
   /**
@@ -17,6 +34,8 @@ if (typeof DOMExtractor === 'undefined') {
    */
   extract() {
     this.features = [];
+    this.errorPatterns = [];
+    this.pageHints = {};
 
     try {
       // Extract different feature types
@@ -28,7 +47,13 @@ if (typeof DOMExtractor === 'undefined') {
       this.features.push(...this.extractCards());
       this.features.push(...this.extractLists());
 
-      console.log(`📊 DOM Extraction: Found ${this.features.length} features`);
+      // NEW: Extract error message patterns
+      this.errorPatterns = this.extractErrorPatterns();
+
+      // NEW: Detect page-level hints (lazy load, dynamic content)
+      this.pageHints = this.detectPageHints();
+
+      console.log(`📊 DOM Extraction: Found ${this.features.length} features, ${this.errorPatterns.length} error patterns`);
     } catch (error) {
       console.error('❌ DOM extraction error:', error);
     }
@@ -37,25 +62,79 @@ if (typeof DOMExtractor === 'undefined') {
   }
 
   /**
-   * Extract form features
+   * Get extracted error patterns
+   */
+  getErrorPatterns() {
+    return this.errorPatterns;
+  }
+
+  /**
+   * Get page-level hints
+   */
+  getPageHints() {
+    return this.pageHints;
+  }
+
+  /**
+   * Extract form features with enhanced field dependencies and accessibility
    */
   extractForms() {
-    const maxForms = CONFIG.get('domExtraction.features.forms.maxForms', 10);
+    const maxForms = getConfig('domExtraction.features.forms.maxForms', 10);
     const forms = document.querySelectorAll('form');
-    const formsArray = Array.from(forms).slice(0, maxForms); // MEMORY OPTIMIZATION: Limit forms processed
+    const formsArray = Array.from(forms).slice(0, maxForms);
     return formsArray.map((form, index) => {
       const fields = Array.from(form.querySelectorAll('input, select, textarea'))
-        .map(field => ({
-          name: field.name || field.id || field.placeholder || `field_${index}`,
-          type: field.type || field.tagName.toLowerCase(),
-          required: field.required || field.hasAttribute('required'),
-          placeholder: field.placeholder || '',
-          label: this.getFieldLabel(field),
-          validation: this.getFieldValidation(field)
-        }))
-        .filter(field => field.type !== 'hidden'); // Exclude hidden fields
+        .map(field => {
+          const fieldData = {
+            name: field.name || field.id || field.placeholder || `field_${index}`,
+            type: field.type || field.tagName.toLowerCase(),
+            required: field.required || field.hasAttribute('required'),
+            placeholder: field.placeholder || '',
+            label: this.getFieldLabel(field),
+            validation: this.getFieldValidation(field)
+          };
+
+          // NEW: Extract field dependencies (conditional visibility)
+          const dependencies = this.getFieldDependencies(field);
+          if (dependencies) {
+            fieldData._dependencies = dependencies;
+          }
+
+          // NEW: Extract accessibility attributes
+          const a11y = this.getFieldAccessibility(field);
+          if (Object.keys(a11y).length > 0) {
+            fieldData._a11y = a11y;
+          }
+
+          // NEW: Detect field format hints from placeholder/pattern
+          const formatHints = this.getFieldFormatHints(field);
+          if (formatHints) {
+            fieldData._formatHints = formatHints;
+          }
+
+          return fieldData;
+        })
+        .filter(field => field.type !== 'hidden');
 
       const submitButton = form.querySelector('button[type="submit"], input[type="submit"]');
+
+      // NEW: Detect form intent and characteristics
+      const formMetadata = {
+        intent: this.detectFormIntent(form),
+        hasAsyncValidation: this.hasAsyncValidation(form),
+        isMultiStep: this.isMultiStepForm(form),
+        hasFileUpload: !!form.querySelector('input[type="file"]'),
+        hasPasswordField: !!form.querySelector('input[type="password"]'),
+        autocompleteEnabled: form.autocomplete !== 'off'
+      };
+
+      // NEW: Form-level accessibility
+      const formA11y = {
+        ariaLabel: form.getAttribute('aria-label'),
+        ariaDescribedBy: form.getAttribute('aria-describedby'),
+        role: form.getAttribute('role') || 'form',
+        noValidate: form.hasAttribute('novalidate')
+      };
 
       return {
         type: 'form',
@@ -65,18 +144,155 @@ if (typeof DOMExtractor === 'undefined') {
         fields,
         submitText: submitButton?.textContent?.trim() || submitButton?.value || 'Submit',
         fieldCount: fields.length,
-        selector: this.getSelector(form)
+        selector: this.getSelector(form),
+        _metadata: formMetadata,
+        _a11y: formA11y
       };
-    }).filter(form => form.fields.length > 0); // Only include forms with visible fields
+    }).filter(form => form.fields.length > 0);
   }
 
   /**
-   * Extract table features
+   * Detect field dependencies (show/hide conditions)
+   */
+  getFieldDependencies(field) {
+    const dependencies = {};
+    const parent = field.closest('[data-show-when], [data-depends-on], [ng-if], [v-if], [*ngIf]') || field;
+
+    // Check common conditional display attributes
+    const showWhen = parent.dataset.showWhen || parent.getAttribute('data-show-when');
+    const dependsOn = parent.dataset.dependsOn || parent.getAttribute('data-depends-on');
+    const ngIf = parent.getAttribute('ng-if') || parent.getAttribute('*ngIf');
+    const vIf = parent.getAttribute('v-if');
+    const vShow = parent.getAttribute('v-show');
+
+    if (showWhen) dependencies.showWhen = showWhen;
+    if (dependsOn) dependencies.dependsOn = dependsOn;
+    if (ngIf) dependencies.angularCondition = ngIf;
+    if (vIf) dependencies.vueCondition = vIf;
+    if (vShow) dependencies.vueShow = vShow;
+
+    // Check if field is in a conditional container
+    const conditionalParent = field.closest('.conditional, .dependent-field, [class*="conditional"], [class*="dependent"]');
+    if (conditionalParent) {
+      dependencies.hasConditionalParent = true;
+    }
+
+    return Object.keys(dependencies).length > 0 ? dependencies : null;
+  }
+
+  /**
+   * Extract field accessibility attributes
+   */
+  getFieldAccessibility(field) {
+    const a11y = {};
+
+    const ariaLabel = field.getAttribute('aria-label');
+    const ariaDescribedBy = field.getAttribute('aria-describedby');
+    const ariaRequired = field.getAttribute('aria-required');
+    const ariaInvalid = field.getAttribute('aria-invalid');
+    const role = field.getAttribute('role');
+    const tabIndex = field.getAttribute('tabindex');
+
+    if (ariaLabel) a11y.ariaLabel = ariaLabel;
+    if (ariaDescribedBy) a11y.ariaDescribedBy = ariaDescribedBy;
+    if (ariaRequired) a11y.ariaRequired = ariaRequired === 'true';
+    if (ariaInvalid) a11y.ariaInvalid = ariaInvalid;
+    if (role) a11y.role = role;
+    if (tabIndex) a11y.tabIndex = parseInt(tabIndex, 10);
+
+    // Check for associated error/help text elements
+    if (ariaDescribedBy) {
+      const helpEl = document.getElementById(ariaDescribedBy);
+      if (helpEl) {
+        a11y.helpText = helpEl.textContent.trim().substring(0, 100);
+      }
+    }
+
+    return a11y;
+  }
+
+  /**
+   * Get field format hints from placeholder and attributes
+   */
+  getFieldFormatHints(field) {
+    const hints = {};
+
+    // Extract format from placeholder
+    const placeholder = field.placeholder || '';
+    if (placeholder.includes('@')) hints.format = 'email';
+    else if (placeholder.match(/\d{2,}[-/]\d{2,}/)) hints.format = 'date';
+    else if (placeholder.match(/\(\d{3}\)|\d{3}-\d{3}/)) hints.format = 'phone';
+    else if (placeholder.match(/\$|USD|EUR/)) hints.format = 'currency';
+
+    // Check for input masks
+    const mask = field.dataset.mask || field.getAttribute('data-inputmask');
+    if (mask) hints.mask = mask;
+
+    // Check for date/time pickers
+    if (field.type === 'date' || field.type === 'datetime-local' || field.type === 'time') {
+      hints.format = field.type;
+    }
+
+    return Object.keys(hints).length > 0 ? hints : null;
+  }
+
+  /**
+   * Detect form intent based on fields and structure
+   */
+  detectFormIntent(form) {
+    const formText = (form.name + ' ' + form.id + ' ' + form.className).toLowerCase();
+    const hasPassword = !!form.querySelector('input[type="password"]');
+    const hasEmail = !!form.querySelector('input[type="email"]');
+    const hasSearch = !!form.querySelector('input[type="search"]');
+    const hasFile = !!form.querySelector('input[type="file"]');
+
+    if (formText.includes('login') || formText.includes('signin')) return 'login';
+    if (formText.includes('signup') || formText.includes('register')) return 'registration';
+    if (formText.includes('search')) return 'search';
+    if (formText.includes('contact')) return 'contact';
+    if (formText.includes('checkout') || formText.includes('payment')) return 'checkout';
+    if (formText.includes('filter')) return 'filter';
+    if (hasPassword && hasEmail && form.querySelectorAll('input').length <= 3) return 'login';
+    if (hasPassword && form.querySelectorAll('input').length > 3) return 'registration';
+    if (hasSearch) return 'search';
+    if (hasFile) return 'upload';
+
+    return 'general';
+  }
+
+  /**
+   * Check if form has async validation
+   */
+  hasAsyncValidation(form) {
+    // Check for common async validation patterns
+    const fields = form.querySelectorAll('input, textarea');
+    for (const field of fields) {
+      if (field.dataset.validate || field.dataset.asyncValidate ||
+          field.getAttribute('data-validate-async') ||
+          field.classList.contains('async-validate')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Check if form is multi-step
+   */
+  isMultiStepForm(form) {
+    const hasSteps = form.querySelector('.step, .wizard-step, [class*="step-"], [data-step]');
+    const hasProgress = form.querySelector('.progress, .progress-bar, [class*="progress"]');
+    const hasNextPrev = form.querySelector('[class*="next"], [class*="prev"], [class*="previous"]');
+    return !!(hasSteps || (hasProgress && hasNextPrev));
+  }
+
+  /**
+   * Extract table features with enhanced interaction detection
    */
   extractTables() {
-    const maxTables = CONFIG.get('domExtraction.features.tables.maxTables', 10);
+    const maxTables = getConfig('domExtraction.features.tables.maxTables', 10);
     const tables = document.querySelectorAll('table');
-    const tablesArray = Array.from(tables).slice(0, maxTables); // MEMORY OPTIMIZATION: Limit tables processed
+    const tablesArray = Array.from(tables).slice(0, maxTables);
     return tablesArray.map((table, index) => {
       const headers = Array.from(table.querySelectorAll('th'))
         .map(th => th.textContent.trim())
@@ -87,8 +303,19 @@ if (typeof DOMExtractor === 'undefined') {
       // Extract action buttons in table
       const actions = Array.from(table.querySelectorAll('button, a[role="button"]'))
         .map(btn => btn.textContent.trim())
-        .filter((text, i, arr) => text && arr.indexOf(text) === i) // Unique actions
-        .slice(0, 5); // Limit to 5 unique actions
+        .filter((text, i, arr) => text && arr.indexOf(text) === i)
+        .slice(0, 5);
+
+      // NEW: Detect table interaction capabilities
+      const interactions = this.detectTableInteractions(table);
+
+      // NEW: Table accessibility
+      const a11y = {
+        ariaLabel: table.getAttribute('aria-label'),
+        ariaDescribedBy: table.getAttribute('aria-describedby'),
+        role: table.getAttribute('role') || 'table',
+        caption: table.querySelector('caption')?.textContent.trim()
+      };
 
       return {
         type: 'table',
@@ -98,13 +325,68 @@ if (typeof DOMExtractor === 'undefined') {
         rowCount,
         actions,
         isPaginated: this.hasPagination(table),
-        selector: this.getSelector(table)
+        selector: this.getSelector(table),
+        _interactions: interactions,
+        _a11y: a11y
       };
     }).filter(table => table.rowCount > 0);
   }
 
   /**
-   * Extract button features
+   * Detect table interaction capabilities
+   */
+  detectTableInteractions(table) {
+    const interactions = {};
+
+    // Check for sortable columns
+    const sortableHeaders = table.querySelectorAll('th[aria-sort], th.sortable, th[data-sortable], th .sort-icon');
+    if (sortableHeaders.length > 0) {
+      interactions.sortable = true;
+      interactions.sortableColumns = Array.from(sortableHeaders).map(th => th.textContent.trim()).slice(0, 10);
+    }
+
+    // Check for filterable columns
+    const filterInputs = table.querySelectorAll('input[type="search"], input.filter, [class*="filter"]');
+    if (filterInputs.length > 0) {
+      interactions.filterable = true;
+    }
+
+    // Check for row selection (checkboxes)
+    const rowCheckboxes = table.querySelectorAll('tbody input[type="checkbox"], tbody input[type="radio"]');
+    if (rowCheckboxes.length > 0) {
+      interactions.rowSelection = true;
+      interactions.selectionType = rowCheckboxes[0].type === 'checkbox' ? 'multiple' : 'single';
+    }
+
+    // Check for expandable rows
+    const expandables = table.querySelectorAll('[aria-expanded], .expandable-row, [data-toggle="collapse"]');
+    if (expandables.length > 0) {
+      interactions.expandableRows = true;
+    }
+
+    // Check for inline editing
+    const editables = table.querySelectorAll('[contenteditable="true"], .editable, [data-editable]');
+    if (editables.length > 0) {
+      interactions.inlineEditing = true;
+    }
+
+    // Check for drag and drop
+    const draggables = table.querySelectorAll('[draggable="true"], .drag-handle, [class*="drag"]');
+    if (draggables.length > 0) {
+      interactions.dragAndDrop = true;
+    }
+
+    // Check for bulk actions
+    const bulkActions = table.closest('.table-container, .data-table')?.querySelector('.bulk-actions, [class*="bulk"]');
+    if (bulkActions) {
+      interactions.bulkActions = true;
+    }
+
+    return Object.keys(interactions).length > 0 ? interactions : null;
+  }
+
+  /**
+   * Extract button features with intent detection and handler parsing
    */
   extractButtons() {
     const buttons = document.querySelectorAll('button:not([type="submit"]), a.btn, a.button, [role="button"]');
@@ -117,24 +399,189 @@ if (typeof DOMExtractor === 'undefined') {
         const title = btn.getAttribute('title');
         const displayText = text || ariaLabel || title || 'Unnamed Button';
 
+        // NEW: Parse onclick handler
+        const handler = this.parseButtonHandler(btn);
+
+        // NEW: Detect button intent
+        const intent = this.detectButtonIntent(btn, displayText);
+
+        // NEW: Check for confirmation requirement
+        const requiresConfirmation = this.buttonRequiresConfirmation(btn);
+
+        // NEW: Accessibility attributes
+        const a11y = {
+          ariaLabel: ariaLabel,
+          ariaDescribedBy: btn.getAttribute('aria-describedby'),
+          ariaExpanded: btn.getAttribute('aria-expanded'),
+          ariaHaspopup: btn.getAttribute('aria-haspopup'),
+          ariaControls: btn.getAttribute('aria-controls'),
+          role: btn.getAttribute('role') || 'button'
+        };
+
         return {
           type: 'button',
           text: displayText,
-          action: btn.onclick?.toString().substring(0, 50) || btn.href || 'Unknown',
+          action: btn.onclick?.toString().substring(0, 100) || btn.href || 'Unknown',
           className: btn.className,
           disabled: btn.disabled || btn.hasAttribute('disabled'),
-          selector: this.getSelector(btn)
+          selector: this.getSelector(btn),
+          _handler: handler,
+          _intent: intent,
+          _requiresConfirmation: requiresConfirmation,
+          _a11y: Object.keys(a11y).some(k => a11y[k]) ? a11y : undefined
         };
       })
       .filter(btn => {
-        // Remove duplicates and empty buttons
         if (!btn.text || btn.text.length === 0 || seen.has(btn.text)) {
           return false;
         }
         seen.add(btn.text);
         return true;
       })
-      .slice(0, CONFIG.get('domExtraction.features.buttons.maxButtons', 50)); // Limit buttons
+      .slice(0, getConfig('domExtraction.features.buttons.maxButtons', 50));
+  }
+
+  /**
+   * Parse button click handler
+   */
+  parseButtonHandler(btn) {
+    const handler = {};
+
+    // Get onclick attribute
+    const onclickAttr = btn.getAttribute('onclick');
+    if (onclickAttr) {
+      handler.onclick = onclickAttr.substring(0, 200);
+      handler.type = 'inline';
+
+      // Try to extract function name
+      const funcMatch = onclickAttr.match(/(\w+)\s*\(/);
+      if (funcMatch) {
+        handler.functionName = funcMatch[1];
+      }
+    }
+
+    // Check for data-action attributes (common in frameworks)
+    const dataAction = btn.dataset.action || btn.getAttribute('data-action');
+    if (dataAction) {
+      handler.dataAction = dataAction;
+      handler.type = 'data-attribute';
+    }
+
+    // Check for Angular/Vue/React patterns
+    const ngClick = btn.getAttribute('ng-click') || btn.getAttribute('(click)');
+    const vOnClick = btn.getAttribute('v-on:click') || btn.getAttribute('@click');
+
+    if (ngClick) {
+      handler.angularHandler = ngClick;
+      handler.type = 'angular';
+    }
+    if (vOnClick) {
+      handler.vueHandler = vOnClick;
+      handler.type = 'vue';
+    }
+
+    // Check for form association
+    const form = btn.form || btn.closest('form');
+    if (form) {
+      handler.associatedForm = form.name || form.id || 'unnamed-form';
+    }
+
+    // Check for modal/dialog triggers
+    const modalTarget = btn.dataset.target || btn.dataset.bsTarget || btn.getAttribute('data-toggle');
+    if (modalTarget) {
+      handler.opensModal = modalTarget;
+      handler.type = 'modal-trigger';
+    }
+
+    return Object.keys(handler).length > 0 ? handler : null;
+  }
+
+  /**
+   * Detect button intent based on text and attributes
+   */
+  detectButtonIntent(btn, text) {
+    const lowerText = text.toLowerCase();
+    const className = (btn.className || '').toLowerCase();
+    const allText = lowerText + ' ' + className;
+
+    // Destructive actions
+    if (allText.match(/delete|remove|destroy|cancel|clear|reset/)) {
+      return { type: 'destructive', action: lowerText.includes('delete') ? 'delete' : 'remove' };
+    }
+
+    // Submit/Save actions
+    if (allText.match(/submit|save|create|add|post|send|apply/)) {
+      return { type: 'submit', action: lowerText.includes('save') ? 'save' : 'submit' };
+    }
+
+    // Edit/Update actions
+    if (allText.match(/edit|update|modify|change/)) {
+      return { type: 'edit', action: 'edit' };
+    }
+
+    // Navigation actions
+    if (allText.match(/next|previous|prev|back|forward|continue/)) {
+      return { type: 'navigation', action: lowerText.includes('next') ? 'next' : 'back' };
+    }
+
+    // Toggle actions
+    if (allText.match(/toggle|switch|enable|disable|show|hide/)) {
+      return { type: 'toggle', action: 'toggle' };
+    }
+
+    // Download/Export actions
+    if (allText.match(/download|export|print/)) {
+      return { type: 'export', action: lowerText.includes('download') ? 'download' : 'export' };
+    }
+
+    // Upload actions
+    if (allText.match(/upload|import|attach/)) {
+      return { type: 'import', action: 'upload' };
+    }
+
+    // Search/Filter actions
+    if (allText.match(/search|filter|find/)) {
+      return { type: 'search', action: 'search' };
+    }
+
+    // Expand/Collapse
+    if (btn.getAttribute('aria-expanded') !== null) {
+      return { type: 'expand', action: 'toggle-expand' };
+    }
+
+    // Modal/Dialog openers
+    if (btn.dataset.toggle === 'modal' || btn.dataset.bsToggle === 'modal') {
+      return { type: 'modal', action: 'open-modal' };
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if button requires confirmation
+   */
+  buttonRequiresConfirmation(btn) {
+    const text = (btn.textContent || '').toLowerCase();
+    const className = (btn.className || '').toLowerCase();
+    const allText = text + ' ' + className;
+
+    // Destructive actions typically require confirmation
+    if (allText.match(/delete|remove|destroy|cancel|reset|clear/)) {
+      return true;
+    }
+
+    // Check for confirmation-related attributes
+    if (btn.dataset.confirm || btn.getAttribute('data-confirm') ||
+        btn.dataset.confirmMessage || btn.getAttribute('data-confirm-message')) {
+      return true;
+    }
+
+    // Check for danger/warning styling
+    if (className.match(/danger|warning|destructive|delete/)) {
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -150,7 +597,7 @@ if (typeof DOMExtractor === 'undefined') {
           href: a.href
         }))
         .filter(link => link.text.length > 0)
-        .slice(0, CONFIG.get('domExtraction.features.navigation.maxItems', 20)); // Limit nav items
+        .slice(0, getConfig('domExtraction.features.navigation.maxItems', 20)); // Limit nav items
 
       return {
         type: 'navigation',
@@ -166,7 +613,7 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract modal/dialog features
    */
   extractModals() {
-    const maxModals = CONFIG.get('domExtraction.features.modals.maxModals', 5);
+    const maxModals = getConfig('domExtraction.features.modals.maxModals', 5);
     const modals = document.querySelectorAll('[role="dialog"], .modal, [aria-modal="true"]');
     const modalsArray = Array.from(modals).slice(0, maxModals); // MEMORY OPTIMIZATION: Limit modals
     return modalsArray.map((modal, index) => {
@@ -190,7 +637,7 @@ if (typeof DOMExtractor === 'undefined') {
     return Array.from(cards)
       .map((card, index) => {
         const title = card.querySelector('h1, h2, h3, h4, .card-title, .panel-title');
-        const maxContentLength = CONFIG.get('domExtraction.features.cards.maxContentLength', 100);
+        const maxContentLength = getConfig('domExtraction.features.cards.maxContentLength', 100);
         const text = card.textContent.trim().substring(0, maxContentLength);
 
         return {
@@ -200,7 +647,7 @@ if (typeof DOMExtractor === 'undefined') {
           selector: this.getSelector(card)
         };
       })
-      .slice(0, CONFIG.get('domExtraction.features.cards.maxCards', 20)); // Limit cards
+      .slice(0, getConfig('domExtraction.features.cards.maxCards', 20)); // Limit cards
   }
 
   /**
@@ -208,9 +655,9 @@ if (typeof DOMExtractor === 'undefined') {
    */
   extractLists() {
     const lists = document.querySelectorAll('ul, ol');
-    const minItems = CONFIG.get('domExtraction.features.lists.minItems', 3);
-    const maxItemsPerList = CONFIG.get('domExtraction.features.lists.maxItemsPerList', 10);
-    const maxLists = CONFIG.get('domExtraction.features.lists.maxLists', 10);
+    const minItems = getConfig('domExtraction.features.lists.minItems', 3);
+    const maxItemsPerList = getConfig('domExtraction.features.lists.maxItemsPerList', 10);
+    const maxLists = getConfig('domExtraction.features.lists.maxLists', 10);
 
     return Array.from(lists)
       .filter(list => {
@@ -532,6 +979,214 @@ if (typeof DOMExtractor === 'undefined') {
       }
     }
     return element.tagName.toLowerCase();
+  }
+
+  /**
+   * Extract error message patterns from the page
+   */
+  extractErrorPatterns() {
+    const patterns = [];
+    const seen = new Set();
+
+    // Common error message selectors
+    const errorSelectors = [
+      '.error', '.error-message', '.error-text', '.has-error',
+      '.alert-danger', '.alert-error', '.validation-error',
+      '[role="alert"]', '.invalid-feedback', '.field-error',
+      '.form-error', '.input-error', '.text-danger', '.text-error',
+      '[aria-invalid="true"] + .error', '.help-block.error',
+      '.parsley-errors-list', '.errorMessage', '.form-text.text-danger'
+    ];
+
+    const errorElements = document.querySelectorAll(errorSelectors.join(', '));
+
+    Array.from(errorElements).slice(0, 20).forEach(el => {
+      const message = el.textContent.trim();
+      if (message && message.length > 2 && message.length < 200 && !seen.has(message)) {
+        seen.add(message);
+
+        // Try to find associated field
+        const field = this.findAssociatedField(el);
+
+        patterns.push({
+          message: message,
+          type: this.categorizeError(message),
+          field: field,
+          selector: this.getSelector(el),
+          visible: this.isVisible(el)
+        });
+      }
+    });
+
+    return patterns;
+  }
+
+  /**
+   * Find field associated with an error message
+   */
+  findAssociatedField(errorEl) {
+    // Check for aria-describedby reference
+    const describedById = errorEl.id;
+    if (describedById) {
+      const field = document.querySelector(`[aria-describedby="${describedById}"]`);
+      if (field) return field.name || field.id;
+    }
+
+    // Check for label relationship
+    const label = errorEl.closest('label');
+    if (label && label.htmlFor) {
+      return label.htmlFor;
+    }
+
+    // Check sibling input
+    const siblingInput = errorEl.previousElementSibling?.matches('input, select, textarea')
+      ? errorEl.previousElementSibling
+      : errorEl.parentElement?.querySelector('input, select, textarea');
+
+    if (siblingInput) {
+      return siblingInput.name || siblingInput.id;
+    }
+
+    // Check parent form-group
+    const formGroup = errorEl.closest('.form-group, .field-wrapper, .input-group');
+    if (formGroup) {
+      const input = formGroup.querySelector('input, select, textarea');
+      if (input) return input.name || input.id;
+    }
+
+    return null;
+  }
+
+  /**
+   * Categorize error message type
+   */
+  categorizeError(message) {
+    const lowerMessage = message.toLowerCase();
+
+    if (lowerMessage.match(/required|empty|blank|missing/)) return 'required';
+    if (lowerMessage.match(/email|@/)) return 'email-format';
+    if (lowerMessage.match(/password|weak|strong/)) return 'password';
+    if (lowerMessage.match(/min|max|length|character/)) return 'length';
+    if (lowerMessage.match(/number|numeric|digit/)) return 'numeric';
+    if (lowerMessage.match(/date|time/)) return 'date';
+    if (lowerMessage.match(/match|confirm|same/)) return 'match';
+    if (lowerMessage.match(/unique|exist|already|taken/)) return 'uniqueness';
+    if (lowerMessage.match(/invalid|incorrect|format/)) return 'format';
+    if (lowerMessage.match(/server|network|connection/)) return 'server';
+    if (lowerMessage.match(/permission|access|denied|unauthorized/)) return 'permission';
+
+    return 'validation';
+  }
+
+  /**
+   * Detect page-level hints for testing
+   */
+  detectPageHints() {
+    const hints = {};
+
+    // Lazy load detection
+    const lazyImages = document.querySelectorAll('img[loading="lazy"], img[data-src], img.lazyload, [data-lazy]');
+    if (lazyImages.length > 0) {
+      hints.hasLazyLoad = true;
+      hints.lazyLoadCount = lazyImages.length;
+    }
+
+    // Infinite scroll detection
+    const infiniteScrollIndicators = document.querySelectorAll(
+      '[data-infinite-scroll], .infinite-scroll, [class*="infinite"], [data-next-page]'
+    );
+    if (infiniteScrollIndicators.length > 0 || this.hasScrollListener()) {
+      hints.hasInfiniteScroll = true;
+    }
+
+    // Dynamic content detection
+    const dynamicContainers = document.querySelectorAll(
+      '[data-loading], [data-loaded], .loading, .skeleton, [class*="loading"], [class*="skeleton"]'
+    );
+    if (dynamicContainers.length > 0) {
+      hints.hasDynamicContent = true;
+    }
+
+    // Modal/Dialog detection
+    const modals = document.querySelectorAll('[role="dialog"], .modal, [aria-modal="true"]');
+    if (modals.length > 0) {
+      hints.hasModals = true;
+      hints.modalCount = modals.length;
+    }
+
+    // Expandable content detection
+    const expandables = document.querySelectorAll('[aria-expanded], .accordion, .collapsible, [data-toggle="collapse"]');
+    if (expandables.length > 0) {
+      hints.hasExpandableContent = true;
+      hints.expandableCount = expandables.length;
+    }
+
+    // Tab content detection
+    const tabs = document.querySelectorAll('[role="tablist"], .tabs, .tab-content');
+    if (tabs.length > 0) {
+      hints.hasTabs = true;
+    }
+
+    // Tooltip/Popover detection
+    const tooltips = document.querySelectorAll('[data-toggle="tooltip"], [data-tooltip], .tooltip, [title]:not(a):not(img)');
+    if (tooltips.length > 5) {
+      hints.hasTooltips = true;
+    }
+
+    // Real-time update indicators
+    const realTimeElements = document.querySelectorAll(
+      '[data-live], [data-refresh], .live-update, [class*="realtime"], [class*="live"]'
+    );
+    if (realTimeElements.length > 0) {
+      hints.hasRealTimeUpdates = true;
+    }
+
+    // Check for SPA framework indicators
+    hints.spaFramework = this.detectSPAFramework();
+
+    // Keyboard shortcuts detection
+    if (document.querySelector('[data-hotkey], [accesskey]')) {
+      hints.hasKeyboardShortcuts = true;
+    }
+
+    return hints;
+  }
+
+  /**
+   * Check if page has scroll event listeners (for infinite scroll)
+   */
+  hasScrollListener() {
+    // Check for common infinite scroll libraries
+    return !!(
+      window.IntersectionObserver ||
+      document.querySelector('[data-observer], [data-waypoint]') ||
+      typeof window.InfiniteScroll !== 'undefined'
+    );
+  }
+
+  /**
+   * Detect SPA framework
+   */
+  detectSPAFramework() {
+    if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__ || document.querySelector('[data-reactroot], [data-reactid]')) {
+      return 'react';
+    }
+    if (window.__VUE__ || document.querySelector('[data-v-]')) {
+      return 'vue';
+    }
+    if (window.ng || document.querySelector('[ng-version], [_ngcontent]')) {
+      return 'angular';
+    }
+    if (window.Ember || document.querySelector('.ember-view')) {
+      return 'ember';
+    }
+    if (window.__NEXT_DATA__) {
+      return 'nextjs';
+    }
+    if (window.__NUXT__) {
+      return 'nuxt';
+    }
+    return null;
   }
   }
 
