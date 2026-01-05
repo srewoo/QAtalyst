@@ -695,6 +695,7 @@
           <h3>QAtalyst</h3>
         </div>
         <div class="qatalyst-header-buttons">
+          <button class="qatalyst-minimize" id="qatalyst-minimize" title="Minimize">−</button>
           <button class="qatalyst-expand" id="qatalyst-expand" title="Expand/Collapse">⇔</button>
           <button class="qatalyst-close" id="qatalyst-close">×</button>
         </div>
@@ -1398,6 +1399,22 @@
       document.getElementById('qatalyst-panel').style.display = 'none';
     });
 
+    // Minimize button
+    document.getElementById('qatalyst-minimize')?.addEventListener('click', () => {
+      const panel = document.getElementById('qatalyst-panel');
+      const minimizeBtn = document.getElementById('qatalyst-minimize');
+      const isMinimized = panel.classList.toggle('minimized');
+
+      // Update button icon and title
+      if (isMinimized) {
+        minimizeBtn.innerHTML = '□';
+        minimizeBtn.title = 'Restore';
+      } else {
+        minimizeBtn.innerHTML = '−';
+        minimizeBtn.title = 'Minimize';
+      }
+    });
+
     // Expand button
     document.getElementById('qatalyst-expand')?.addEventListener('click', () => {
       const panel = document.getElementById('qatalyst-panel');
@@ -1450,11 +1467,26 @@
     return errors;
   }
   
+  /**
+   * Set activity indicator on panel (shows green dot when minimized)
+   */
+  function setActivityIndicator(isActive) {
+    const panel = document.getElementById('qatalyst-panel');
+    if (panel) {
+      if (isActive) {
+        panel.classList.add('has-activity');
+      } else {
+        panel.classList.remove('has-activity');
+      }
+    }
+  }
+
   // Handle analyze requirements
   async function handleAnalyze(ticketKey, ticketData) {
     const resultsContainer = document.getElementById('results-container');
     const btn = document.getElementById('analyze-btn');
     btn.disabled = true;
+    setActivityIndicator(true);
 
     try {
       const settings = await loadAndDecryptSettings([
@@ -1567,9 +1599,10 @@
       resultsContainer.appendChild(createSafeErrorMessage(error.message));
     } finally {
       btn.disabled = false;
+      setActivityIndicator(false);
     }
   }
-  
+
   // Handle test scope generation
   async function handleTestScope(ticketKey, ticketData) {
     const resultsContainer = document.getElementById('results-container');
@@ -1585,7 +1618,8 @@
     }
     
     btn.disabled = true;
-    
+    setActivityIndicator(true);
+
     try {
       const settings = await loadAndDecryptSettings([
         'llmProvider', 'llmModel', 'apiKey', 'enableStreaming',
@@ -1697,14 +1731,16 @@
       resultsContainer.appendChild(createSafeErrorMessage(error.message));
     } finally {
       btn.disabled = false;
+      setActivityIndicator(false);
     }
   }
-  
+
   // Handle test cases generation
   async function handleTestCases(ticketKey, ticketData) {
     const resultsContainer = document.getElementById('results-container');
     const btn = document.getElementById('test-cases-btn');
     btn.disabled = true;
+    setActivityIndicator(true);
     
     try {
       const settings = await loadAndDecryptSettings([
@@ -1914,9 +1950,10 @@
       resultsContainer.appendChild(createSafeErrorMessage(error.message));
     } finally {
       btn.disabled = false;
+      setActivityIndicator(false);
     }
   }
-  
+
   // Store current results for review feature
   let currentAnalysisData = null;
   let currentTestScopeData = null;
