@@ -15,13 +15,20 @@ const modelOptions = {
   gemini: [
     { value: 'gemini-2.5-pro-exp-03', label: 'Gemini 2.5 Pro (Recommended)' },
     { value: 'gemini-2.5-flash-exp', label: 'Gemini 2.5 Flash (Fast & Cheap)' }
+  ],
+  bedrock: [
+    { value: 'anthropic.claude-sonnet-4-5-20250514-v1:0', label: 'Claude 4.5 Sonnet (Recommended)' },
+    { value: 'anthropic.claude-opus-4-20250514-v1:0', label: 'Claude Opus 4' },
+    { value: 'anthropic.claude-3-5-sonnet-20241022-v2:0', label: 'Claude 3.5 Sonnet v2' },
+    { value: 'anthropic.claude-3-5-haiku-20241022-v1:0', label: 'Claude 3.5 Haiku (Fast & Cheap)' }
   ]
 };
 
 const keyLinks = {
   openai: 'https://platform.openai.com/api-keys',
   claude: 'https://console.anthropic.com/settings/keys',
-  gemini: 'https://aistudio.google.com/app/apikey'
+  gemini: 'https://aistudio.google.com/app/apikey',
+  bedrock: 'https://docs.aws.amazon.com/bedrock/latest/userguide/setting-up.html'
 };
 
 // Input validation utilities
@@ -233,23 +240,36 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (settings.testrailApiKey) {
     settings.testrailApiKey = await securityManager.decryptApiKeyFromStorage(settings.testrailApiKey);
   }
-  
+  if (settings.bedrockSecretKey) {
+    settings.bedrockSecretKey = await securityManager.decryptApiKeyFromStorage(settings.bedrockSecretKey);
+  }
+
   // API Settings
   if (settings.llmProvider) {
     document.getElementById('llmProvider').value = settings.llmProvider;
     updateModelOptions(settings.llmProvider);
     updateKeyLink(settings.llmProvider);
+    toggleBedrockFields(settings.llmProvider);
   } else {
     updateModelOptions('openai');
     updateKeyLink('openai');
   }
-  
+
   if (settings.llmModel) {
     document.getElementById('llmModel').value = settings.llmModel;
   }
-  
+
   if (settings.apiKey) {
     document.getElementById('apiKey').value = settings.apiKey;
+  }
+  if (settings.bedrockAccessKeyId) {
+    document.getElementById('bedrockAccessKeyId').value = settings.bedrockAccessKeyId;
+  }
+  if (settings.bedrockSecretKey) {
+    document.getElementById('bedrockSecretKey').value = settings.bedrockSecretKey;
+  }
+  if (settings.bedrockRegion) {
+    document.getElementById('bedrockRegion').value = settings.bedrockRegion;
   }
   
   document.getElementById('temperature').value = settings.temperature || 0.7;
@@ -426,7 +446,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 document.getElementById('llmProvider').addEventListener('change', (e) => {
   updateModelOptions(e.target.value);
   updateKeyLink(e.target.value);
+  toggleBedrockFields(e.target.value);
 });
+
+function toggleBedrockFields(provider) {
+  const apiKeyGroup = document.getElementById('apiKeyGroup');
+  const bedrockGroup = document.getElementById('bedrockCredentialsGroup');
+  if (provider === 'bedrock') {
+    apiKeyGroup.style.display = 'none';
+    bedrockGroup.style.display = 'block';
+  } else {
+    apiKeyGroup.style.display = 'block';
+    bedrockGroup.style.display = 'none';
+  }
+}
 
 function updateModelOptions(provider) {
   const modelSelect = document.getElementById('llmModel');
@@ -453,6 +486,9 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     llmProvider: document.getElementById('llmProvider').value,
     llmModel: document.getElementById('llmModel').value,
     apiKey: document.getElementById('apiKey').value,
+    bedrockAccessKeyId: document.getElementById('bedrockAccessKeyId').value,
+    bedrockSecretKey: document.getElementById('bedrockSecretKey').value,
+    bedrockRegion: document.getElementById('bedrockRegion').value,
     temperature: parseFloat(document.getElementById('temperature').value),
     maxTokens: parseInt(document.getElementById('maxTokens').value),
     enableStreaming: document.getElementById('enableStreaming').checked,

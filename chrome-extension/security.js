@@ -316,6 +316,11 @@ if (typeof SecurityManager === 'undefined') {
         // Gemini keys are typically 39 characters
         return apiKey.length >= 30;
 
+      case 'bedrock':
+        // For bedrock, apiKey field holds the access key ID (AKIA..., 20 chars)
+        // Also accept temporary credentials (ASIA...)
+        return (apiKey.startsWith('AKIA') || apiKey.startsWith('ASIA')) && apiKey.length === 20;
+
       default:
         // Generic validation
         return apiKey.length >= 20;

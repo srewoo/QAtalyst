@@ -33,14 +33,16 @@ if (typeof APP_CONFIG === 'undefined') {
   DEFAULT_MODELS: {
     openai: 'gpt-4o',
     claude: 'claude-3-5-sonnet-20241022',
-    gemini: 'gemini-2.0-flash-exp'
+    gemini: 'gemini-2.0-flash-exp',
+    bedrock: 'anthropic.claude-sonnet-4-5-20250514-v1:0'
   },
 
   // API Endpoints
   ENDPOINTS: {
     openai: 'https://api.openai.com/v1/chat/completions',
     claude: 'https://api.anthropic.com/v1/messages',
-    gemini: 'https://generativelanguage.googleapis.com/v1beta/models'
+    gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
+    bedrock: 'https://bedrock-runtime.{region}.amazonaws.com'
   },
 
   // Evolution Settings
@@ -86,7 +88,10 @@ if (typeof APP_CONFIG === 'undefined') {
     FIGMA_TOKEN: 'figmaToken',
     GOOGLE_API_KEY: 'googleApiKey',
     ENCRYPTED_KEYS: 'encryptedKeys', // For encrypted API keys
-    ENCRYPTION_SALT: 'encryptionSalt'
+    ENCRYPTION_SALT: 'encryptionSalt',
+    BEDROCK_ACCESS_KEY_ID: 'bedrockAccessKeyId',
+    BEDROCK_SECRET_KEY: 'bedrockSecretKey',
+    BEDROCK_REGION: 'bedrockRegion'
   },
 
   // Error Messages

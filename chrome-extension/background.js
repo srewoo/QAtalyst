@@ -687,6 +687,300 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ============ AWS SigV4 Signing for Bedrock ============
+
+async function hmacSha256(key, data) {
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    typeof key === 'string' ? new TextEncoder().encode(key) : key,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  return new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, typeof data === 'string' ? new TextEncoder().encode(data) : data));
+}
+
+async function sha256(data) {
+  const encoded = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', encoded));
+}
+
+function toHex(buffer) {
+  return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function awsSignRequest({ method, url, headers, body, region, accessKeyId, secretAccessKey, service = 'bedrock' }) {
+  const parsedUrl = new URL(url);
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const dateStamp = amzDate.substring(0, 8);
+
+  headers['x-amz-date'] = amzDate;
+  headers['host'] = parsedUrl.host;
+
+  const payloadHash = toHex(await sha256(body || ''));
+  headers['x-amz-content-sha256'] = payloadHash;
+
+  // Canonical headers - must be sorted by lowercase key
+  const signedHeaderKeys = Object.keys(headers).map(k => k.toLowerCase()).sort();
+  const canonicalHeaders = signedHeaderKeys.map(k => `${k}:${headers[Object.keys(headers).find(h => h.toLowerCase() === k)].trim()}`).join('\n') + '\n';
+  const signedHeaders = signedHeaderKeys.join(';');
+
+  // Canonical request
+  const canonicalRequest = [
+    method,
+    parsedUrl.pathname,
+    parsedUrl.search ? parsedUrl.search.substring(1) : '',
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash
+  ].join('\n');
+
+  const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    toHex(await sha256(canonicalRequest))
+  ].join('\n');
+
+  // Derive signing key
+  const kDate = await hmacSha256('AWS4' + secretAccessKey, dateStamp);
+  const kRegion = await hmacSha256(kDate, region);
+  const kService = await hmacSha256(kRegion, service);
+  const kSigning = await hmacSha256(kService, 'aws4_request');
+
+  const signature = toHex(await hmacSha256(kSigning, stringToSign));
+
+  headers['Authorization'] = `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  return headers;
+}
+
+// Call AWS Bedrock API (Claude models)
+async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+  try {
+    const model = settings.llmModel || APP_CONFIG.DEFAULT_MODELS.bedrock;
+    const region = settings.bedrockRegion || 'us-east-1';
+    const url = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/invoke`;
+
+    // Build Claude-format messages (same as callClaude)
+    const claudeMessages = [{ role: 'user', content: [] }];
+    for (const part of contentParts) {
+      if (typeof part === 'string') {
+        claudeMessages[0].content.push({ type: 'text', text: part });
+      } else if (part.type === 'image_url') {
+        const base64Data = part.image_url.url.split(',')[1];
+        const mediaType = part.image_url.url.split(':')[1].split(';')[0];
+        claudeMessages[0].content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data: base64Data }
+        });
+      }
+    }
+
+    const requestBody = JSON.stringify({
+      anthropic_version: 'bedrock-2023-05-31',
+      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
+      messages: claudeMessages,
+      temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
+    });
+
+    const headers = { 'Content-Type': 'application/json' };
+    await awsSignRequest({
+      method: 'POST',
+      url,
+      headers,
+      body: requestBody,
+      region,
+      accessKeyId: settings.bedrockAccessKeyId,
+      secretAccessKey: settings.bedrockSecretKey,
+      service: 'bedrock'
+    });
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: requestBody,
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (response.status === 429 && retries > 0) {
+      const retryAfter = response.headers.get('Retry-After');
+      const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : RETRY_DELAY * Math.pow(2, MAX_RETRIES - retries);
+      console.warn(`Bedrock rate limit hit (429), retrying after ${waitTime}ms (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
+      await sleep(waitTime);
+      return callBedrock(contentParts, settings, retries - 1);
+    }
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const error = new Error(errorData.message || `Bedrock API error: ${response.status}`);
+      error.status = response.status;
+      error.response = response;
+      throw error;
+    }
+
+    const data = await response.json();
+    return data.content[0].text;
+
+  } catch (error) {
+    clearTimeout(timeoutId);
+
+    if (retries > 0 && error.name === 'AbortError') {
+      console.log(`Retrying Bedrock request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
+      await sleep(RETRY_DELAY);
+      return callBedrock(contentParts, settings, retries - 1);
+    }
+
+    if (error.name === 'AbortError') {
+      throw new Error(APP_CONFIG.ERRORS.TIMEOUT);
+    }
+
+    if (error.status === 429 || error.message.includes('Rate limit') || error.message.includes('ThrottlingException')) {
+      throw new Error(APP_CONFIG.ERRORS.RATE_LIMIT);
+    }
+    if (error.message.includes('network') || error.message.includes('fetch')) {
+      throw new Error(APP_CONFIG.ERRORS.NETWORK_ERROR);
+    }
+
+    throw error;
+  }
+}
+
+// Streaming version of Bedrock API (Claude models)
+async function callBedrockStream(contentParts, settings, onChunk, requestId) {
+  const controller = new AbortController();
+  activeStreams.set(requestId, controller);
+
+  let reader = null;
+
+  try {
+    const model = settings.llmModel || APP_CONFIG.DEFAULT_MODELS.bedrock;
+    const region = settings.bedrockRegion || 'us-east-1';
+    const url = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/invoke-with-response-stream`;
+
+    const claudeMessages = [{ role: 'user', content: [] }];
+    for (const part of contentParts) {
+      if (typeof part === 'string') {
+        claudeMessages[0].content.push({ type: 'text', text: part });
+      } else if (part.type === 'image_url') {
+        const base64Data = part.image_url.url.split(',')[1];
+        const mediaType = part.image_url.url.split(':')[1].split(';')[0];
+        claudeMessages[0].content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data: base64Data }
+        });
+      }
+    }
+
+    const requestBody = JSON.stringify({
+      anthropic_version: 'bedrock-2023-05-31',
+      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
+      messages: claudeMessages,
+      temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
+    });
+
+    const headers = { 'Content-Type': 'application/json' };
+    await awsSignRequest({
+      method: 'POST',
+      url,
+      headers,
+      body: requestBody,
+      region,
+      accessKeyId: settings.bedrockAccessKeyId,
+      secretAccessKey: settings.bedrockSecretKey,
+      service: 'bedrock'
+    });
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: requestBody,
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || `Bedrock API error: ${response.status}`);
+    }
+
+    reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const responseChunks = [];
+    const streamStartTime = Date.now();
+    let iterationCount = 0;
+
+    while (true) {
+      if (Date.now() - streamStartTime > STREAMING_TIMEOUT_MS) {
+        logger.warn('Bedrock streaming timeout reached');
+        break;
+      }
+      if (++iterationCount > MAX_STREAMING_ITERATIONS) {
+        logger.warn('Bedrock streaming max iterations reached');
+        break;
+      }
+
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Bedrock streaming uses AWS event stream format with embedded JSON
+      // Each event contains a base64-encoded chunk with a bytes field
+      // But when accessed via fetch, the response is newline-delimited JSON events
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        try {
+          // Bedrock streams JSON objects with a bytes field (base64 encoded)
+          const event = JSON.parse(trimmed);
+          if (event.bytes) {
+            const decoded = JSON.parse(atob(event.bytes));
+            if (decoded.type === 'content_block_delta' && decoded.delta?.text) {
+              responseChunks.push(decoded.delta.text);
+              onChunk(decoded.delta.text);
+            }
+          } else if (event.type === 'content_block_delta' && event.delta?.text) {
+            // Direct JSON event format
+            responseChunks.push(event.delta.text);
+            onChunk(event.delta.text);
+          }
+        } catch (e) {
+          // Skip unparseable chunks
+        }
+      }
+    }
+
+    return responseChunks.join('');
+
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error('Generation cancelled by user');
+    }
+    throw error;
+  } finally {
+    if (reader) {
+      try {
+        await reader.cancel();
+      } catch (e) {
+        // Ignore cancel errors
+      }
+    }
+    activeStreams.delete(requestId);
+  }
+}
+
 // Call OpenAI API directly
 async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
@@ -1299,6 +1593,8 @@ async function callAIStream(contentParts, settings, onChunk, requestId) {
       result = await callGeminiStream(contentParts, settings, onChunk, requestId);
     } else if (settings.llmProvider === 'claude') {
       result = await callClaudeStream(contentParts, settings, onChunk, requestId);
+    } else if (settings.llmProvider === 'bedrock') {
+      result = await callBedrockStream(contentParts, settings, onChunk, requestId);
     } else {
       throw new Error(`Unsupported AI provider: ${settings.llmProvider}`);
     }
@@ -1349,6 +1645,8 @@ async function callAI(contentParts, settings) {
       result = await callGemini(contentParts, settings);
     } else if (settings.llmProvider === 'claude') {
       result = await callClaude(contentParts, settings);
+    } else if (settings.llmProvider === 'bedrock') {
+      result = await callBedrock(contentParts, settings);
     } else {
       throw new Error(`Unsupported AI provider: ${settings.llmProvider}`);
     }
@@ -1374,21 +1672,31 @@ async function callAI(contentParts, settings) {
 function validateSettings(settings) {
   const errors = [];
 
-  if (!settings.apiKey || settings.apiKey.trim() === '') {
-    errors.push(APP_CONFIG.ERRORS.NO_API_KEY);
-  } else {
-    // Validate API key format
-    if (!securityManager.validateApiKey(settings.apiKey, settings.llmProvider)) {
-      errors.push(`Invalid API key format for ${settings.llmProvider}. Please check your API key.`);
-    }
-  }
-
   if (!settings.llmProvider) {
     errors.push(APP_CONFIG.ERRORS.NO_PROVIDER);
   }
 
   if (!settings.llmModel) {
     errors.push(APP_CONFIG.ERRORS.NO_MODEL);
+  }
+
+  if (settings.llmProvider === 'bedrock') {
+    if (!settings.bedrockAccessKeyId || settings.bedrockAccessKeyId.trim() === '') {
+      errors.push('AWS Access Key ID is required for Bedrock. Please configure it in extension settings.');
+    } else if (!securityManager.validateApiKey(settings.bedrockAccessKeyId, 'bedrock')) {
+      errors.push('Invalid AWS Access Key ID format. It should start with AKIA or ASIA and be 20 characters.');
+    }
+    if (!settings.bedrockSecretKey || settings.bedrockSecretKey.trim() === '') {
+      errors.push('AWS Secret Access Key is required for Bedrock. Please configure it in extension settings.');
+    }
+  } else {
+    if (!settings.apiKey || settings.apiKey.trim() === '') {
+      errors.push(APP_CONFIG.ERRORS.NO_API_KEY);
+    } else {
+      if (!securityManager.validateApiKey(settings.apiKey, settings.llmProvider)) {
+        errors.push(`Invalid API key format for ${settings.llmProvider}. Please check your API key.`);
+      }
+    }
   }
 
   if (errors.length > 0) {

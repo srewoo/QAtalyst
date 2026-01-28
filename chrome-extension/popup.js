@@ -15,6 +15,12 @@ const modelOptions = {
   gemini: [
     { value: 'gemini-2.5-pro-exp-03', label: 'Gemini 2.5 Pro (Recommended)' },
     { value: 'gemini-2.5-flash-exp', label: 'Gemini 2.5 Flash (Fast & Cheap)' }
+  ],
+  bedrock: [
+    { value: 'anthropic.claude-sonnet-4-5-20250514-v1:0', label: 'Claude 4.5 Sonnet (Recommended)' },
+    { value: 'anthropic.claude-opus-4-20250514-v1:0', label: 'Claude Opus 4' },
+    { value: 'anthropic.claude-3-5-sonnet-20241022-v2:0', label: 'Claude 3.5 Sonnet v2' },
+    { value: 'anthropic.claude-3-5-haiku-20241022-v1:0', label: 'Claude 3.5 Haiku (Fast & Cheap)' }
   ]
 };
 
@@ -25,28 +31,42 @@ document.addEventListener('DOMContentLoaded', async () => {
     'llmModel',
     'apiKey',
     'testrailUrl',
-    'confluenceUrl'
+    'confluenceUrl',
+    'bedrockAccessKeyId',
+    'bedrockSecretKey',
+    'bedrockRegion'
   ]);
-  
+
   if (settings.llmProvider) {
     document.getElementById('llmProvider').value = settings.llmProvider;
     updateModelOptions(settings.llmProvider);
+    toggleBedrockFields(settings.llmProvider);
   } else {
     updateModelOptions('openai');
   }
-  
+
   if (settings.llmModel) {
     document.getElementById('llmModel').value = settings.llmModel;
   }
-  
+
   if (settings.apiKey) {
     document.getElementById('apiKey').value = settings.apiKey;
   }
-  
+
+  if (settings.bedrockAccessKeyId) {
+    document.getElementById('bedrockAccessKeyId').value = settings.bedrockAccessKeyId;
+  }
+  if (settings.bedrockSecretKey) {
+    document.getElementById('bedrockSecretKey').value = settings.bedrockSecretKey;
+  }
+  if (settings.bedrockRegion) {
+    document.getElementById('bedrockRegion').value = settings.bedrockRegion;
+  }
+
   if (settings.testrailUrl) {
     document.getElementById('testrailUrl').value = settings.testrailUrl;
   }
-  
+
   if (settings.confluenceUrl) {
     document.getElementById('confluenceUrl').value = settings.confluenceUrl;
   }
@@ -55,7 +75,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Provider change handler
 document.getElementById('llmProvider').addEventListener('change', (e) => {
   updateModelOptions(e.target.value);
+  toggleBedrockFields(e.target.value);
 });
+
+function toggleBedrockFields(provider) {
+  const apiKeyGroup = document.getElementById('apiKeyGroup');
+  const bedrockGroup = document.getElementById('bedrockCredentialsGroup');
+  if (provider === 'bedrock') {
+    apiKeyGroup.style.display = 'none';
+    bedrockGroup.style.display = 'block';
+  } else {
+    apiKeyGroup.style.display = 'block';
+    bedrockGroup.style.display = 'none';
+  }
+}
 
 function updateModelOptions(provider) {
   const modelSelect = document.getElementById('llmModel');
@@ -72,14 +105,21 @@ function updateModelOptions(provider) {
 
 // Save settings
 document.getElementById('saveBtn').addEventListener('click', async () => {
+  const provider = document.getElementById('llmProvider').value;
   const settings = {
-    llmProvider: document.getElementById('llmProvider').value,
+    llmProvider: provider,
     llmModel: document.getElementById('llmModel').value,
     apiKey: document.getElementById('apiKey').value,
     testrailUrl: document.getElementById('testrailUrl').value,
     confluenceUrl: document.getElementById('confluenceUrl').value
   };
-  
+
+  if (provider === 'bedrock') {
+    settings.bedrockAccessKeyId = document.getElementById('bedrockAccessKeyId').value;
+    settings.bedrockSecretKey = document.getElementById('bedrockSecretKey').value;
+    settings.bedrockRegion = document.getElementById('bedrockRegion').value;
+  }
+
   await chrome.storage.sync.set(settings);
   
   const statusDiv = document.getElementById('status');

@@ -405,6 +405,7 @@
               <option value="openai">OpenAI (GPT-4o)</option>
               <option value="claude">Anthropic Claude</option>
               <option value="gemini">Google Gemini</option>
+              <option value="bedrock">AWS Bedrock (Claude)</option>
             </select>
           </div>
           <div class="form-group">
@@ -415,10 +416,34 @@
           </div>
         </div>
         
-        <div class="form-group">
+        <div class="form-group" id="apiKeyGroup">
           <label for="apiKey">API Key:</label>
           <input type="password" id="apiKey" placeholder="Enter your API key" data-testid="api-key-input">
           <a href="#" class="help-link" id="getKeyLink" target="_blank">How to get API key?</a>
+        </div>
+        <div id="bedrockCredentialsGroup" style="display: none;">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="bedrockAccessKeyId">AWS Access Key ID:</label>
+              <input type="text" id="bedrockAccessKeyId" placeholder="AKIA..." data-testid="bedrock-access-key-input">
+            </div>
+            <div class="form-group">
+              <label for="bedrockSecretKey">AWS Secret Access Key:</label>
+              <input type="password" id="bedrockSecretKey" placeholder="Enter your secret access key" data-testid="bedrock-secret-key-input">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="bedrockRegion">AWS Region:</label>
+            <select id="bedrockRegion" data-testid="bedrock-region-select">
+              <option value="us-east-1">US East (N. Virginia)</option>
+              <option value="us-west-2">US West (Oregon)</option>
+              <option value="eu-west-1">EU (Ireland)</option>
+              <option value="eu-central-1">EU (Frankfurt)</option>
+              <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
+              <option value="ap-northeast-1">Asia Pacific (Tokyo)</option>
+            </select>
+            <a href="https://docs.aws.amazon.com/bedrock/latest/userguide/setting-up.html" class="help-link" target="_blank">AWS Bedrock setup guide</a>
+          </div>
         </div>
         
         <div class="form-row">

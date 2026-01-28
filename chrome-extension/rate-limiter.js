@@ -267,6 +267,11 @@ const rateLimiters = {
     maxConcurrent: 5,
     retryAttempts: 3
   }),
+  bedrock: new RateLimiter({
+    requestsPerMinute: 50, // Conservative - varies by provisioned throughput
+    maxConcurrent: 5,
+    retryAttempts: 3
+  }),
   figma: new RateLimiter({
     requestsPerMinute: 60, // Conservative - actual limit is 1,000/min
     maxConcurrent: 3,
