@@ -633,6 +633,12 @@
         </div>
 
         <div class="form-group">
+          <label for="jiraBaseUrl">Jira Base URL:</label>
+          <input type="text" id="jiraBaseUrl" placeholder="https://your-company.atlassian.net" data-testid="jira-base-url">
+          <p class="help-text">Your Jira instance URL (e.g., https://company.atlassian.net or https://jira.company.com)</p>
+        </div>
+
+        <div class="form-group">
           <label for="jiraEmail">Jira Email (Optional - for API token authentication):</label>
           <input type="email" id="jiraEmail" placeholder="your-email@company.com" data-testid="jira-email">
           <p class="help-text">Your Jira account email. Only needed if cookie-based authentication fails.</p>
@@ -786,11 +792,15 @@
         <p>Configure Zephyr Scale (Jira Cloud) for test case export.</p>
 
         <div class="form-group">
-          <label for="zephyrScaleApiToken">API Token:</label>
+          <label for="zephyrScaleApiToken">Zephyr Scale API Token:</label>
           <div style="display: flex; align-items: center; gap: 10px;">
             <input type="password" id="zephyrScaleApiToken" placeholder="Enter Zephyr Scale API token" style="flex-grow: 1;">
             <button type="button" class="btn secondary" id="testZephyrScale">Test</button>
           </div>
+          <p class="help-text">
+            <strong>⚠️ Important:</strong> This is a <strong>Zephyr Scale-specific token</strong>, NOT your Atlassian API token!<br>
+            <strong>How to get it:</strong> In Jira → Zephyr Scale → Settings (⚙️) → API Access Tokens → Create Access Token
+          </p>
           <span id="zephyrScaleStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
         </div>
 

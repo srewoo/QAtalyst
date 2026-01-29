@@ -198,6 +198,9 @@
     if (settings.testrailApiKey) {
       settings.testrailApiKey = await securityManager.decryptApiKeyFromStorage(settings.testrailApiKey);
     }
+    if (settings.bedrockSecretKey) {
+      settings.bedrockSecretKey = await securityManager.decryptApiKeyFromStorage(settings.bedrockSecretKey);
+    }
 
     return settings;
   }
@@ -206,15 +209,15 @@
   async function fetchTicketDataFromAPI(ticketKey) {
     try {
       // Load Jira credentials
-      const settings = await loadAndDecryptSettings(['jiraEmail', 'jiraApiToken']);
+      const settings = await loadAndDecryptSettings(['jiraBaseUrl', 'jiraEmail', 'jiraApiToken']);
 
       if (!settings.jiraEmail || !settings.jiraApiToken) {
         console.log('🔑 Jira API credentials not configured, will use DOM scraping');
         return null;
       }
 
-      // Get Jira base URL from current page
-      const jiraBaseUrl = window.location.origin;
+      // Get Jira base URL from settings, fallback to current page
+      const jiraBaseUrl = settings.jiraBaseUrl || window.location.origin;
 
       console.log('🌐 Fetching ticket data from Jira API:', ticketKey);
 
@@ -1451,19 +1454,34 @@
   // Validate settings before operations
   function validateSettingsUI(settings) {
     const errors = [];
-    
-    if (!settings.apiKey || settings.apiKey.trim() === '') {
-      errors.push('⚠️ API Key is missing');
+
+    // Check API credentials based on provider
+    if (settings.llmProvider === 'bedrock') {
+      // For AWS Bedrock, check for Access Key ID and Secret Key
+      if (!settings.bedrockAccessKeyId || settings.bedrockAccessKeyId.trim() === '') {
+        errors.push('⚠️ AWS Access Key ID is missing');
+      }
+      if (!settings.bedrockSecretKey || settings.bedrockSecretKey.trim() === '') {
+        errors.push('⚠️ AWS Secret Access Key is missing');
+      }
+      if (!settings.bedrockRegion || settings.bedrockRegion.trim() === '') {
+        errors.push('⚠️ AWS Region is missing');
+      }
+    } else {
+      // For other providers (OpenAI, Claude, Gemini), check for API key
+      if (!settings.apiKey || settings.apiKey.trim() === '') {
+        errors.push('⚠️ API Key is missing');
+      }
     }
-    
+
     if (!settings.llmProvider) {
       errors.push('⚠️ LLM Provider not selected');
     }
-    
+
     if (!settings.llmModel) {
       errors.push('⚠️ LLM Model not selected');
     }
-    
+
     return errors;
   }
   
@@ -1490,7 +1508,7 @@
 
     try {
       const settings = await loadAndDecryptSettings([
-        'llmProvider', 'llmModel', 'apiKey', 'enableStreaming',
+        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion', 'enableStreaming',
         'confluenceUrl', 'confluenceEmail', 'confluenceToken',
         'figmaToken', 'googleApiKey'
       ]);
@@ -1622,7 +1640,7 @@
 
     try {
       const settings = await loadAndDecryptSettings([
-        'llmProvider', 'llmModel', 'apiKey', 'enableStreaming',
+        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion', 'enableStreaming',
         'confluenceUrl', 'confluenceEmail', 'confluenceToken',
         'figmaToken', 'googleApiKey'
       ]);
@@ -1744,7 +1762,7 @@
     
     try {
       const settings = await loadAndDecryptSettings([
-        'llmProvider', 'llmModel', 'apiKey', 'enableStreaming', 'enableMultiAgent',
+        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion', 'enableStreaming', 'enableMultiAgent',
         'enableEvolution', 'evolutionIntensity', 'testCount',
         'positivePercent', 'negativePercent', 'edgePercent', 'integrationPercent',
         'enablePositiveAgent', 'enableNegativeAgent', 'enableEdgeAgent',
@@ -3263,7 +3281,7 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion']);
 
       // Check if AI provider is configured
       if (!settings.llmProvider) {
@@ -3315,7 +3333,7 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion']);
 
       // Check if AI provider is configured
       if (!settings.llmProvider) {
@@ -3369,7 +3387,7 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'testCount']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion', 'testCount']);
 
       // Check if AI provider is configured
       if (!settings.llmProvider) {

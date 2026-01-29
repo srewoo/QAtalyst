@@ -2488,6 +2488,18 @@ class ZephyrScaleIntegration {
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error(
+            `Authentication failed (401). ⚠️ IMPORTANT: You must use a Zephyr Scale API token, NOT an Atlassian API token!\n\n` +
+            `How to get the correct token:\n` +
+            `1. Open Jira and go to Zephyr Scale\n` +
+            `2. Click Settings (⚙️) → API Access Tokens\n` +
+            `3. Click "Create Access Token"\n` +
+            `4. Copy the generated token (starts with "eyJ..." in JWT format)\n` +
+            `5. Use that token here\n\n` +
+            `Note: This is different from the Atlassian API token (which starts with "ATATT").`
+          );
+        }
         throw new Error(`Connection test failed with status: ${response.status}`);
       }
 

@@ -148,6 +148,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     'llmProvider',
     'llmModel',
     'apiKey',
+    'bedrockAccessKeyId',
+    'bedrockSecretKey',
+    'bedrockRegion',
     'temperature',
     'maxTokens',
     'enableStreaming',
@@ -171,6 +174,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'enableHistoricalMining',
     'historicalMaxResults',
     'historicalJqlFilters',
+    'jiraBaseUrl',
     'jiraEmail',
     'jiraApiToken',
     'testMgmtPlatform',
@@ -312,6 +316,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('enableHistoricalMining').checked = settings.enableHistoricalMining || false;
   document.getElementById('historicalMaxResults').value = settings.historicalMaxResults || 20;
   document.getElementById('historicalJqlFilters').value = settings.historicalJqlFilters || '';
+  document.getElementById('jiraBaseUrl').value = settings.jiraBaseUrl || '';
   document.getElementById('jiraEmail').value = settings.jiraEmail || '';
   document.getElementById('jiraApiToken').value = settings.jiraApiToken || '';
 
@@ -519,6 +524,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     enableHistoricalMining: document.getElementById('enableHistoricalMining').checked,
     historicalMaxResults: parseInt(document.getElementById('historicalMaxResults').value),
     historicalJqlFilters: document.getElementById('historicalJqlFilters').value.trim(),
+    jiraBaseUrl: document.getElementById('jiraBaseUrl').value.trim(),
     jiraEmail: document.getElementById('jiraEmail').value.trim(),
     jiraApiToken: document.getElementById('jiraApiToken').value.trim(),
 
@@ -591,6 +597,13 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     validationErrors.push(`TestRail URL: ${testrailUrlValidation.error}`);
   } else if (testrailUrlValidation.value) {
     settings.testrailUrl = testrailUrlValidation.value;
+  }
+
+  const jiraBaseUrlValidation = InputValidator.validateUrl(settings.jiraBaseUrl);
+  if (!jiraBaseUrlValidation.valid) {
+    validationErrors.push(`Jira Base URL: ${jiraBaseUrlValidation.error}`);
+  } else if (jiraBaseUrlValidation.value) {
+    settings.jiraBaseUrl = jiraBaseUrlValidation.value;
   }
 
   // Validate API Keys
@@ -699,6 +712,9 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   if (settings.testrailApiKey && settings.testrailApiKey.trim()) {
     settings.testrailApiKey = await securityManager.encryptApiKeyForStorage(settings.testrailApiKey.trim());
   }
+  if (settings.bedrockSecretKey && settings.bedrockSecretKey.trim()) {
+    settings.bedrockSecretKey = await securityManager.encryptApiKeyForStorage(settings.bedrockSecretKey.trim());
+  }
 
   // Debug logging before saving
   console.log('💾 Saving QAtalyst Settings:', {
@@ -743,8 +759,9 @@ document.getElementById('resetBtn').addEventListener('click', async () => {
 
 // Test Jira Authentication
 document.getElementById('testJiraAuth').addEventListener('click', async () => {
+  const jiraBaseUrl = document.getElementById('jiraBaseUrl').value.trim();
   const jiraEmail = document.getElementById('jiraEmail').value.trim();
-  const jiraApiToken = document.getElementById('jiraApiToken').value.trim();
+  let jiraApiToken = document.getElementById('jiraApiToken').value.trim();
   const statusDiv = document.getElementById('authTestStatus');
   const button = document.getElementById('testJiraAuth');
 
@@ -752,8 +769,52 @@ document.getElementById('testJiraAuth').addEventListener('click', async () => {
   statusDiv.innerHTML = '';
 
   // Validate inputs
+  if (!jiraBaseUrl) {
+    statusDiv.innerHTML = '<div style="color: #dc2626; font-size: 13px;">❌ Please enter Jira Base URL</div>';
+    return;
+  }
   if (!jiraEmail || !jiraApiToken) {
     statusDiv.innerHTML = '<div style="color: #dc2626; font-size: 13px;">❌ Please enter both Jira email and API token</div>';
+    return;
+  }
+
+  // Validate email format
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(jiraEmail.trim())) {
+    statusDiv.innerHTML = '<div style="color: #dc2626; font-size: 13px;">❌ Invalid email format. Please enter a valid email address.</div>';
+    return;
+  }
+
+  // Validate token format (should start with ATATT for Atlassian tokens)
+  const cleanToken = jiraApiToken.replace(/[\r\n\t]/g, '').trim();
+  if (!cleanToken.startsWith('ATATT') && !cleanToken.startsWith('enc:')) {
+    statusDiv.innerHTML = `
+      <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 10px; border-radius: 6px; font-size: 13px; color: #dc2626;">
+        ⚠️ <strong>Warning: Token format looks incorrect</strong><br>
+        Atlassian API tokens should start with <strong>"ATATT"</strong>.<br>
+        Your token starts with: <strong>"${cleanToken.substring(0, 6)}..."</strong><br><br>
+        <strong>Please verify:</strong><br>
+        • You copied the entire token<br>
+        • You're using an Atlassian API token (not a Zephyr or other token)<br>
+        • Get it from: <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" style="color: #dc2626; text-decoration: underline;">Atlassian API Tokens</a><br><br>
+        Click "Test Jira Authentication" again to continue anyway.
+      </div>
+    `;
+    return;
+  }
+
+  // Check if the token is encrypted and decrypt it
+  if (securityManager.isEncrypted(jiraApiToken)) {
+    console.log('🔓 Token is encrypted, decrypting...');
+    jiraApiToken = await securityManager.decryptApiKeyFromStorage(jiraApiToken);
+  }
+
+  // Validate URL format
+  let baseUrl;
+  try {
+    baseUrl = new URL(jiraBaseUrl).origin;
+  } catch (e) {
+    statusDiv.innerHTML = '<div style="color: #dc2626; font-size: 13px;">❌ Invalid URL format. Use https://your-company.atlassian.net</div>';
     return;
   }
 
@@ -763,29 +824,34 @@ document.getElementById('testJiraAuth').addEventListener('click', async () => {
   statusDiv.innerHTML = '<div style="color: #0ea5e9; font-size: 13px;">⏳ Testing authentication...</div>';
 
   try {
-    // Get Jira base URL from active tab
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    let baseUrl = 'https://mindtickle.atlassian.net'; // Default fallback
-
-    if (tabs[0] && tabs[0].url) {
-      const url = new URL(tabs[0].url);
-      if (url.hostname.includes('atlassian.net') || url.hostname.includes('jira')) {
-        baseUrl = `${url.protocol}//${url.hostname}`;
-      }
-    }
 
     // Construct API URL
     const apiUrl = `${baseUrl}/rest/api/3/myself`;
 
     // Build headers with Basic Auth
-    const credentials = btoa(`${jiraEmail}:${jiraApiToken}`);
+    let credentials;
+    try {
+      // Ensure token doesn't have any hidden characters
+      const cleanToken = jiraApiToken.replace(/[\r\n\t]/g, '').trim();
+      const cleanEmail = jiraEmail.replace(/[\r\n\t]/g, '').trim();
+
+      credentials = btoa(`${cleanEmail}:${cleanToken}`);
+
+      console.log('🔍 Testing Jira auth to:', apiUrl);
+      console.log('📧 Email:', cleanEmail);
+      console.log('🔑 Token length:', cleanToken.length);
+      console.log('🔑 Token starts with:', cleanToken.substring(0, 10) + '...');
+      console.log('🔑 Token ends with:', '...' + cleanToken.substring(cleanToken.length - 10));
+    } catch (encodingError) {
+      statusDiv.innerHTML = '<div style="color: #dc2626; font-size: 13px;">❌ Token encoding error: Please copy the token again without any extra characters</div>';
+      return;
+    }
+
     const headers = {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
       'Authorization': `Basic ${credentials}`
     };
-
-    console.log('Testing Jira auth to:', apiUrl);
 
     // Make the request
     const response = await fetch(apiUrl, {
@@ -795,6 +861,10 @@ document.getElementById('testJiraAuth').addEventListener('click', async () => {
     });
 
     console.log('Auth test response status:', response.status);
+    console.log('Auth test response headers:', {
+      'content-type': response.headers.get('content-type'),
+      'www-authenticate': response.headers.get('www-authenticate')
+    });
 
     if (response.ok) {
       const userData = await response.json();
@@ -829,9 +899,24 @@ document.getElementById('testJiraAuth').addEventListener('click', async () => {
           ❌ <strong>Authentication Failed (${response.status})</strong><br>
           ${errorMessage}<br><br>
           <strong>Troubleshooting:</strong><br>
-          ${response.status === 401 ? '• Check if your API token is correct<br>• Ensure email matches your Jira account' : ''}
+          ${response.status === 401 ? `
+            <strong style="color: #b91c1c;">⚠️ Most Common Issue - Email Mismatch:</strong><br>
+            <div style="background: #fff; border-left: 3px solid #dc2626; padding: 8px; margin: 8px 0;">
+              The email you entered (<strong>${jiraEmail.replace(/[\r\n\t]/g, '').trim()}</strong>) must <em>exactly</em> match your Atlassian account email.<br><br>
+              <strong>To verify your email:</strong><br>
+              1. Go to <a href="https://id.atlassian.com/manage-profile/profile-and-visibility" target="_blank" style="color: #dc2626; text-decoration: underline;">Atlassian Profile</a><br>
+              2. Check the email address shown there<br>
+              3. Use that <em>exact</em> email in this field<br>
+              4. If your Atlassian account uses a different email (e.g., personal email instead of work email), you must use that one
+            </div><br>
+            <strong>Other Possible Issues:</strong><br>
+            • <strong>Regenerate API token:</strong> Go to <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" style="color: #dc2626; text-decoration: underline;">Atlassian API Tokens</a>, delete the old token, and create a new one<br>
+            • <strong>Token format:</strong> Should start with "ATATT3xFfG..." (not "enc:")<br>
+            • <strong>Copy/paste carefully:</strong> Copy the entire token without any extra spaces or line breaks<br>
+            • <strong>Base URL:</strong> Verify "${baseUrl}" is correct
+          ` : ''}
           ${response.status === 403 ? '• You may not have permission to access this API<br>• Try regenerating your API token' : ''}
-          ${response.status === 404 ? '• Jira URL may be incorrect<br>• Detected URL: ' + baseUrl : ''}
+          ${response.status === 404 ? '• Jira URL may be incorrect<br>• Using URL: ' + baseUrl : ''}
         </div>
       `;
     }
@@ -1285,11 +1370,15 @@ document.getElementById('testZephyrScale')?.addEventListener('click', async () =
   try {
     const integration = new ZephyrScaleIntegration(settings);
     await integration.testConnection();
-    statusEl.textContent = '✅ Connection successful!';
-    statusEl.style.color = '#28a745';
+    statusEl.innerHTML = '<div style="color: #28a745;">✅ Connection successful!</div>';
   } catch (error) {
-    statusEl.textContent = `❌ ${error.message}`;
-    statusEl.style.color = '#dc3545';
+    // Format multi-line error messages nicely
+    const errorHtml = error.message.replace(/\n/g, '<br>');
+    statusEl.innerHTML = `
+      <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 12px; border-radius: 6px; font-size: 13px; color: #dc2626; white-space: pre-wrap;">
+        ${errorHtml}
+      </div>
+    `;
   }
 });
 

@@ -57,7 +57,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('bedrockAccessKeyId').value = settings.bedrockAccessKeyId;
   }
   if (settings.bedrockSecretKey) {
-    document.getElementById('bedrockSecretKey').value = settings.bedrockSecretKey;
+    // Decrypt the secret key when loading
+    const decryptedKey = await securityManager.decryptApiKeyFromStorage(settings.bedrockSecretKey);
+    document.getElementById('bedrockSecretKey').value = decryptedKey;
   }
   if (settings.bedrockRegion) {
     document.getElementById('bedrockRegion').value = settings.bedrockRegion;
@@ -116,7 +118,13 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
 
   if (provider === 'bedrock') {
     settings.bedrockAccessKeyId = document.getElementById('bedrockAccessKeyId').value;
-    settings.bedrockSecretKey = document.getElementById('bedrockSecretKey').value;
+    const secretKey = document.getElementById('bedrockSecretKey').value;
+    // Encrypt the secret key before saving
+    if (secretKey && secretKey.trim()) {
+      settings.bedrockSecretKey = await securityManager.encryptApiKeyForStorage(secretKey.trim());
+    } else {
+      settings.bedrockSecretKey = '';
+    }
     settings.bedrockRegion = document.getElementById('bedrockRegion').value;
   }
 
