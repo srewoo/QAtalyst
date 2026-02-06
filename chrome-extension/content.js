@@ -805,6 +805,11 @@
     if (apiData) {
       console.log('✅ Using data from Jira API');
 
+      // API path doesn't extract linked pages from the DOM — do it now
+      // so Confluence/Figma/Google Docs links on the page are captured
+      apiData.linkedPages = extractLinkedPages();
+      console.log(`🔗 Extracted ${apiData.linkedPages.length} linked pages from DOM for API data`);
+
       // Debug logging
       console.log('========== JIRA API DATA DEBUG ==========');
       console.log('📝 Description from API:');
@@ -818,6 +823,7 @@
           console.log(comment.text);
         });
       }
+      console.log('🔗 Linked Pages:', apiData.linkedPages.length);
       console.log('========================================');
 
       return apiData;
@@ -1514,7 +1520,7 @@
       ]);
 
       // Fetch Jira image attachments if model supports vision
-      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro'];
+      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
       if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
         console.log('📷 Vision model detected, fetching Jira image attachments...');
         ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
@@ -1646,7 +1652,7 @@
       ]);
 
       // Fetch Jira image attachments if model supports vision
-      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro'];
+      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
       if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
         console.log('📷 Vision model detected, fetching Jira image attachments...');
         ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
@@ -1774,7 +1780,7 @@
       ]);
 
       // Fetch Jira image attachments if model supports vision
-      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro'];
+      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
       if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
         console.log('📷 Vision model detected, fetching Jira image attachments...');
         ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);

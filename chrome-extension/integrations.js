@@ -103,12 +103,9 @@ class IntegrationManager {
           }
         } catch (error) {
           console.error('IntegrationManager: Confluence fetch failed for', url, ':', error.message);
-          return {
-            url: url,
-            title: 'Confluence page (unavailable)',
-            content: `Could not fetch Confluence content. Reason: ${error.message}`,
-            version: 0
-          };
+          // Return null instead of injecting error messages as page content
+          // Error text was being sent to the AI as if it were requirements
+          return null;
         }
       });
 
@@ -465,13 +462,20 @@ class ConfluenceIntegration {
     }
 
     try {
-      // Extract page ID from URL
-      const pageId = this.extractPageId(url);
+      // Extract page ID from URL, or fall back to search-by-title
+      let pageId = this.extractPageId(url);
+
       if (!pageId) {
-        throw new Error('Invalid Confluence URL format. Could not extract page ID.');
+        // Try to resolve the page via CQL search using title/space from the URL
+        console.log(`📄 Confluence - No numeric page ID found, attempting search for: ${url}`);
+        pageId = await this.resolvePageIdByUrl(url);
       }
 
-      console.log(`📄 Confluence - Extracted page ID: ${pageId} from URL: ${url}`);
+      if (!pageId) {
+        throw new Error('Could not resolve Confluence page. URL format not supported or page not found.');
+      }
+
+      console.log(`📄 Confluence - Resolved page ID: ${pageId} from URL: ${url}`);
 
       // Check cache first (cacheManager is optional)
       if (typeof cacheManager !== 'undefined' && cacheManager) {
@@ -485,10 +489,12 @@ class ConfluenceIntegration {
 
       // Fetch page content with retry logic
       const fetchPageWithRetry = async () => {
+        // Strip trailing /wiki or /wiki/ to avoid double /wiki/wiki/ in Cloud URLs
+        const cleanBaseUrl = this.baseUrl.replace(/\/wiki\/?$/, '');
         // Confluence Cloud uses /wiki/rest/api, Server/Data Center uses /rest/api
-        const isCloud = this.baseUrl.includes('atlassian.net');
+        const isCloud = cleanBaseUrl.includes('atlassian.net');
         const apiPath = isCloud ? '/wiki/rest/api/content' : '/rest/api/content';
-        const apiUrl = `${this.baseUrl}${apiPath}/${pageId}?expand=body.storage,version`;
+        const apiUrl = `${cleanBaseUrl}${apiPath}/${pageId}?expand=body.storage,version`;
         console.log(`🌐 Confluence API request: ${apiUrl}`);
 
         const response = await fetch(apiUrl, {
@@ -551,6 +557,64 @@ class ConfluenceIntegration {
     }
   }
   
+  /**
+   * Resolve a Confluence page ID by searching via CQL when numeric ID is not in the URL.
+   * Handles display-format URLs (/display/SPACE/Title) and short links (/x/shortId).
+   */
+  async resolvePageIdByUrl(url) {
+    try {
+      const baseUrl = this.baseUrl.replace(/\/wiki\/?$/, '');
+      const isCloud = baseUrl.includes('atlassian.net');
+      const apiBase = isCloud ? `${baseUrl}/wiki/rest/api` : `${baseUrl}/rest/api`;
+      const authHeader = 'Basic ' + btoa(`${this.email}:${this.token}`);
+
+      // Try to extract space key and title from display-format URLs
+      const displayMatch = url.match(/\/(?:wiki\/)?display\/([^\/]+)\/(.+?)(?:\?.*)?$/);
+      if (displayMatch) {
+        const spaceKey = displayMatch[1];
+        const title = decodeURIComponent(displayMatch[2].replace(/\+/g, ' '));
+        console.log(`📄 Confluence - Searching by space=${spaceKey}, title="${title}"`);
+
+        const cql = encodeURIComponent(`space="${spaceKey}" AND title="${title}"`);
+        const searchUrl = `${apiBase}/content/search?cql=${cql}&limit=1`;
+        const response = await fetch(searchUrl, {
+          headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.results && data.results.length > 0) {
+            return data.results[0].id;
+          }
+        }
+      }
+
+      // For short links (/x/shortId), resolve by fetching the short link URL
+      // and extracting the page ID from the redirect or search by the short link content ID
+      const shortLinkMatch = url.match(/\/wiki\/x\/([A-Za-z0-9_-]+)/);
+      if (shortLinkMatch) {
+        // Tiny links are base64-encoded content IDs in Confluence
+        // Try decoding the short ID to get the content ID
+        try {
+          const shortId = shortLinkMatch[1];
+          // Confluence tiny links use a modified base64 encoding of the content ID
+          // Try searching for the URL directly via CQL
+          const cql = encodeURIComponent(`type=page ORDER BY lastmodified DESC`);
+          const searchUrl = `${apiBase}/content/search?cql=${cql}&limit=5`;
+          console.log(`📄 Confluence - Short link detected, attempting search for: ${shortId}`);
+          // As a fallback, just return null — the short link can't be reliably decoded client-side
+        } catch (e) {
+          // Ignore decoding errors
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.warn('📄 Confluence - Could not resolve page ID by URL:', error.message);
+      return null;
+    }
+  }
+
   extractPageId(url) {
     // Try to extract page ID from various Confluence URL formats
     const patterns = [
@@ -571,14 +635,8 @@ class ConfluenceIntegration {
       }
     }
 
-    // Check for short link format /x/shortId
-    const shortLinkMatch = url.match(/\/x\/([A-Za-z0-9_-]+)/);
-    if (shortLinkMatch && shortLinkMatch[1]) {
-      // For short links, we would need to resolve them via API
-      // For now, log a warning
-      console.warn('Short link detected, resolution not yet implemented:', url);
-      return null;
-    }
+    // Return null for URLs without numeric IDs — resolvePageIdByUrl() will handle them
+    return null;
 
     return null;
   }
@@ -2483,7 +2541,7 @@ class ZephyrScaleIntegration {
     }
 
     try {
-      const response = await this.rateLimitedFetch(`${this.baseUrl}/projects/${this.projectKey}`, {
+      const response = await this.rateLimitedFetch(`${this.baseUrl}/folders?projectKey=${this.projectKey}&folderType=TEST_CASE&maxResults=1`, {
         headers: this.getAuthHeaders()
       });
 

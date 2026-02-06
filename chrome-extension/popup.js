@@ -20,7 +20,10 @@ const modelOptions = {
     { value: 'anthropic.claude-sonnet-4-5-20250514-v1:0', label: 'Claude 4.5 Sonnet (Recommended)' },
     { value: 'anthropic.claude-opus-4-20250514-v1:0', label: 'Claude Opus 4' },
     { value: 'anthropic.claude-3-5-sonnet-20241022-v2:0', label: 'Claude 3.5 Sonnet v2' },
-    { value: 'anthropic.claude-3-5-haiku-20241022-v1:0', label: 'Claude 3.5 Haiku (Fast & Cheap)' }
+    { value: 'anthropic.claude-3-5-haiku-20241022-v1:0', label: 'Claude 3.5 Haiku (Fast & Cheap)' },
+    { value: 'us.openai.gpt-4o-2024-11-20-v1:0', label: 'GPT-4o (Bedrock)' },
+    { value: 'us.openai.gpt-5-2-20250709-v1:0', label: 'GPT-5.2 (Bedrock)' },
+    { value: 'us.openai.o3-2025-04-16-v1:0', label: 'O3 (Bedrock - Reasoning)' }
   ]
 };
 

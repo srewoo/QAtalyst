@@ -758,6 +758,11 @@ async function awsSignRequest({ method, url, headers, body, region, accessKeyId,
 }
 
 // Call AWS Bedrock API (Claude models)
+// Detect if a Bedrock model ID is an OpenAI model
+function isBedrockOpenAIModel(modelId) {
+  return modelId && (modelId.includes('openai.gpt') || modelId.includes('openai.o3') || modelId.includes('openai.o1'));
+}
+
 async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
@@ -766,28 +771,53 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
     const model = settings.llmModel || APP_CONFIG.DEFAULT_MODELS.bedrock;
     const region = settings.bedrockRegion || 'us-east-1';
     const url = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/invoke`;
+    const isOpenAI = isBedrockOpenAIModel(model);
 
-    // Build Claude-format messages (same as callClaude)
-    const claudeMessages = [{ role: 'user', content: [] }];
-    for (const part of contentParts) {
-      if (typeof part === 'string') {
-        claudeMessages[0].content.push({ type: 'text', text: part });
-      } else if (part.type === 'image_url') {
-        const base64Data = part.image_url.url.split(',')[1];
-        const mediaType = part.image_url.url.split(':')[1].split(';')[0];
-        claudeMessages[0].content.push({
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType, data: base64Data }
-        });
+    let requestBody;
+
+    if (isOpenAI) {
+      // OpenAI models on Bedrock use OpenAI-compatible chat completion format
+      const openaiMessages = [{ role: 'user', content: [] }];
+      for (const part of contentParts) {
+        if (typeof part === 'string') {
+          openaiMessages[0].content.push({ type: 'text', text: part });
+        } else if (part.type === 'text') {
+          openaiMessages[0].content.push({ type: 'text', text: part.text });
+        } else if (part.type === 'image_url') {
+          openaiMessages[0].content.push({ type: 'image_url', image_url: { url: part.image_url.url } });
+        }
       }
-    }
 
-    const requestBody = JSON.stringify({
-      anthropic_version: 'bedrock-2023-05-31',
-      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
-      messages: claudeMessages,
-      temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
-    });
+      requestBody = JSON.stringify({
+        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
+        messages: openaiMessages,
+        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
+      });
+    } else {
+      // Claude/Anthropic models on Bedrock
+      const claudeMessages = [{ role: 'user', content: [] }];
+      for (const part of contentParts) {
+        if (typeof part === 'string') {
+          claudeMessages[0].content.push({ type: 'text', text: part });
+        } else if (part.type === 'text') {
+          claudeMessages[0].content.push({ type: 'text', text: part.text });
+        } else if (part.type === 'image_url') {
+          const base64Data = part.image_url.url.split(',')[1];
+          const mediaType = part.image_url.url.split(':')[1].split(';')[0];
+          claudeMessages[0].content.push({
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64Data }
+          });
+        }
+      }
+
+      requestBody = JSON.stringify({
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
+        messages: claudeMessages,
+        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
+      });
+    }
 
     const headers = { 'Content-Type': 'application/json' };
     await awsSignRequest({
@@ -820,13 +850,18 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      const error = new Error(errorData.message || `Bedrock API error: ${response.status}`);
+      const error = new Error(errorData.message || errorData.error?.message || `Bedrock API error: ${response.status}`);
       error.status = response.status;
       error.response = response;
       throw error;
     }
 
     const data = await response.json();
+
+    // OpenAI models return OpenAI-format response; Claude returns Anthropic format
+    if (isOpenAI) {
+      return data.choices[0].message.content;
+    }
     return data.content[0].text;
 
   } catch (error) {
@@ -853,7 +888,7 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
   }
 }
 
-// Streaming version of Bedrock API (Claude models)
+// Streaming version of Bedrock API (Claude + OpenAI models)
 async function callBedrockStream(contentParts, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
@@ -864,27 +899,54 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
     const model = settings.llmModel || APP_CONFIG.DEFAULT_MODELS.bedrock;
     const region = settings.bedrockRegion || 'us-east-1';
     const url = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/invoke-with-response-stream`;
+    const isOpenAI = isBedrockOpenAIModel(model);
 
-    const claudeMessages = [{ role: 'user', content: [] }];
-    for (const part of contentParts) {
-      if (typeof part === 'string') {
-        claudeMessages[0].content.push({ type: 'text', text: part });
-      } else if (part.type === 'image_url') {
-        const base64Data = part.image_url.url.split(',')[1];
-        const mediaType = part.image_url.url.split(':')[1].split(';')[0];
-        claudeMessages[0].content.push({
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType, data: base64Data }
-        });
+    let requestBody;
+
+    if (isOpenAI) {
+      // OpenAI models on Bedrock use OpenAI-compatible format
+      const openaiMessages = [{ role: 'user', content: [] }];
+      for (const part of contentParts) {
+        if (typeof part === 'string') {
+          openaiMessages[0].content.push({ type: 'text', text: part });
+        } else if (part.type === 'text') {
+          openaiMessages[0].content.push({ type: 'text', text: part.text });
+        } else if (part.type === 'image_url') {
+          openaiMessages[0].content.push({ type: 'image_url', image_url: { url: part.image_url.url } });
+        }
       }
-    }
 
-    const requestBody = JSON.stringify({
-      anthropic_version: 'bedrock-2023-05-31',
-      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
-      messages: claudeMessages,
-      temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
-    });
+      requestBody = JSON.stringify({
+        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
+        messages: openaiMessages,
+        stream: true,
+        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
+      });
+    } else {
+      // Claude/Anthropic models on Bedrock
+      const claudeMessages = [{ role: 'user', content: [] }];
+      for (const part of contentParts) {
+        if (typeof part === 'string') {
+          claudeMessages[0].content.push({ type: 'text', text: part });
+        } else if (part.type === 'text') {
+          claudeMessages[0].content.push({ type: 'text', text: part.text });
+        } else if (part.type === 'image_url') {
+          const base64Data = part.image_url.url.split(',')[1];
+          const mediaType = part.image_url.url.split(':')[1].split(';')[0];
+          claudeMessages[0].content.push({
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64Data }
+          });
+        }
+      }
+
+      requestBody = JSON.stringify({
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
+        messages: claudeMessages,
+        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
+      });
+    }
 
     const headers = { 'Content-Type': 'application/json' };
     await awsSignRequest({
@@ -907,7 +969,7 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.message || `Bedrock API error: ${response.status}`);
+      throw new Error(errorData.message || errorData.error?.message || `Bedrock API error: ${response.status}`);
     }
 
     reader = response.body.getReader();
@@ -932,9 +994,6 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
 
       buffer += decoder.decode(value, { stream: true });
 
-      // Bedrock streaming uses AWS event stream format with embedded JSON
-      // Each event contains a base64-encoded chunk with a bytes field
-      // But when accessed via fetch, the response is newline-delimited JSON events
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
@@ -943,18 +1002,42 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
         if (!trimmed) continue;
 
         try {
-          // Bedrock streams JSON objects with a bytes field (base64 encoded)
-          const event = JSON.parse(trimmed);
-          if (event.bytes) {
-            const decoded = JSON.parse(atob(event.bytes));
-            if (decoded.type === 'content_block_delta' && decoded.delta?.text) {
-              responseChunks.push(decoded.delta.text);
-              onChunk(decoded.delta.text);
+          if (isOpenAI) {
+            // OpenAI streaming format: SSE data lines
+            if (trimmed.startsWith('data: ')) {
+              const data = trimmed.slice(6);
+              if (data === '[DONE]') continue;
+              const parsed = JSON.parse(data);
+              const chunk = parsed.choices?.[0]?.delta?.content;
+              if (chunk) {
+                responseChunks.push(chunk);
+                onChunk(chunk);
+              }
+            } else {
+              // Try parsing as JSON directly (Bedrock event wrapper)
+              const event = JSON.parse(trimmed);
+              if (event.bytes) {
+                const decoded = JSON.parse(atob(event.bytes));
+                const chunk = decoded.choices?.[0]?.delta?.content;
+                if (chunk) {
+                  responseChunks.push(chunk);
+                  onChunk(chunk);
+                }
+              }
             }
-          } else if (event.type === 'content_block_delta' && event.delta?.text) {
-            // Direct JSON event format
-            responseChunks.push(event.delta.text);
-            onChunk(event.delta.text);
+          } else {
+            // Claude streaming format: Bedrock event stream
+            const event = JSON.parse(trimmed);
+            if (event.bytes) {
+              const decoded = JSON.parse(atob(event.bytes));
+              if (decoded.type === 'content_block_delta' && decoded.delta?.text) {
+                responseChunks.push(decoded.delta.text);
+                onChunk(decoded.delta.text);
+              }
+            } else if (event.type === 'content_block_delta' && event.delta?.text) {
+              responseChunks.push(event.delta.text);
+              onChunk(event.delta.text);
+            }
           }
         } catch (e) {
           // Skip unparseable chunks
@@ -1171,6 +1254,8 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
     for (const part of contentParts) {
       if (typeof part === 'string') {
         claudeMessages[0].content.push({ type: 'text', text: part });
+      } else if (part.type === 'text') {
+        claudeMessages[0].content.push({ type: 'text', text: part.text });
       } else if (part.type === 'image_url') {
         // Claude expects { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'base64string' } }
         const base64Data = part.image_url.url.split(',')[1];
@@ -1365,6 +1450,8 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
     for (const part of contentParts) {
       if (typeof part === 'string') {
         claudeMessages[0].content.push({ type: 'text', text: part });
+      } else if (part.type === 'text') {
+        claudeMessages[0].content.push({ type: 'text', text: part.text });
       } else if (part.type === 'image_url') {
         const base64Data = part.image_url.url.split(',')[1];
         const mediaType = part.image_url.url.split(':')[1].split(';')[0];
@@ -2356,11 +2443,12 @@ async function handleGenerateTestCases(data) {
   // Fetch external content if integrations are configured
   let enrichedTicketData = ticketData;
   let currentExternalSources = null;
+  let externalContent = null;
   if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
     console.log('🔗 [Test Cases] Fetching external integrations...');
     try {
       const integrationManager = new IntegrationManager(settings);
-      const externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+      externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
 
       // Set external sources count
       currentExternalSources = {
@@ -2417,6 +2505,26 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
     { type: 'text', text: systemMessage },
     { type: 'text', text: userMessage }
   ];
+
+  // Add Figma images if available
+  if (externalContent && externalContent.figma) {
+    externalContent.figma.forEach(figmaFile => {
+      if (figmaFile.images && figmaFile.images.length > 0) {
+        figmaFile.images.forEach(base64Image => {
+          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+        });
+      }
+    });
+  }
+
+  // Add Jira image attachments if available
+  if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
+    console.log(`📷 [Test Cases] Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments`);
+    enrichedTicketData.imageAttachments.forEach(image => {
+      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+    });
+  }
+
   const response = await callAI(contentParts, settings);
   
   // Parse JSON from response
@@ -3009,7 +3117,9 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   const visionModels = [
     'gpt-4o', 'gpt-4o-mini', 'o1',
     'claude-sonnet-4-20250514', 'claude-sonnet-4-20250111', 'claude-3-5-sonnet-20241022',
-    'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp'
+    'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp',
+    'anthropic.claude',
+    'us.openai.gpt', 'us.openai.o3'
   ];
 
   // Start keep-alive heartbeat to prevent timeout
@@ -3328,7 +3438,9 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
     const visionModels = [
       'gpt-4o', 'gpt-4o-mini', 'o1',
       'claude-sonnet-4-20250514', 'claude-sonnet-4-20250111', 'claude-3-5-sonnet-20241022',
-      'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp'
+      'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp',
+      'anthropic.claude',
+      'us.openai.gpt', 'us.openai.o3'
     ];
     const evolutionCallAI = async (systemMessage, userMessage, evolutionSettings) => {
       const contentParts = [
