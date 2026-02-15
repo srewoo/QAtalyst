@@ -1,6 +1,9 @@
 /**
  * Cache Manager for External Integrations
  * Based on JiraShastra's NodeCache implementation
+ *
+ * NOTE: Currently UNUSED — not imported via importScripts or referenced anywhere.
+ * TODO: Wire into Confluence/Figma fetches to cache responses, or remove.
  */
 
 class CacheManager {

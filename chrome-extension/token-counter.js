@@ -8,8 +8,8 @@
  */
 const TOKEN_LIMITS = {
   // OpenAI
-  'gpt-4o': { max: 128000, safe: 120000 },
-  'gpt-4o-mini': { max: 128000, safe: 120000 },
+  'gpt-4.1': { max: 128000, safe: 120000 },
+  'gpt-4.1-mini': { max: 128000, safe: 120000 },
   'gpt-4-turbo': { max: 128000, safe: 120000 },
   'gpt-4': { max: 8192, safe: 7500 },
   'gpt-3.5-turbo': { max: 16385, safe: 15000 },

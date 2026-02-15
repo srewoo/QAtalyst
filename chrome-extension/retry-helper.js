@@ -1,6 +1,10 @@
 /**
  * Retry Helper with Circuit Breaker Pattern
  * Based on JiraShastra's enterprise implementation
+ *
+ * NOTE: Currently UNUSED — not imported via importScripts or referenced anywhere.
+ * Each API function handles retries inline with exponential backoff.
+ * TODO: Wire into API calls for unified retry/circuit-breaker, or remove.
  */
 
 class RetryHelper {

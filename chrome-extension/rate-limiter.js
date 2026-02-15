@@ -2,6 +2,11 @@
  * Unified Rate Limiter for QAtalyst
  * Handles rate limiting across all API integrations with exponential backoff
  * and retry-after header support
+ *
+ * NOTE: Currently UNUSED — loaded via importScripts but getRateLimiter() is never called.
+ * Each API function (callOpenAI, callClaude, callGemini, callBedrock) implements
+ * its own retry logic with exponential backoff instead.
+ * TODO: Wire into API calls or remove to reduce service worker load.
  */
 
 class RateLimiter {

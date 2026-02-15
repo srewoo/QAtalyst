@@ -258,12 +258,213 @@ class AgentOrchestrator {
       }
     }
     
+    // Validate test case quality and storyReference
+    results.testCases = this.validateAndCleanTestCases(results.testCases, ticketData);
+
+    // Multi-pass refinement loop: up to 3 passes, stop when all specificity scores > 70
+    const MAX_REFINEMENT_PASSES = 3;
+    const SPECIFICITY_THRESHOLD = 70;
+
+    for (let pass = 1; pass <= MAX_REFINEMENT_PASSES; pass++) {
+      // Re-score all tests after each pass
+      if (pass > 1) {
+        results.testCases = this.validateAndCleanTestCases(results.testCases, ticketData);
+      }
+
+      const lowQualityTests = results.testCases.filter(tc => (tc._specificityScore || 0) < SPECIFICITY_THRESHOLD);
+
+      // Stop if all tests meet the threshold
+      if (lowQualityTests.length === 0) {
+        console.log(`[ORCHESTRATOR] ✅ All tests above specificity threshold (${SPECIFICITY_THRESHOLD}) after pass ${pass - 1}`);
+        break;
+      }
+
+      // Skip if too many tests are low quality (>50%) — likely a systemic prompt issue, not worth refining
+      if (lowQualityTests.length > Math.ceil(results.testCases.length * 0.5)) {
+        console.log(`[ORCHESTRATOR] ⚠️ Too many low-quality tests (${lowQualityTests.length}/${results.testCases.length}), skipping refinement`);
+        break;
+      }
+
+      console.log(`[ORCHESTRATOR] 🔄 Refinement pass ${pass}/${MAX_REFINEMENT_PASSES}: ${lowQualityTests.length} tests below threshold`);
+
+      if (this.onProgress) {
+        this.onProgress({
+          agent: 'Refinement',
+          step: enabledAgents.length + pass,
+          total: enabledAgents.length + MAX_REFINEMENT_PASSES,
+          status: 'running',
+          description: `Refinement pass ${pass}: improving ${lowQualityTests.length} test cases`
+        });
+      }
+
+      try {
+        const refinementAgent = new RefinementAgent();
+        const boundAgent = this.agents.find(a => a.callAI && a.callAI !== BaseAgent.prototype.callAI);
+        if (boundAgent) {
+          refinementAgent.callAI = boundAgent.callAI;
+          refinementAgent.settings = this.settings;
+        }
+
+        const refined = await refinementAgent.refineTests(
+          lowQualityTests, ticketData, results, this.settings, appContext, pass
+        );
+
+        if (refined && refined.length > 0) {
+          // Replace low-quality tests with refined versions
+          const lowQualityIds = new Set(lowQualityTests.map(tc => tc.id));
+          results.testCases = results.testCases.filter(tc => !lowQualityIds.has(tc.id));
+          results.testCases.push(...refined);
+          console.log(`[ORCHESTRATOR] ✅ Pass ${pass}: refined ${refined.length} tests`);
+        } else {
+          console.log(`[ORCHESTRATOR] ⚠️ Pass ${pass}: no improvements returned, stopping`);
+          break;
+        }
+
+        if (this.onProgress) {
+          this.onProgress({
+            agent: 'Refinement',
+            step: enabledAgents.length + pass,
+            total: enabledAgents.length + MAX_REFINEMENT_PASSES,
+            status: 'completed',
+            count: refined?.length || 0
+          });
+        }
+      } catch (error) {
+        console.error(`[ORCHESTRATOR] Refinement pass ${pass} failed (non-critical):`, error.message);
+        break;
+      }
+    }
+
     // Calculate statistics
     results.statistics = this.calculateStatistics(results.testCases);
-    
+
     return results;
   }
-  
+
+  /**
+   * Validate test cases post-generation:
+   * - Ensure storyReference is populated and meaningful
+   * - Flag vague descriptions and steps
+   * - Ensure expected results are specific
+   */
+  validateAndCleanTestCases(testCases, ticketData) {
+    const ticketKey = ticketData?.key || ticketData?.ticketKey || 'Unknown';
+    const genericRefs = ['user story', 'the story', 'story requirement', 'requirement', 'n/a', 'na', 'none', 'general'];
+    let fixedCount = 0;
+
+    return testCases.map(tc => {
+      // Fix missing or generic storyReference
+      const ref = (tc.storyReference || '').trim().toLowerCase();
+      if (!ref || ref.length < 10 || genericRefs.some(g => ref === g)) {
+        // Attempt to derive from description or title
+        const derivedRef = this.deriveStoryReference(tc, ticketData);
+        if (derivedRef) {
+          tc.storyReference = derivedRef;
+          fixedCount++;
+        } else {
+          tc.storyReference = `${ticketKey}: ${tc.title || 'Untitled test'}`;
+          fixedCount++;
+        }
+      }
+
+      // Ensure steps is always an array
+      if (!Array.isArray(tc.steps)) {
+        tc.steps = tc.steps ? [tc.steps] : [];
+      }
+
+      // Normalize expected_result / expectedResult
+      if (!tc.expected_result && tc.expectedResult) {
+        tc.expected_result = tc.expectedResult;
+      }
+
+      // Specificity scoring
+      tc._specificityScore = this.calculateSpecificityScore(tc);
+      if (tc._specificityScore < 40) {
+        tc._qualityWarning = 'LOW_SPECIFICITY';
+      }
+
+      return tc;
+    });
+  }
+
+  /**
+   * Calculate specificity score for a test case (0-100).
+   * Higher = more specific and executable.
+   */
+  calculateSpecificityScore(tc) {
+    let score = 50; // Base score
+
+    const allText = [
+      tc.title || '',
+      tc.description || '',
+      tc.expected_result || '',
+      ...(tc.steps || []),
+      tc.test_data || ''
+    ].join(' ');
+
+    const allTextLower = allText.toLowerCase();
+
+    // Penalize vague words (-5 each)
+    const vagueWords = [
+      'appropriate', 'correctly', 'properly', 'as expected', 'should work',
+      'works correctly', 'relevant', 'valid data', 'invalid data',
+      'enter valid', 'enter invalid', 'proper error', 'proper message',
+      'the system should', 'works as expected', 'functions correctly'
+    ];
+    vagueWords.forEach(w => {
+      if (allTextLower.includes(w)) score -= 5;
+    });
+
+    // Reward concrete patterns (+5 each)
+    // Quoted strings in steps (exact values)
+    const quotedValues = allText.match(/['"][^'"]{2,}['"]/g);
+    if (quotedValues && quotedValues.length > 0) score += Math.min(quotedValues.length * 3, 15);
+
+    // Specific numbers/amounts
+    if (/\d+/.test(tc.test_data || '')) score += 5;
+
+    // Email patterns in test data
+    if (/\S+@\S+\.\S+/.test(allText)) score += 5;
+
+    // URL patterns
+    if (/https?:\/\/\S+/.test(allText)) score += 3;
+
+    // Specific field names in quotes
+    const fieldRefs = allText.match(/['"][A-Z][a-zA-Z\s]{2,}['"]/g);
+    if (fieldRefs && fieldRefs.length >= 2) score += 5;
+
+    // Steps count (more steps = more detailed)
+    if (tc.steps && tc.steps.length >= 3) score += 5;
+    if (tc.steps && tc.steps.length >= 5) score += 5;
+
+    // Expected result has specific text to look for
+    const er = (tc.expected_result || '').toLowerCase();
+    if (er.includes('message') || er.includes('toast') || er.includes('displays') || er.includes('shows')) score += 5;
+
+    // Description length (longer = more detailed)
+    if ((tc.description || '').length > 80) score += 5;
+
+    return Math.max(0, Math.min(100, score));
+  }
+
+  /**
+   * Try to derive a meaningful storyReference from the test case context
+   */
+  deriveStoryReference(testCase, ticketData) {
+    const summary = ticketData?.summary || ticketData?.title || '';
+    if (!summary) return null;
+
+    // If the test title relates to the story summary, use a condensed form
+    const titleWords = (testCase.title || '').toLowerCase().split(/\s+/);
+    const summaryWords = summary.toLowerCase().split(/\s+/);
+    const overlap = titleWords.filter(w => w.length > 3 && summaryWords.includes(w));
+
+    if (overlap.length >= 2) {
+      return `${ticketData?.key || ''}: ${summary}`.substring(0, 200);
+    }
+    return null;
+  }
+
   calculateStatistics(testCases) {
     return {
       total: testCases.length,
@@ -294,7 +495,10 @@ class BaseAgent {
   
   async execute(ticketData, previousResults, settings, appContext = null) {
     const systemMessage = this.getSystemMessage(previousResults);
-    const userMessage = this.getUserMessage(ticketData, previousResults, appContext);
+    let userMessage = await this.getUserMessage(ticketData, previousResults, appContext);
+
+    // Token-aware truncation: truncate user message content if approaching limits
+    userMessage = this.ensureTokenSafety(systemMessage, userMessage, settings);
 
     // Call AI (will use callAI from background.js context)
     const response = await this.callAI(systemMessage, userMessage, settings);
@@ -320,7 +524,10 @@ class BaseAgent {
 
       try {
         const systemMessage = this.getSystemMessage(previousResults, i + 1, config.batches, config.testsPerBatch);
-        const userMessage = this.getUserMessageBatched(ticketData, previousResults, appContext, i + 1, config.batches, config.testsPerBatch);
+        let userMessage = await this.getUserMessageBatched(ticketData, previousResults, appContext, i + 1, config.batches, config.testsPerBatch);
+
+        // Token-aware truncation
+        userMessage = this.ensureTokenSafety(systemMessage, userMessage, settings);
 
         // Call AI for this batch
         const response = await this.callAI(systemMessage, userMessage, settings);
@@ -343,15 +550,22 @@ class BaseAgent {
 
   // Override this in subclasses to customize batch messages
   // Default implementation: modifies the regular getUserMessage to request fewer tests
-  getUserMessageBatched(ticketData, previousResults, appContext, batchNum, totalBatches, testsPerBatch) {
-    const originalMessage = this.getUserMessage(ticketData, previousResults, appContext);
+  async getUserMessageBatched(ticketData, previousResults, appContext, batchNum, totalBatches, testsPerBatch) {
+    const originalMessage = await this.getUserMessage(ticketData, previousResults, appContext);
 
     // Replace any "Generate X test cases" with "Generate testsPerBatch test cases"
-    // This is a smart default that works for most agents
     const batchMessage = originalMessage.replace(
       /Generate \d+ (?:UNIQUE )?(?:positive|negative|edge|regression|integration)? ?test cases/gi,
       `Generate ${testsPerBatch} test cases (batch ${batchNum}/${totalBatches})`
     );
+
+    // Append structured previous test summaries for deduplication (batch 2+)
+    if (batchNum > 1 && previousResults.testCases?.length > 0) {
+      const existingSummaries = previousResults.testCases.slice(-15).map(tc =>
+        `  - "${tc.title}" (${tc.category || 'unknown'}): ${(tc.description || '').substring(0, 100)}`
+      ).join('\n');
+      return batchMessage + `\n\n⚠️ AVOID DUPLICATING these previously generated tests:\n${existingSummaries}\n\nGenerate DIFFERENT scenarios not covered above.`;
+    }
 
     return batchMessage;
   }
@@ -369,6 +583,116 @@ class BaseAgent {
     return response;
   }
   
+  /**
+   * Generate concrete test data hints from field constraints.
+   * Returns valid, boundary, and invalid example values for a form field.
+   */
+  generateTestDataHint(field) {
+    if (!field) return null;
+    const type = (field.type || 'text').toLowerCase();
+    const name = (field.name || field.id || '').toLowerCase();
+    const validation = field.validation || [];
+    const format = field._formatHints?.format;
+
+    // Extract constraints
+    let minLen = null, maxLen = null, min = null, max = null, pattern = null;
+    validation.forEach(v => {
+      if (v.startsWith('minLength:')) minLen = parseInt(v.split(':')[1]);
+      if (v.startsWith('maxLength:')) maxLen = parseInt(v.split(':')[1]);
+      if (v.startsWith('min:')) min = v.split(':')[1];
+      if (v.startsWith('max:')) max = v.split(':')[1];
+      if (v.startsWith('pattern:')) pattern = v.split(':').slice(1).join(':');
+    });
+
+    // Generate hints based on type + constraints
+    if (type === 'email' || format === 'email' || name.includes('email')) {
+      return {
+        valid: '"user@example.com"',
+        boundary: '"a@b.co" (min valid), "' + 'x'.repeat(Math.min(maxLen || 64, 64)) + '@test.com" (max length)',
+        invalid: '"not-an-email", "" (empty), "@missing-local.com"'
+      };
+    }
+    if (type === 'password' || name.includes('password')) {
+      return {
+        valid: '"SecureP@ss123"',
+        boundary: minLen ? `"${'a'.repeat(minLen)}" (min ${minLen} chars)` : '"Ab1@5678" (8 chars)',
+        invalid: minLen ? `"${'a'.repeat(minLen - 1)}" (${minLen - 1} chars, below min)` : '"short"'
+      };
+    }
+    if (type === 'number' || type === 'range') {
+      const minV = min || '0';
+      const maxV = max || '9999';
+      return {
+        valid: `${Math.floor((parseInt(minV) + parseInt(maxV)) / 2)}`,
+        boundary: `${minV} (min), ${maxV} (max), ${parseInt(minV) - 1} (below min), ${parseInt(maxV) + 1} (above max)`,
+        invalid: '"abc" (non-numeric), "" (empty)'
+      };
+    }
+    if (type === 'tel' || format === 'phone' || name.includes('phone')) {
+      return {
+        valid: '"+1 (555) 123-4567"',
+        boundary: '"5551234567" (no formatting)',
+        invalid: '"abc" (letters), "123" (too short)'
+      };
+    }
+    if (type === 'url' || name.includes('url') || name.includes('website')) {
+      return {
+        valid: '"https://www.example.com"',
+        boundary: '"http://a.co" (minimal valid URL)',
+        invalid: '"not-a-url", "ftp://wrong-scheme.com"'
+      };
+    }
+    if (type === 'date' || format === 'date') {
+      return {
+        valid: '"2025-06-15"',
+        boundary: '"2025-01-01" (start of year), "2025-12-31" (end of year)',
+        invalid: '"2025-13-01" (invalid month), "not-a-date"'
+      };
+    }
+    // Default text field
+    if (type === 'text' || type === 'textarea') {
+      const mv = maxLen || 255;
+      const mnv = minLen || 1;
+      return {
+        valid: `"Sample ${name || 'text'} value"`,
+        boundary: `"${'a'.repeat(Math.min(mnv, 5))}" (min ${mnv}), "${'x'.repeat(Math.min(mv, 50))}..." (max ${mv} chars)`,
+        invalid: minLen ? `"" (empty), "${'a'.repeat(Math.max(mv + 1, 256))}" (exceeds max)` : '"" (empty if required)'
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Ensure combined prompt fits within model token limits.
+   * Truncates user message (context data) if needed, preserving system instructions.
+   */
+  ensureTokenSafety(systemMessage, userMessage, settings) {
+    if (typeof estimateTokenCount !== 'function' || typeof checkTokenLimit !== 'function') {
+      return userMessage; // Token counter not loaded, skip
+    }
+
+    const model = settings?.llmModel || 'gpt-4.1';
+    const systemTokens = estimateTokenCount(systemMessage);
+    const userTokens = estimateTokenCount(userMessage);
+    const outputReserve = 4000; // Reserve tokens for output
+    const totalTokens = systemTokens + userTokens + outputReserve;
+
+    const check = checkTokenLimit(totalTokens, model, outputReserve);
+
+    if (!check.safe) {
+      // Calculate max tokens available for user message
+      const maxUserTokens = Math.max(check.limit - systemTokens - outputReserve - 500, 2000);
+      console.warn(`[${this.name}] Token limit exceeded (${totalTokens}/${check.limit}). Truncating user message to ~${maxUserTokens} tokens.`);
+      return truncateToTokenLimit(userMessage, maxUserTokens);
+    }
+
+    if (check.warning) {
+      console.warn(`[${this.name}] ${check.warning}`);
+    }
+
+    return userMessage;
+  }
+
   // This will be set by background.js to use its callAI function
   async callAI(systemMessage, userMessage, settings) {
     throw new Error('callAI must be bound from background.js');
@@ -406,19 +730,36 @@ class BaseAgent {
       formatted += `🌐 Application: ${appContext.appUrl || 'Unknown'}\n`;
       formatted += `📄 Total Pages Crawled: ${appContext.pageCount || Object.keys(kg.pages || {}).length}\n\n`;
 
-      // Add forms from knowledge graph
+      // Add forms from knowledge graph with FULL field constraints
       if (kg.forms && kg.forms.length > 0) {
-        formatted += '📝 FORMS FOUND:\n';
+        formatted += '📝 FORMS FOUND (with field constraints for test data generation):\n';
         kg.forms.slice(0, 5).forEach((form, index) => {
-          formatted += `\n${index + 1}. Form on ${form.url}\n`;
-          formatted += `   • ID: ${form.id || 'N/A'}\n`;
-          formatted += `   • Action: ${form.action || 'N/A'}\n`;
-          formatted += `   • Method: ${form.method}\n`;
+          formatted += `\n${index + 1}. Form: "${form.name || form.id || 'unnamed'}" on ${form.url}\n`;
+          formatted += `   • Action: ${form.action || 'N/A'} | Method: ${form.method}\n`;
           if (form.inputs && form.inputs.length > 0) {
-            formatted += `   • Fields:\n`;
+            formatted += `   • Fields (USE THESE EXACT NAMES & CONSTRAINTS IN TESTS):\n`;
+            form.inputs.slice(0, 15).forEach(input => {
+              const name = input.name || input.id || 'unnamed';
+              const req = input.required ? ' [REQUIRED]' : ' [optional]';
+              const label = input.label ? ` label="${input.label}"` : '';
+              let constraints = '';
+              if (input.validation && input.validation.length > 0) {
+                constraints = ` constraints=[${input.validation.join(', ')}]`;
+              }
+              let format = '';
+              if (input._formatHints?.format) {
+                format = ` format=${input._formatHints.format}`;
+              }
+              const ph = input.placeholder ? ` placeholder="${input.placeholder}"` : '';
+              formatted += `     - "${name}" (${input.type})${req}${label}${constraints}${format}${ph}\n`;
+            });
+            // Generate example test data hints
+            formatted += `   • 📋 TEST DATA HINTS:\n`;
             form.inputs.slice(0, 10).forEach(input => {
-              const required = input.required ? ' (required)' : '';
-              formatted += `     - ${input.name || input.id}: ${input.type}${required}\n`;
+              const hint = this.generateTestDataHint(input);
+              if (hint) {
+                formatted += `     - "${input.name || input.id}": valid=${hint.valid}, boundary=${hint.boundary}, invalid=${hint.invalid}\n`;
+              }
             });
           }
         });
@@ -792,6 +1133,28 @@ DO NOT generate generic tests. ONLY generate tests that trace back to specific r
 - Integration mentions (bot, API, service) → Integration points
 ${visualAnalysisSection}
 
+**🎯 SPECIFICITY RULES (CRITICAL - Every test must follow these):**
+
+1. **CONCRETE TEST DATA**: Never say "enter valid data" — specify EXACT values:
+   ❌ "Enter valid email" → ✅ "Enter 'john.doe@company.com' in the Email field"
+   ❌ "Enter a name" → ✅ "Enter 'Jane Smith' in the 'Full Name' field"
+
+2. **EXACT UI ELEMENTS**: Always use the real field/button name from the app context or story:
+   ❌ "Click submit button" → ✅ "Click the 'Save Changes' button"
+   ❌ "Fill in the form" → ✅ "Enter '2025-06-15' in the 'Start Date' picker"
+
+3. **MEASURABLE EXPECTED RESULTS**: Never say "should work correctly":
+   ❌ "System should respond appropriately" → ✅ "Success toast 'Meeting created' appears within 3 seconds"
+   ❌ "Page should load properly" → ✅ "Dashboard page loads showing 'Welcome, Jane' header"
+
+4. **SPECIFIC PRECONDITIONS**: Never just "user is logged in":
+   ❌ "User is logged in" → ✅ "User 'jane@company.com' is logged in with 'Admin' role on the Dashboard page"
+
+5. **BANNED VAGUE WORDS** (never use these without a specific qualifier):
+   "appropriate", "correct", "proper", "valid", "invalid", "relevant", "expected", "as expected", "should work", "works correctly"
+
+**If APPLICATION CONTEXT is provided with field constraints/test data hints, USE THOSE EXACT VALUES in your test steps and test_data fields.**
+
 **REQUIRED TEST CASE FORMAT (includes storyReference):**
 {
   "id": "TC-POS-001",
@@ -800,14 +1163,15 @@ ${visualAnalysisSection}
   "priority": "P0",
   "storyReference": "QUOTE or PARAPHRASE the exact requirement from user story this test validates",
   "description": "Verify that [exact scenario from user story]. The user should be able to [specific action] and the system should [expected behavior].",
-  "preconditions": "[Specific setup needed for this scenario]",
+  "preconditions": "[Specific state: user role, page location, existing data]",
   "steps": [
-    "Step with EXACT field names/button text from Figma or story",
-    "Step referencing SPECIFIC values from user story",
-    "Verification step"
+    "Navigate to [exact page URL or name]",
+    "Enter '[concrete value]' in the '[exact field name]' field",
+    "Click the '[exact button text]' button",
+    "Verify [specific measurable outcome]"
   ],
-  "expected_result": "[Specific outcome that validates the story requirement]",
-  "test_data": "[Realistic data that matches the scenario]"
+  "expected_result": "[Specific, measurable outcome with exact text/values to verify]",
+  "test_data": "[Concrete values: email='test@example.com', name='Jane Smith', amount=150.00]"
 }
 
 **🚫 REJECTED TEST PATTERNS (DO NOT GENERATE THESE):**
@@ -1116,18 +1480,31 @@ ${visualSection}
 ❌ "Session timeout" → Generic, not in story
 ❌ Any test without a clear storyReference
 
+**🎯 SPECIFICITY RULES FOR NEGATIVE TESTS:**
+1. **CONCRETE TRIGGER**: Specify EXACTLY what input/action causes the failure:
+   ❌ "Enter invalid data" → ✅ "Enter 'abc' in the 'Amount' field (expects numeric)"
+   ❌ "Submit without required fields" → ✅ "Leave 'Email' field empty and click 'Register'"
+
+2. **EXACT ERROR MESSAGES**: Describe what error the user should see:
+   ❌ "Error message appears" → ✅ "Red text 'Email is required' appears below the Email field"
+
+3. **CONCRETE TEST DATA**: Provide the exact invalid values to use:
+   ❌ "Use invalid email" → ✅ "Enter 'not-an-email' in Email field"
+
+**If APPLICATION CONTEXT provides field constraints (maxLength, min, max, pattern), use those to create precise boundary-violation test data.**
+
 **REQUIRED TEST CASE FORMAT:**
 {
   "id": "TC-NEG-001",
   "title": "[Failure from story] handling",
   "category": "Negative",
   "priority": "P0|P1|P2",
-  "storyReference": "QUOTE the exact failure scenario from story (e.g., 'bot was kicked-out from the meeting')",
-  "description": "Verify that when [failure from story] occurs, the system [expected behavior]. This tests the requirement: [quote story].",
-  "preconditions": "[Setup for failure]",
-  "steps": ["Steps to trigger failure"],
-  "expected_result": "[Recovery/error handling from story]",
-  "test_data": "[Data for failure scenario]"
+  "storyReference": "QUOTE the exact failure scenario from story",
+  "description": "Verify that when [specific failure trigger] occurs, the system [specific error handling]. Tests requirement: [quote story].",
+  "preconditions": "[Specific state that enables the failure scenario]",
+  "steps": ["Navigate to [page]", "Enter '[specific invalid value]' in '[field name]'", "Click '[button]'", "Observe error behavior"],
+  "expected_result": "[Exact error message text and location, or specific recovery behavior]",
+  "test_data": "[Concrete invalid values with reason: email='not-an-email' (missing @)]"
 }
 
 **✅ EXAMPLES OF VALID storyReference:**
@@ -1303,18 +1680,30 @@ ${visualSection}
 ❌ "1000 concurrent users" → Generic load, not from story
 ❌ Any edge case for features NOT in the story
 
+**🎯 SPECIFICITY RULES FOR EDGE CASES:**
+1. **USE FIELD CONSTRAINTS**: If application context provides field limits (maxLength:50, min:0, max:100), use those EXACT boundaries:
+   ❌ "Enter very long text" → ✅ "Enter exactly 51 characters in 'Name' field (maxLength is 50)"
+   ❌ "Enter extreme number" → ✅ "Enter '101' in 'Quantity' field (max is 100)"
+
+2. **CONCRETE EDGE VALUES**: Always provide exact boundary values:
+   ❌ "Test with many items" → ✅ "Add 50 participants to the meeting (test system limit)"
+   ❌ "Test empty state" → ✅ "Navigate to Meetings page with 0 scheduled meetings"
+
+3. **SPECIFIC TIMING**: For timing edges, state exact conditions:
+   ❌ "Do actions simultaneously" → ✅ "Click 'Start Recording' while the bot is still joining (within 2s of invite)"
+
 **REQUIRED TEST CASE FORMAT:**
 {
   "id": "TC-EDG-001",
   "title": "[Edge condition] for [story feature]",
   "category": "Edge",
   "priority": "P1|P2",
-  "storyReference": "QUOTE the feature/entity from story this tests (e.g., 'internal and external impromptu meetings')",
-  "description": "Verify that [story feature] handles [edge condition]. This tests the boundary where [situation].",
-  "preconditions": "[Setup]",
-  "steps": ["Steps"],
-  "expected_result": "[Edge behavior]",
-  "test_data": "[Edge data]"
+  "storyReference": "QUOTE the feature/entity from story this tests",
+  "description": "Verify that [story feature] handles [exact boundary condition]. When [specific trigger], the system should [specific behavior].",
+  "preconditions": "[Exact state setup with concrete values]",
+  "steps": ["Navigate to [page]", "Set up [exact condition]", "Trigger [exact action]", "Observe [specific behavior]"],
+  "expected_result": "[Exact expected behavior at the boundary]",
+  "test_data": "[Exact boundary values with reasoning: name='x'.repeat(51) because maxLength=50]"
 }
 
 **✅ EXAMPLES OF VALID EDGE CASES FOR "Impromptu Meeting" STORY:**
@@ -1326,14 +1715,20 @@ ${visualSection}
 Return ONLY valid JSON, no markdown formatting.`;
   }
 
-  getUserMessage(ticketData, previousResults, appContext = null) {
+  async getUserMessage(ticketData, previousResults, appContext = null) {
     const appContextSection = this.formatAppContext(appContext || previousResults.appContext, previousResults);
     const percentage = (this.settings?.edgePercent || 10) / 100;
     const testCount = Math.floor((this.settings?.testCount || 30) * percentage);
     const existingTests = previousResults.testCases?.map(tc => `- ${tc.title}`).join('\n') || 'None yet';
 
-    // Extract edge case opportunities from story
-    const edgeOpportunities = this.extractEdgeOpportunities(ticketData);
+    // Use LLM-powered edge case pre-analysis (or fall back to keyword extraction)
+    let edgeOpportunities;
+    try {
+      edgeOpportunities = await this.analyzeEdgeCasesWithLLM(ticketData, previousResults, appContext);
+    } catch (e) {
+      console.warn('[EdgeCaseAgent] LLM pre-analysis failed, using fallback:', e.message);
+      edgeOpportunities = this.extractEdgeOpportunitiesFallback(ticketData);
+    }
 
     const hasVisualContext = this.hasImages?.figma || this.hasImages?.jira;
     const visualNote = hasVisualContext
@@ -1351,7 +1746,7 @@ Return ONLY valid JSON, no markdown formatting.`;
 ${ticketData.description || 'No description provided'}
 
 **═══════════════════════════════════════════════════════════════**
-**🔍 EDGE CASE OPPORTUNITIES FROM STORY:**
+**🔍 DEEP EDGE CASE ANALYSIS (LLM-Powered):**
 **═══════════════════════════════════════════════════════════════**
 ${edgeOpportunities}
 
@@ -1368,11 +1763,7 @@ ${existingTests}
 **🎯 YOUR TASK: Generate ${testCount} STORY-ALIGNED Edge Cases**
 **═══════════════════════════════════════════════════════════════**
 
-**THINK ABOUT:**
-- What if there are 100 participants? What if there are 0?
-- What if two users do the same action simultaneously?
-- What if the user switches between states rapidly?
-- What unusual but valid combinations exist for this feature?
+**IMPORTANT:** Use the deep analysis above as your primary guide. Each edge case must map to a specific finding from the analysis.
 
 **DO NOT GENERATE:**
 - Generic character limit tests
@@ -1382,15 +1773,82 @@ ${existingTests}
 Return as JSON array.`;
   }
 
-  // Extract edge case opportunities from user story
-  extractEdgeOpportunities(ticketData) {
+  /**
+   * LLM-powered edge case pre-analysis.
+   * Asks the LLM to identify state machines, concurrency risks, permission boundaries,
+   * and data flow edge cases BEFORE generating test cases.
+   */
+  async analyzeEdgeCasesWithLLM(ticketData, previousResults, appContext) {
+    const systemMessage = `You are an edge case analysis expert. Given a user story, identify SPECIFIC edge case opportunities across these dimensions. Be concise — return bullet points only, no test cases.
+
+**ANALYSIS DIMENSIONS:**
+
+1. **STATE MACHINE ANALYSIS:**
+   - What are the possible states of the primary entity? (e.g., draft → active → paused → completed)
+   - What invalid state transitions could be attempted?
+   - What happens if an action is triggered in an unexpected state?
+   - Can the entity be in two states simultaneously?
+
+2. **CONCURRENCY & RACE CONDITIONS:**
+   - What if two users perform the same action at the same time?
+   - What if a user double-clicks or rapidly repeats an action?
+   - What if background processes (bots, syncs, notifications) conflict with user actions?
+   - What if a resource is modified while being read?
+
+3. **PERMISSION & ACCESS BOUNDARIES:**
+   - What roles/user types interact with this feature?
+   - What happens if permissions change mid-operation?
+   - Can a user escalate access through this feature?
+   - What if a user accesses a resource they previously had access to but no longer do?
+
+4. **DATA FLOW & BOUNDARY VALUES:**
+   - What are the actual field constraints from the application context?
+   - What happens at exact boundary values (max, min, 0, -1, max+1)?
+   - What if required data is missing, null, or malformed?
+   - What if data changes between validation and submission?
+
+5. **INTEGRATION & DEPENDENCY EDGES:**
+   - What external systems does this feature depend on?
+   - What if an external service is down, slow, or returns unexpected data?
+   - What if webhooks/callbacks arrive out of order or are duplicated?
+
+Return ONLY the relevant dimensions with specific findings for THIS story. Skip dimensions that don't apply.
+Format: Use "• " bullet points grouped by dimension heading.`;
+
+    const contextInfo = this.formatAppContext(appContext || previousResults?.appContext, previousResults);
+
+    const userMessage = `**USER STORY:**
+Ticket: ${ticketData.key}
+Summary: ${ticketData.summary}
+Description: ${(ticketData.description || '').substring(0, 2000)}
+
+${contextInfo}
+
+**Requirement Analysis:**
+${(previousResults.analysis || '').substring(0, 1000)}
+
+Analyze this story and return edge case opportunities grouped by dimension.`;
+
+    const response = await this.callAI(systemMessage, userMessage, this.settings);
+
+    // Return the raw text analysis — it will be injected into the edge case generation prompt
+    if (!response || response.length < 50) {
+      throw new Error('LLM returned insufficient analysis');
+    }
+
+    return response;
+  }
+
+  /**
+   * Fallback keyword-based edge case extraction (used when LLM pre-analysis fails)
+   */
+  extractEdgeOpportunitiesFallback(ticketData) {
     const description = ticketData.description || '';
     const summary = ticketData.summary || '';
     const fullText = `${summary}\n${description}`;
 
     const opportunities = [];
 
-    // Look for quantity words that suggest edge cases
     const quantityWords = ['multiple', 'many', 'all', 'any', 'both', 'either', 'each', 'various', 'different'];
     quantityWords.forEach(word => {
       if (fullText.toLowerCase().includes(word)) {
@@ -1398,13 +1856,11 @@ Return as JSON array.`;
       }
     });
 
-    // Look for user types that might have edge cases
     const userTypes = fullText.match(/(?:internal|external|host|participant|user|admin|guest)\s+\w+/gi);
     if (userTypes) {
       opportunities.push(`• User type edges: ${[...new Set(userTypes)].slice(0, 3).join(', ')}`);
     }
 
-    // Look for state transitions
     const stateWords = ['initiated', 'started', 'stopped', 'joined', 'left', 'kicked', 'denied', 'allowed'];
     stateWords.forEach(word => {
       if (fullText.toLowerCase().includes(word)) {
@@ -1412,12 +1868,10 @@ Return as JSON array.`;
       }
     });
 
-    // Look for timing-related edge cases
     if (fullText.toLowerCase().includes('impromptu') || fullText.toLowerCase().includes('scheduled')) {
       opportunities.push(`• Timing edge: Impromptu vs scheduled timing differences`);
     }
 
-    // Look for recovery scenarios (these are edge cases)
     if (fullText.toLowerCase().includes('recovery') || fullText.toLowerCase().includes('retry')) {
       opportunities.push(`• Recovery edge: Multiple recovery attempts, rapid retries`);
     }
@@ -1788,6 +2242,134 @@ Return as JSON array.`;
       return [];
     }
   }
+}
+
+// Refinement Agent — Takes low-quality tests and makes them specific + executable
+class RefinementAgent extends BaseAgent {
+  constructor() {
+    super('Refinement', 'Refines vague test cases into specific, executable tests', true);
+  }
+
+  /**
+   * Refine a batch of low-quality tests.
+   * Takes existing tests + context and returns improved versions.
+   * @param {number} passNumber - Current refinement pass (1, 2, or 3)
+   */
+  async refineTests(testsToRefine, ticketData, previousResults, settings, appContext, passNumber = 1) {
+    // Limit to 10 tests per refinement pass to avoid token overflow
+    const batch = testsToRefine.slice(0, 10);
+
+    const systemMessage = this.getRefinementSystemMessage(passNumber);
+    let userMessage = this.getRefinementUserMessage(batch, ticketData, previousResults, appContext, passNumber);
+
+    // Token safety
+    userMessage = this.ensureTokenSafety(systemMessage, userMessage, settings);
+
+    const response = await this.callAI(systemMessage, userMessage, settings);
+    return this.parseResponse(response);
+  }
+
+  getRefinementSystemMessage(passNumber = 1) {
+    const escalation = passNumber >= 3
+      ? `\n**⚠️ FINAL PASS — MAXIMUM SPECIFICITY REQUIRED:**
+Every single step MUST contain an exact UI element name, an exact value to enter, or an exact visual assertion.
+If you cannot determine the exact value from context, INVENT a realistic one (e.g., email: 'jane.smith@acme.com', amount: '$1,250.00').
+No step may use ANY word from the banned list below. Zero tolerance.`
+      : passNumber >= 2
+        ? `\n**🔄 SECOND PASS — These tests were already refined once but still scored low.**
+Focus on: replacing ANY remaining vague phrases, adding EXACT field values from the app context, and writing steps detailed enough for a junior tester.`
+        : '';
+
+    return `You are a TEST CASE REFINEMENT SPECIALIST. Your job is to take VAGUE test cases and make them SPECIFIC and EXECUTABLE.
+${escalation}
+
+**YOUR TASK:** For each test case provided, improve it by:
+
+1. **Replace vague steps** with concrete actions using EXACT field names, button labels, and values:
+   - BEFORE: "Enter valid data in the form"
+   - AFTER: "Enter 'john.doe@company.com' in the 'Email' field"
+
+2. **Replace vague expected results** with measurable outcomes:
+   - BEFORE: "System should respond appropriately"
+   - AFTER: "Success toast 'Profile updated successfully' appears at top of page"
+
+3. **Add concrete test data** with specific values:
+   - BEFORE: "Use valid credentials"
+   - AFTER: "email='test.user@company.com', password='SecureP@ss123'"
+
+4. **Make preconditions specific**:
+   - BEFORE: "User is logged in"
+   - AFTER: "User 'admin@company.com' is logged in with Admin role, on the Settings page"
+
+5. **Preserve the original test intent** — don't change WHAT is being tested, only make HOW more specific.
+
+**BANNED VAGUE WORDS** (replace ALL of these — score penalty for each one remaining):
+"appropriate", "correctly", "properly", "as expected", "should work", "valid data", "invalid data",
+"relevant", "expected behavior", "functions correctly", "works as expected", "proper error",
+"proper message", "the system should", "enter valid", "enter invalid"
+
+**OUTPUT FORMAT:** Return a JSON array of the refined test cases in the same format, preserving all original fields (id, category, priority, storyReference) but with improved description, steps, expected_result, preconditions, and test_data.
+
+Return ONLY valid JSON array, no markdown.`;
+  }
+
+  getRefinementUserMessage(tests, ticketData, previousResults, appContext, passNumber = 1) {
+    const contextSection = this.formatAppContext(appContext || previousResults?.appContext, previousResults);
+
+    const testsJson = tests.map(tc => ({
+      id: tc.id,
+      title: tc.title,
+      category: tc.category,
+      priority: tc.priority,
+      storyReference: tc.storyReference,
+      description: tc.description,
+      preconditions: tc.preconditions,
+      steps: tc.steps,
+      expected_result: tc.expected_result,
+      test_data: tc.test_data,
+      _specificityScore: tc._specificityScore || 0
+    }));
+
+    const passContext = passNumber > 1
+      ? `\n**⚠️ REFINEMENT PASS ${passNumber}:** These tests were refined in pass ${passNumber - 1} but still scored below the specificity threshold (70/100). The _specificityScore shows their current score. Focus on the lowest-scoring tests first.\n`
+      : '';
+
+    return `**STORY CONTEXT:**
+Ticket: ${ticketData.key}
+Summary: ${ticketData.summary}
+Description: ${(ticketData.description || '').substring(0, 1500)}
+
+${contextSection}
+${passContext}
+**TEST CASES TO REFINE (make each one specific and executable):**
+${JSON.stringify(testsJson, null, 2)}
+
+**INSTRUCTIONS:**
+- Keep the same id, title, category, priority, storyReference
+- Replace ALL vague language with concrete, specific details
+- If application context provides field names/constraints, use those EXACT names and values
+- Add concrete test data values (emails, names, amounts, dates)
+- Make every step actionable by a manual tester who has never seen the story
+- Target specificity score > 70 for every test
+
+Return the refined tests as a JSON array.`;
+  }
+
+  parseResponse(response) {
+    try {
+      let parsed = parseRobustJSON(response);
+      if (parsed.testCases) parsed = parsed.testCases;
+      if (!Array.isArray(parsed)) parsed = [parsed];
+      return parsed.filter(tc => tc && tc.id);
+    } catch (error) {
+      console.error('[RefinementAgent] Failed to parse refined tests:', error.message);
+      return [];
+    }
+  }
+
+  // Not used via standard agent pipeline, so return empty defaults
+  getSystemMessage() { return ''; }
+  getUserMessage() { return ''; }
 }
 
 // 7. Review Agent

@@ -11,6 +11,9 @@ class EvolutionaryOptimizer {
     this.crossoverRate = 0.7;
     this.elitismCount = 2;
     this.qualityCache = new Map(); // Cache quality evaluations to reduce AI calls
+    this.AI_CALL_TIMEOUT = 60000; // 60 seconds per individual AI call
+    this.MAX_EVOLUTION_TIME = 5 * 60 * 1000; // 5 minutes total evolution timeout
+    this._aborted = false;
   }
 
   getGenerations(intensity) {
@@ -24,15 +27,36 @@ class EvolutionaryOptimizer {
     return map[intensity] || 1; // Default to light (1 generation)
   }
   
+  /**
+   * Wrap AI call with a per-call timeout to prevent indefinite hangs.
+   */
+  async callAIWithTimeout(systemMessage, userMessage, settings) {
+    return Promise.race([
+      this.callAI(systemMessage, userMessage, settings),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('AI call timed out after ' + (this.AI_CALL_TIMEOUT / 1000) + 's')), this.AI_CALL_TIMEOUT)
+      )
+    ]);
+  }
+
   async evolve(baseTestCases, ticketData, callAIFunc) {
     this.callAI = callAIFunc;
-    
+    this._aborted = false;
+    const startTime = Date.now();
+
     // Create initial population from base tests
     let population = this.createInitialPopulation(baseTestCases);
     let bestSolution = baseTestCases;
     let bestFitness = 0;
-    
+
     for (let gen = 0; gen < this.generations; gen++) {
+      // Check overall timeout
+      if (Date.now() - startTime > this.MAX_EVOLUTION_TIME) {
+        console.warn(`⚠️ Evolution timed out after ${Math.round((Date.now() - startTime) / 1000)}s — returning best solution so far`);
+        this._aborted = true;
+        break;
+      }
+
       // Report progress
       if (this.onProgress) {
         this.onProgress({
@@ -42,40 +66,44 @@ class EvolutionaryOptimizer {
           bestFitness: Math.round(bestFitness)
         });
       }
-      
+
       // Evaluate fitness for all individuals
       const fitnessScores = await this.evaluateFitness(population, ticketData);
-      
+
+      if (this._aborted) break;
+
       // Track best solution
       const maxFitnessIdx = fitnessScores.indexOf(Math.max(...fitnessScores));
       if (fitnessScores[maxFitnessIdx] > bestFitness) {
         bestFitness = fitnessScores[maxFitnessIdx];
         bestSolution = population[maxFitnessIdx];
       }
-      
+
       // Selection - Tournament selection
       const selected = this.selection(population, fitnessScores);
-      
+
       // Crossover - Create offspring
       const offspring = this.crossover(selected);
-      
+
       // Mutation - Apply mutations
       const mutated = await this.mutate(offspring, ticketData);
-      
+
+      if (this._aborted) break;
+
       // Elitism - Keep best individuals
       population = this.elitism(population, fitnessScores, mutated);
     }
-    
+
     // Report completion
     if (this.onProgress) {
       this.onProgress({
-        generation: this.generations,
+        generation: this._aborted ? 'timed out' : this.generations,
         total: this.generations,
         status: 'completed',
         bestFitness: Math.round(bestFitness)
       });
     }
-    
+
     return bestSolution;
   }
   
@@ -112,6 +140,8 @@ class EvolutionaryOptimizer {
     const scores = [];
 
     for (let i = 0; i < population.length; i += BATCH_SIZE) {
+      if (this._aborted) break;
+
       const batch = population.slice(i, i + BATCH_SIZE);
       const batchPromises = batch.map((individual, batchIndex) => {
         const globalIndex = i + batchIndex;
@@ -120,8 +150,19 @@ class EvolutionaryOptimizer {
         return this.calculateFitness(individual, ticketData, skipQuality);
       });
 
-      const batchScores = await Promise.all(batchPromises);
-      scores.push(...batchScores);
+      // Add per-batch timeout (2 minutes) to prevent indefinite Promise.all hangs
+      try {
+        const batchScores = await Promise.race([
+          Promise.all(batchPromises),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Fitness batch timed out')), 120000)
+          )
+        ]);
+        scores.push(...batchScores);
+      } catch (err) {
+        console.warn('⚠️ Fitness batch failed:', err.message, '— using default scores');
+        scores.push(...batch.map(() => 50)); // Default mid-range fitness
+      }
 
       // Small delay between batches to prevent overwhelming the API
       if (i + BATCH_SIZE < population.length) {
@@ -207,7 +248,7 @@ ${sampleTests.map((tc, idx) => `${idx + 1}. [${tc.category}] ${tc.title}\nSteps:
 
 Return quality score (0-1):`;
 
-      const response = await this.callAI(systemMessage, userMessage, this.settings);
+      const response = await this.callAIWithTimeout(systemMessage, userMessage, this.settings);
       const score = parseFloat(response.trim());
       const finalScore = isNaN(score) ? 0.7 : Math.max(0, Math.min(1, score));
 
@@ -279,6 +320,8 @@ Return quality score (0-1):`;
   }
   
   async mutate(offspring, ticketData) {
+    if (this._aborted) return offspring;
+
     const mutationStrategies = [
       'dataVariation',
       'scenarioExpansion',
@@ -297,20 +340,36 @@ Return quality score (0-1):`;
       return individual; // Return unchanged if no mutation
     });
 
-    const mutatedOffspring = await Promise.all(mutationPromises);
-    return mutatedOffspring;
+    // Add per-batch timeout (2 minutes) to prevent indefinite Promise.all hangs
+    try {
+      const mutatedOffspring = await Promise.race([
+        Promise.all(mutationPromises),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Mutation batch timed out')), 120000)
+        )
+      ]);
+      return mutatedOffspring;
+    } catch (err) {
+      console.warn('⚠️ Mutation batch failed:', err.message, '— returning unmutated offspring');
+      return offspring;
+    }
   }
   
   async applyMutation(testCases, strategy, ticketData) {
     try {
+      if (!testCases || testCases.length === 0) return testCases;
+
       // Select a few tests to mutate (not all)
       const mutationCount = Math.min(3, Math.ceil(testCases.length * 0.2));
       const indicesToMutate = [];
-      while (indicesToMutate.length < mutationCount) {
+      const maxAttempts = mutationCount * 10; // Prevent infinite loop
+      let attempts = 0;
+      while (indicesToMutate.length < mutationCount && attempts < maxAttempts) {
         const idx = Math.floor(Math.random() * testCases.length);
         if (!indicesToMutate.includes(idx)) {
           indicesToMutate.push(idx);
         }
+        attempts++;
       }
       
       const testsToMutate = indicesToMutate.map(idx => testCases[idx]);
@@ -331,7 +390,7 @@ ${JSON.stringify(testsToMutate, null, 2)}
 
 Return mutated tests as JSON array:`;
 
-      const response = await this.callAI(systemMessage, userMessage, this.settings);
+      const response = await this.callAIWithTimeout(systemMessage, userMessage, this.settings);
 
       // Parse mutated tests
       const jsonMatch = response.match(/\[[\s\S]*\]/);

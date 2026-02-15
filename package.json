@@ -1,6 +1,6 @@
 {
   "name": "qatalyst",
-  "version": "12.6.2",
+  "version": "12.8.1",
   "description": "From QA Analyst to QA Visionary — Powered by QAtalyst. AI-Powered Test Case Generation for Jira - Advanced Chrome Extension with Multi-Agent System & Evolutionary Optimization",
   "main": "chrome-extension/background.js",
   "scripts": {
@@ -8,7 +8,7 @@
     "test": "echo \"No tests configured yet\" && exit 0",
     "lint": "eslint chrome-extension/**/*.js",
     "format": "prettier --write chrome-extension/**/*.{js,html,css,json}",
-    "zip": "cd chrome-extension && zip -r ../qatalyst-v12.6.0-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
+    "zip": "cd chrome-extension && zip -r ../qatalyst-v12.7-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
   },
   "repository": {
     "type": "git",

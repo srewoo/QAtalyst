@@ -15,6 +15,7 @@ importScripts('context-manager.js');
 importScripts('graph-filter.js');
 importScripts('duplicate-detector.js');
 importScripts('agents.js');
+importScripts('ai-feature-agent.js');
 importScripts('evolution.js');
 importScripts('integrations.js');
 importScripts('enhancements.js');
@@ -47,6 +48,22 @@ const RETRY_DELAY = APP_CONFIG.RETRY_DELAY;
 // Streaming safeguards
 const STREAMING_TIMEOUT_MS = 300000; // 5 minutes max for streaming
 const MAX_STREAMING_ITERATIONS = 50000; // Max chunks to prevent infinite loops
+
+// Safe data URI parser for image parts
+function parseDataUri(dataUri) {
+  if (!dataUri || typeof dataUri !== 'string') {
+    return { base64Data: null, mediaType: 'image/png' };
+  }
+  const commaIdx = dataUri.indexOf(',');
+  const base64Data = commaIdx >= 0 ? dataUri.substring(commaIdx + 1) : null;
+  let mediaType = 'image/png';
+  const colonIdx = dataUri.indexOf(':');
+  const semicolonIdx = dataUri.indexOf(';');
+  if (colonIdx >= 0 && semicolonIdx > colonIdx) {
+    mediaType = dataUri.substring(colonIdx + 1, semicolonIdx) || 'image/png';
+  }
+  return { base64Data, mediaType };
+}
 
 // Active streaming controllers for cancellation
 const activeStreams = new Map();
@@ -802,12 +819,13 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
         } else if (part.type === 'text') {
           claudeMessages[0].content.push({ type: 'text', text: part.text });
         } else if (part.type === 'image_url') {
-          const base64Data = part.image_url.url.split(',')[1];
-          const mediaType = part.image_url.url.split(':')[1].split(';')[0];
-          claudeMessages[0].content.push({
-            type: 'image',
-            source: { type: 'base64', media_type: mediaType, data: base64Data }
-          });
+          const { base64Data, mediaType } = parseDataUri(part.image_url.url);
+          if (base64Data) {
+            claudeMessages[0].content.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType, data: base64Data }
+            });
+          }
         }
       }
 
@@ -860,7 +878,13 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
 
     // OpenAI models return OpenAI-format response; Claude returns Anthropic format
     if (isOpenAI) {
+      if (!data.choices?.[0]?.message?.content) {
+        throw new Error('Bedrock OpenAI returned empty or malformed response');
+      }
       return data.choices[0].message.content;
+    }
+    if (!data.content?.[0]?.text) {
+      throw new Error('Bedrock Claude returned empty or malformed response');
     }
     return data.content[0].text;
 
@@ -931,12 +955,13 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
         } else if (part.type === 'text') {
           claudeMessages[0].content.push({ type: 'text', text: part.text });
         } else if (part.type === 'image_url') {
-          const base64Data = part.image_url.url.split(',')[1];
-          const mediaType = part.image_url.url.split(':')[1].split(';')[0];
-          claudeMessages[0].content.push({
-            type: 'image',
-            source: { type: 'base64', media_type: mediaType, data: base64Data }
-          });
+          const { base64Data, mediaType } = parseDataUri(part.image_url.url);
+          if (base64Data) {
+            claudeMessages[0].content.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType, data: base64Data }
+            });
+          }
         }
       }
 
@@ -1070,12 +1095,24 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
+    // Build OpenAI message content with proper format for text and images
+    const openaiContent = [];
+    for (const part of contentParts) {
+      if (typeof part === 'string') {
+        openaiContent.push({ type: 'text', text: part });
+      } else if (part.type === 'text') {
+        openaiContent.push({ type: 'text', text: part.text });
+      } else if (part.type === 'image_url') {
+        openaiContent.push({ type: 'image_url', image_url: { url: part.image_url.url } });
+      }
+    }
+
     const messages = [
-      { role: 'user', content: contentParts }
+      { role: 'user', content: openaiContent }
     ];
 
     // Check token count and warn if approaching limits
-    const model = settings.llmModel || 'gpt-4o';
+    const model = settings.llmModel || 'gpt-4.1';
     const tokenCheck = checkTokenLimit(
       estimateMessagesTokens(messages),
       model,
@@ -1096,7 +1133,7 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
         'Authorization': `Bearer ${settings.apiKey}`
       },
       body: JSON.stringify({
-        model: settings.llmModel || 'gpt-4o',
+        model: settings.llmModel || 'gpt-4.1',
         messages: messages,
         temperature: settings.temperature || 0.7,
         max_tokens: settings.maxTokens || 16000
@@ -1125,6 +1162,9 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     const data = await response.json();
+    if (!data.choices?.[0]?.message?.content) {
+      throw new Error('OpenAI returned empty or malformed response');
+    }
     return data.choices[0].message.content;
 
   } catch (error) {
@@ -1166,12 +1206,13 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
       if (typeof part === 'string') {
         return { text: part };
       } else if (part.type === 'image_url') {
-        // Gemini expects { inlineData: { mimeType: 'image/png', data: 'base64string' } }
-        const base64Data = part.image_url.url.split(',')[1];
-        const mimeType = part.image_url.url.split(':')[1].split(';')[0];
-        return { inlineData: { mimeType: mimeType, data: base64Data } };
+        const { base64Data, mediaType } = parseDataUri(part.image_url.url);
+        if (base64Data) {
+          return { inlineData: { mimeType: mediaType, data: base64Data } };
+        }
+        return { text: '[image unavailable]' };
       }
-      return part; // Return as is if other types are introduced
+      return part;
     });
 
     const response = await fetch(url, {
@@ -1213,6 +1254,9 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     const data = await response.json();
+    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+      throw new Error('Gemini returned empty or malformed response');
+    }
     return data.candidates[0].content.parts[0].text;
 
   } catch (error) {
@@ -1257,17 +1301,13 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
       } else if (part.type === 'text') {
         claudeMessages[0].content.push({ type: 'text', text: part.text });
       } else if (part.type === 'image_url') {
-        // Claude expects { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'base64string' } }
-        const base64Data = part.image_url.url.split(',')[1];
-        const mediaType = part.image_url.url.split(':')[1].split(';')[0];
-        claudeMessages[0].content.push({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: mediaType,
-            data: base64Data
-          }
-        });
+        const { base64Data, mediaType } = parseDataUri(part.image_url.url);
+        if (base64Data) {
+          claudeMessages[0].content.push({
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64Data }
+          });
+        }
       }
     }
 
@@ -1308,6 +1348,9 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
     }
 
     const data = await response.json();
+    if (!data.content?.[0]?.text) {
+      throw new Error('Claude returned empty or malformed response');
+    }
     return data.content[0].text;
 
   } catch (error) {
@@ -1453,16 +1496,13 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
       } else if (part.type === 'text') {
         claudeMessages[0].content.push({ type: 'text', text: part.text });
       } else if (part.type === 'image_url') {
-        const base64Data = part.image_url.url.split(',')[1];
-        const mediaType = part.image_url.url.split(':')[1].split(';')[0];
-        claudeMessages[0].content.push({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: mediaType,
-            data: base64Data
-          }
-        });
+        const { base64Data, mediaType } = parseDataUri(part.image_url.url);
+        if (base64Data) {
+          claudeMessages[0].content.push({
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64Data }
+          });
+        }
       }
     }
 
@@ -1568,11 +1608,13 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
       if (typeof part === 'string') {
         return { text: part };
       } else if (part.type === 'image_url') {
-        const base64Data = part.image_url.url.split(',')[1];
-        const mimeType = part.image_url.url.split(':')[1].split(';')[0];
-        return { inlineData: { mimeType: mimeType, data: base64Data } };
+        const { base64Data, mediaType } = parseDataUri(part.image_url.url);
+        if (base64Data) {
+          return { inlineData: { mimeType: mediaType, data: base64Data } };
+        }
+        return { text: '[image unavailable]' };
       }
-      return part; // Return as is if other types are introduced
+      return part;
     });
 
     const response = await fetch(url, {
@@ -2561,7 +2603,7 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
  * Uses graceful truncation to prioritize important content
  */
 function ensureContentFitsLimits(contentParts, settings) {
-  const model = settings.llmModel || 'gpt-4o';
+  const model = settings.llmModel || 'gpt-4.1';
   const ctx = new ContextManager(model);
 
   // Separate text and image parts
@@ -3113,14 +3155,8 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
     });
   }
 
-  // Define vision models that support image inputs
-  const visionModels = [
-    'gpt-4o', 'gpt-4o-mini', 'o1',
-    'claude-sonnet-4-20250514', 'claude-sonnet-4-20250111', 'claude-3-5-sonnet-20241022',
-    'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp',
-    'anthropic.claude',
-    'us.openai.gpt', 'us.openai.o3'
-  ];
+  // Vision models that support image inputs (from centralized config)
+  const visionModels = APP_CONFIG.VISION_MODELS;
 
   // Start keep-alive heartbeat to prevent timeout
   // Send a message every 5 seconds to keep the message port alive
@@ -3353,7 +3389,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
 
     // ========== NEW: SEMANTIC DUPLICATE DETECTION ==========
     console.log('🔍 [Duplicates] Running semantic duplicate detection...');
-    const semanticDetector = new SemanticDuplicateDetector(0.85);
+    const semanticDetector = new SemanticDuplicateDetector(0.65);
     const duplicateAnalysis = semanticDetector.removeDuplicates(results.testCases);
 
     console.log('📊 [Duplicates] Duplicate detection complete:', duplicateAnalysis.summary);
@@ -3435,13 +3471,7 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
     });
 
     // Create wrapper for EvolutionaryOptimizer that converts 3-param to 2-param callAI
-    const visionModels = [
-      'gpt-4o', 'gpt-4o-mini', 'o1',
-      'claude-sonnet-4-20250514', 'claude-sonnet-4-20250111', 'claude-3-5-sonnet-20241022',
-      'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp',
-      'anthropic.claude',
-      'us.openai.gpt', 'us.openai.o3'
-    ];
+    const visionModels = APP_CONFIG.VISION_MODELS;
     const evolutionCallAI = async (systemMessage, userMessage, evolutionSettings) => {
       const contentParts = [
         { type: 'text', text: systemMessage },
@@ -3460,7 +3490,15 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
 
       return await callAI(contentParts, currentSettings);
     };
-    const evolvedTests = await evolution.evolve(baseTests, ticketData, evolutionCallAI);
+    // Overall safety timeout (6 minutes) — evolution.evolve has its own 5-minute timeout,
+    // this catches edge cases like the evolve() method itself hanging before entering the loop
+    const EVOLUTION_SAFETY_TIMEOUT = 6 * 60 * 1000;
+    const evolvedTests = await Promise.race([
+      evolution.evolve(baseTests, ticketData, evolutionCallAI),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Evolution timed out after 6 minutes')), EVOLUTION_SAFETY_TIMEOUT)
+      )
+    ]);
 
     // Calculate new statistics
     const statistics = {

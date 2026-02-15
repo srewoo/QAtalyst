@@ -135,6 +135,9 @@
     if (request.action === 'evolutionError') {
       handleEvolutionError(request.error);
     }
+    if (request.action === 'qualityReports') {
+      handleQualityReports(request.reports);
+    }
 
     // Web Crawler handlers
     if (request.action === 'extractDOM') {
@@ -368,14 +371,18 @@
 
   function handleStreamChunk(requestId, chunk) {
     if (requestId !== currentStreamingRequestId) return;
-    
+
     streamingContent += chunk;
     const resultsContainer = document.getElementById('results-container');
-    if (resultsContainer) {
-      // Clear and rebuild with safe DOM manipulation
+    if (!resultsContainer) return;
+
+    // Reuse existing streaming container instead of rebuilding DOM every chunk
+    let streamingDiv = resultsContainer.querySelector('.qatalyst-streaming');
+    if (!streamingDiv) {
+      // First chunk: create the streaming container
       resultsContainer.innerHTML = '';
 
-      const streamingDiv = document.createElement('div');
+      streamingDiv = document.createElement('div');
       streamingDiv.className = 'qatalyst-streaming';
 
       const headerDiv = document.createElement('div');
@@ -396,15 +403,21 @@
 
       const contentDiv = document.createElement('div');
       contentDiv.className = 'stream-content';
-      contentDiv.appendChild(createSafeFormattedContent(streamingContent));
 
       streamingDiv.appendChild(headerDiv);
       streamingDiv.appendChild(contentDiv);
       resultsContainer.appendChild(streamingDiv);
-
-      // Auto-scroll to bottom
-      resultsContainer.scrollTop = resultsContainer.scrollHeight;
     }
+
+    // Only update the content div (not the entire DOM tree)
+    const contentDiv = streamingDiv.querySelector('.stream-content');
+    if (contentDiv) {
+      contentDiv.innerHTML = '';
+      contentDiv.appendChild(createSafeFormattedContent(streamingContent));
+    }
+
+    // Auto-scroll to bottom
+    resultsContainer.scrollTop = resultsContainer.scrollHeight;
   }
   
   function formatStreamingContent(content) {
@@ -1259,6 +1272,72 @@
       }
     });
 
+    // ========== SMART LINK DETECTION ==========
+    // Jira Smart Links render URLs as rich card previews using @atlaskit/smart-card.
+    // These appear in 3 forms: inline (enriched <a>), block (card <div>), embed (<iframe>).
+    // Block and embed cards store the URL in data-src or data-url attributes, not in <a href>.
+    const smartLinkSelectors = [
+      // Atlaskit Smart Card containers (block & embed views)
+      '[data-testid*="block-card"] [data-src]',
+      '[data-testid*="embed-card"] [data-src]',
+      '[data-testid*="block-card"] [data-url]',
+      '[data-testid*="embed-card"] [data-url]',
+      // Smart card resolved views (the rendered card itself)
+      '[data-testid*="smart-block-title-resolved-view"]',
+      '[data-testid*="smart-embed-resolved-view"]',
+      // Generic smart link attributes
+      '[data-smart-link]',
+      '[data-card-appearance="block"]',
+      '[data-card-appearance="embed"]',
+      // Atlaskit smart-card custom element wrappers
+      '[data-testid*="inline-card-resolved-view"] a',
+      // Block card containers that may have nested <a> or data-src
+      '[data-testid*="block-card-resolved-view"]',
+      '[data-testid*="block-card-resolved-view"] a',
+      // Smart link containers with URL in data attributes
+      '[data-src]:not(img):not(script):not(iframe[src*="atlassian"])',
+    ];
+
+    const smartLinkElements = document.querySelectorAll(smartLinkSelectors.join(','));
+    let smartLinkCount = 0;
+
+    smartLinkElements.forEach(el => {
+      // Extract URL from various attributes — priority order
+      const url = el.getAttribute('data-src') ||
+                  el.getAttribute('data-url') ||
+                  el.getAttribute('data-smart-link') ||
+                  el.href ||
+                  el.querySelector('a[href]')?.href;
+
+      if (!url || processedUrls.has(url) || url.includes('/browse/')) return;
+
+      // Extract title from card content
+      const title = el.getAttribute('data-title') ||
+                    el.getAttribute('aria-label') ||
+                    el.textContent?.trim() ||
+                    url;
+
+      const pageType = determinePageType(url);
+
+      // Only add if it's a recognized integration or external URL
+      if (pageType !== 'external' || url.startsWith('http')) {
+        processedUrls.add(url);
+        smartLinkCount++;
+        console.log(`🔗 Smart Link #${smartLinkCount}: Type=${pageType}, URL=${url}, Title="${title.substring(0, 60)}"`);
+        linkedPages.push({
+          id: linkedPages.length + 1,
+          title: title.substring(0, 200) || url,
+          url: url,
+          type: pageType,
+          source: 'smart-link'
+        });
+      }
+    });
+
+    if (smartLinkCount > 0) {
+      console.log(`🔗 Found ${smartLinkCount} Smart Link(s) in the page`);
+    }
+
     // Fallback: If no Confluence pages found, scan all links on the page for external sources
     // This handles cases where Jira UI structure varies
     if (!linkedPages.some(p => p.type === 'confluence' || p.type === 'figma' || p.type === 'google_docs')) {
@@ -1520,7 +1599,7 @@
       ]);
 
       // Fetch Jira image attachments if model supports vision
-      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
+      const visionModels = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.VISION_MODELS) || ['gpt-4.1', 'gpt-4.1-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
       if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
         console.log('📷 Vision model detected, fetching Jira image attachments...');
         ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
@@ -1652,7 +1731,7 @@
       ]);
 
       // Fetch Jira image attachments if model supports vision
-      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
+      const visionModels = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.VISION_MODELS) || ['gpt-4.1', 'gpt-4.1-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
       if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
         console.log('📷 Vision model detected, fetching Jira image attachments...');
         ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
@@ -1780,7 +1859,7 @@
       ]);
 
       // Fetch Jira image attachments if model supports vision
-      const visionModels = ['gpt-4o', 'gpt-4o-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
+      const visionModels = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.VISION_MODELS) || ['gpt-4.1', 'gpt-4.1-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
       if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
         console.log('📷 Vision model detected, fetching Jira image attachments...');
         ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
@@ -1983,6 +2062,7 @@
   let currentTestScopeData = null;
   let currentTestCasesData = null;
   let currentAppContext = null; // Store crawled app context for UI display
+  let currentQualityReports = null; // Store quality reports from background
 
   // Display functions
   function displayAnalysisResults(data) {
@@ -3504,11 +3584,67 @@ Expected Result: ${expectedResult}`;
     }
   }
 
+  /**
+   * Handle quality reports from background script (validation, coverage, duplicates)
+   * Stores reports for display in test results and logs summary
+   */
+  function handleQualityReports(reports) {
+    if (!reports) return;
+
+    console.log('📊 [QualityReports] Received quality reports:', {
+      validation: reports.validation ? `${reports.validation.validCount || 0}/${reports.validation.totalCount || 0} valid` : 'N/A',
+      coverage: reports.coverage ? `${reports.coverage.overallCoverage || 0}%` : 'N/A',
+      duplicates: reports.duplicates ? `${reports.duplicates.duplicatesRemoved || 0} removed` : 'N/A'
+    });
+
+    // Store reports globally for display when test results render
+    currentQualityReports = reports;
+
+    // Update UI if results container already has test cases displayed
+    const container = document.getElementById('results-container');
+    if (!container) return;
+
+    // Append quality summary if not already shown
+    const existingReport = container.querySelector('.quality-reports-summary');
+    if (existingReport) return;
+
+    const reportHTML = document.createElement('div');
+    reportHTML.className = 'quality-reports-summary';
+    reportHTML.style.cssText = 'background: #f0f7ff; border: 1px solid #b8daff; border-radius: 8px; padding: 12px; margin: 12px 0;';
+
+    const items = [];
+    if (reports.validation) {
+      const pct = reports.validation.totalCount > 0
+        ? Math.round((reports.validation.validCount / reports.validation.totalCount) * 100)
+        : 100;
+      items.push(`✅ Validation: ${pct}% passed (${reports.validation.validCount}/${reports.validation.totalCount})`);
+    }
+    if (reports.coverage) {
+      items.push(`📊 Coverage: ${reports.coverage.overallCoverage || 0}%`);
+    }
+    if (reports.duplicates) {
+      items.push(`🔄 Duplicates: ${reports.duplicates.duplicatesRemoved || 0} removed`);
+    }
+
+    reportHTML.innerHTML = `
+      <div style="font-weight: 600; margin-bottom: 6px; font-size: 13px;">📋 Quality Report</div>
+      <div style="font-size: 12px; color: #495057;">${items.join(' &nbsp;|&nbsp; ')}</div>
+    `;
+
+    // Insert before evolution progress or at end
+    const evolutionContainer = container.querySelector('.evolution-progress-container');
+    if (evolutionContainer) {
+      container.insertBefore(reportHTML, evolutionContainer);
+    } else {
+      container.appendChild(reportHTML);
+    }
+  }
+
   // Initialize
   if (window.location.pathname.includes('/browse/')) {
     injectPanel();
   }
-  
+
   // ============ WEB CRAWLER HANDLERS ============
 
   /**

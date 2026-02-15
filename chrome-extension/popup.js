@@ -3,8 +3,8 @@
 // Model options - keep in sync with options.js
 const modelOptions = {
   openai: [
-    { value: 'gpt-4o', label: 'GPT-4o (Recommended)' },
-    { value: 'gpt-4o-mini', label: 'GPT-4o Mini (Fast & Cheap)' },
+    { value: 'gpt-4.1', label: 'GPT-4.1 (Recommended)' },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast & Cheap)' },
     { value: 'o1', label: 'O1 (Reasoning)' }
   ],
   claude: [
@@ -21,7 +21,7 @@ const modelOptions = {
     { value: 'anthropic.claude-opus-4-20250514-v1:0', label: 'Claude Opus 4' },
     { value: 'anthropic.claude-3-5-sonnet-20241022-v2:0', label: 'Claude 3.5 Sonnet v2' },
     { value: 'anthropic.claude-3-5-haiku-20241022-v1:0', label: 'Claude 3.5 Haiku (Fast & Cheap)' },
-    { value: 'us.openai.gpt-4o-2024-11-20-v1:0', label: 'GPT-4o (Bedrock)' },
+    { value: 'us.openai.gpt-4.1-2025-04-14-v1:0', label: 'GPT-4.1 (Bedrock)' },
     { value: 'us.openai.gpt-5-2-20250709-v1:0', label: 'GPT-5.2 (Bedrock)' },
     { value: 'us.openai.o3-2025-04-16-v1:0', label: 'O3 (Bedrock - Reasoning)' }
   ]
@@ -53,7 +53,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (settings.apiKey) {
-    document.getElementById('apiKey').value = settings.apiKey;
+    // Decrypt the API key when loading (stored encrypted)
+    const decryptedApiKey = await securityManager.decryptApiKeyFromStorage(settings.apiKey);
+    document.getElementById('apiKey').value = decryptedApiKey;
   }
 
   if (settings.bedrockAccessKeyId) {

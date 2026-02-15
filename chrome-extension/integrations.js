@@ -99,13 +99,21 @@ class IntegrationManager {
             return content;
           } else {
             console.warn(`IntegrationManager: Skipped Confluence page (fetch failed or empty): ${url}`);
-            return null;
+            return {
+              url: url,
+              name: 'Confluence page (unavailable)',
+              content: null,
+              error: 'Fetch returned empty or error content'
+            };
           }
         } catch (error) {
           console.error('IntegrationManager: Confluence fetch failed for', url, ':', error.message);
-          // Return null instead of injecting error messages as page content
-          // Error text was being sent to the AI as if it were requirements
-          return null;
+          return {
+            url: url,
+            name: 'Confluence page (unavailable)',
+            content: null,
+            error: error.message
+          };
         }
       });
 
@@ -183,15 +191,20 @@ class IntegrationManager {
             return content;
           } else {
             console.warn(`IntegrationManager: Skipped Google Doc (fetch failed or empty): ${url}`);
-            return null;
+            return {
+              url: url,
+              name: 'Google Doc (unavailable)',
+              content: null,
+              error: 'Fetch returned empty or error content'
+            };
           }
         } catch (error) {
           console.error('IntegrationManager: Google Docs fetch failed for', url, ':', error.message);
           return {
             url: url,
-            title: 'Google Doc (unavailable)',
-            content: `Could not fetch Google Docs content. Reason: ${error.message}`,
-            revisionId: null
+            name: 'Google Doc (unavailable)',
+            content: null,
+            error: error.message
           };
         }
       });
@@ -589,22 +602,39 @@ class ConfluenceIntegration {
         }
       }
 
-      // For short links (/x/shortId), resolve by fetching the short link URL
-      // and extracting the page ID from the redirect or search by the short link content ID
+      // For short links (/x/shortId), resolve via Confluence REST API
       const shortLinkMatch = url.match(/\/wiki\/x\/([A-Za-z0-9_-]+)/);
       if (shortLinkMatch) {
-        // Tiny links are base64-encoded content IDs in Confluence
-        // Try decoding the short ID to get the content ID
+        const shortId = shortLinkMatch[1];
+        console.log(`📄 Confluence - Short link detected, resolving shortId: ${shortId}`);
+
+        const resolvedId = await this.resolveShortLink(shortId, apiBase, authHeader, url);
+        if (resolvedId) {
+          return resolvedId;
+        }
+      }
+
+      // For Jira bridge shortcut URLs (/wiki?xpis=...), decode the base64 payload
+      // to extract the Confluence content ID
+      const xpisMatch = url.match(/[?&]xpis=([A-Za-z0-9_+/=-]+)/);
+      if (xpisMatch) {
         try {
-          const shortId = shortLinkMatch[1];
-          // Confluence tiny links use a modified base64 encoding of the content ID
-          // Try searching for the URL directly via CQL
-          const cql = encodeURIComponent(`type=page ORDER BY lastmodified DESC`);
-          const searchUrl = `${apiBase}/content/search?cql=${cql}&limit=5`;
-          console.log(`📄 Confluence - Short link detected, attempting search for: ${shortId}`);
-          // As a fallback, just return null — the short link can't be reliably decoded client-side
+          const decoded = JSON.parse(atob(decodeURIComponent(xpisMatch[1])));
+          if (decoded.id) {
+            console.log(`📄 Confluence - Jira bridge shortcut detected, trying content ID: ${decoded.id}`);
+            // Verify the ID is a valid Confluence page by fetching it
+            const verifyUrl = `${apiBase}/content/${decoded.id}?expand=body`;
+            const verifyResp = await fetch(verifyUrl, {
+              headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+            });
+            if (verifyResp.ok) {
+              console.log(`📄 Confluence - Successfully resolved bridge shortcut to page ID: ${decoded.id}`);
+              return decoded.id;
+            }
+            console.log(`📄 Confluence - Bridge ID ${decoded.id} is not a valid Confluence content ID`);
+          }
         } catch (e) {
-          // Ignore decoding errors
+          console.warn(`📄 Confluence - Failed to decode xpis parameter:`, e.message);
         }
       }
 
@@ -613,6 +643,80 @@ class ConfluenceIntegration {
       console.warn('📄 Confluence - Could not resolve page ID by URL:', error.message);
       return null;
     }
+  }
+
+  /**
+   * Resolve a Confluence short link (/wiki/x/shortId) to a page ID.
+   * Tries the REST API shortcutId lookup first, then falls back to following
+   * the redirect of the short URL itself.
+   */
+  async resolveShortLink(shortId, apiBase, authHeader, originalUrl) {
+    // Attempt 1: Query the REST API using the shortcutId
+    try {
+      const shortcutUrl = `${apiBase}/content?shortcutId=${encodeURIComponent(shortId)}`;
+      console.log(`📄 Confluence - Trying shortcutId API: ${shortcutUrl}`);
+      const response = await fetch(shortcutUrl, {
+        headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const results = data.results || (data.id ? [data] : []);
+        if (results.length > 0) {
+          console.log(`📄 Confluence - Resolved short link via shortcutId API: ${results[0].id}`);
+          return results[0].id;
+        }
+      }
+    } catch (e) {
+      console.warn('📄 Confluence - shortcutId API lookup failed:', e.message);
+    }
+
+    // Attempt 2: Try CQL search with shortcutId
+    try {
+      const cql = encodeURIComponent(`shortcutId="${shortId}"`);
+      const searchUrl = `${apiBase}/content/search?cql=${cql}&limit=1`;
+      console.log(`📄 Confluence - Trying CQL shortcutId search: ${searchUrl}`);
+      const response = await fetch(searchUrl, {
+        headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.results && data.results.length > 0) {
+          console.log(`📄 Confluence - Resolved short link via CQL search: ${data.results[0].id}`);
+          return data.results[0].id;
+        }
+      }
+    } catch (e) {
+      console.warn('📄 Confluence - CQL shortcutId search failed:', e.message);
+    }
+
+    // Attempt 3: Follow the short URL redirect to extract the page ID from the final URL
+    try {
+      console.log(`📄 Confluence - Trying redirect resolution for: ${originalUrl}`);
+      const response = await fetch(originalUrl, {
+        method: 'GET',
+        headers: { 'Authorization': authHeader },
+        redirect: 'follow'
+      });
+
+      const finalUrl = response.url;
+      if (finalUrl && finalUrl !== originalUrl) {
+        console.log(`📄 Confluence - Short link redirected to: ${finalUrl}`);
+        // Try to extract page ID from the redirected URL
+        const pageIdMatch = finalUrl.match(/\/pages\/(\d+)|pageId=(\d+)|\/wiki\/spaces\/[^\/]+\/pages\/(\d+)/);
+        if (pageIdMatch) {
+          const resolvedId = pageIdMatch[1] || pageIdMatch[2] || pageIdMatch[3];
+          console.log(`📄 Confluence - Resolved page ID from redirect: ${resolvedId}`);
+          return resolvedId;
+        }
+      }
+    } catch (e) {
+      console.warn('📄 Confluence - Redirect resolution failed:', e.message);
+    }
+
+    console.warn(`📄 Confluence - Could not resolve short link: ${shortId}`);
+    return null;
   }
 
   extractPageId(url) {
@@ -3095,6 +3199,7 @@ class XrayIntegration {
     this.clientId = settings.xrayClientId; // For Cloud
     this.clientSecret = settings.xrayClientSecret; // For Cloud
     this.projectKey = settings.xrayProjectKey;
+    this.testTypeFieldId = settings.xrayTestTypeFieldId || 'customfield_10020';
     this.cloudToken = null; // Cached authentication token for Cloud
 
     // Rate limiting
@@ -3274,8 +3379,8 @@ class XrayIntegration {
         }
       };
 
-      // Add Xray-specific custom fields
-      payload.fields['customfield_10020'] = 'Manual'; // Test Type (customfield ID may vary)
+      // Add Xray-specific custom fields (configurable via settings.xrayTestTypeFieldId)
+      payload.fields[this.testTypeFieldId] = 'Manual';
 
       // Apply custom field mappings
       if (fieldMappings.customFields) {

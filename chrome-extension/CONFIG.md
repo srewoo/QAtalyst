@@ -709,8 +709,8 @@ Vector embeddings are currently disabled due to Chrome Manifest V3 CSP restricti
 "openai": {
   "enabled": true,                                    // ✅ UI
   "endpoint": "https://api.openai.com/v1/chat/completions",
-  "defaultModel": "gpt-4o",                          // ✅ UI
-  "models": ["gpt-4o", "gpt-4-turbo", ...]          // ✅ UI
+  "defaultModel": "gpt-4.1",                          // ✅ UI
+  "models": ["gpt-4.1", "gpt-4-turbo", ...]          // ✅ UI
 }
 ```
 

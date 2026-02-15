@@ -31,11 +31,21 @@ if (typeof APP_CONFIG === 'undefined') {
 
   // Model Defaults
   DEFAULT_MODELS: {
-    openai: 'gpt-4o',
+    openai: 'gpt-4.1',
     claude: 'claude-3-5-sonnet-20241022',
     gemini: 'gemini-2.0-flash-exp',
     bedrock: 'anthropic.claude-sonnet-4-5-20250514-v1:0'
   },
+
+  // Vision models that support image inputs (single source of truth)
+  VISION_MODELS: [
+    'gpt-4.1', 'gpt-4.1-mini', 'o1',
+    'claude-sonnet-4-20250514', 'claude-sonnet-4-20250111', 'claude-3-5-sonnet-20241022',
+    'claude-3-opus', 'claude-3-sonnet',
+    'gemini-pro-vision', 'gemini-1.5-pro', 'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp',
+    'anthropic.claude',
+    'us.openai.gpt', 'us.openai.o3'
+  ],
 
   // API Endpoints
   ENDPOINTS: {
@@ -151,6 +161,7 @@ if (typeof APP_CONFIG === 'undefined') {
   Object.freeze(APP_CONFIG.GAP_CATEGORIES);
   Object.freeze(APP_CONFIG.DEFAULT_MODELS);
   Object.freeze(APP_CONFIG.ENDPOINTS);
+  Object.freeze(APP_CONFIG.VISION_MODELS);
 
   // Make globally available (works in both window and service worker contexts)
   if (typeof window !== 'undefined') {

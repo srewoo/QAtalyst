@@ -406,8 +406,8 @@
       "openai": {
         "enabled": true,
         "endpoint": "https://api.openai.com/v1/chat/completions",
-        "defaultModel": "gpt-4o",
-        "models": ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini", "gpt-4"]
+        "defaultModel": "gpt-4.1",
+        "models": ["gpt-4.1", "gpt-4-turbo", "gpt-4.1-mini", "gpt-4"]
       },
       "claude": {
         "enabled": true,
@@ -439,7 +439,7 @@
           "anthropic.claude-opus-4-20250514-v1:0",
           "anthropic.claude-3-5-sonnet-20241022-v2:0",
           "anthropic.claude-3-5-haiku-20241022-v1:0",
-          "us.openai.gpt-4o-2024-11-20-v1:0",
+          "us.openai.gpt-4.1-2025-04-14-v1:0",
           "us.openai.gpt-5-2-20250709-v1:0",
           "us.openai.o3-2025-04-16-v1:0"
         ]

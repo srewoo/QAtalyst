@@ -124,13 +124,24 @@ if (typeof SecurityManager === 'undefined') {
   }
 
   /**
-   * Get a device-specific identifier for encryption
-   * Uses extension ID as a consistent identifier
+   * Get a per-installation unique encryption key
+   * Generates a random key on first use and stores it in chrome.storage.local
    */
   async getDeviceIdentifier() {
-    // Use Chrome extension ID as device identifier
-    const extensionId = chrome.runtime.id;
-    return `qatalyst-${extensionId}`;
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['_qatalyst_enc_key'], async (result) => {
+        if (result._qatalyst_enc_key) {
+          resolve(result._qatalyst_enc_key);
+        } else {
+          // Generate a random 32-byte key unique to this installation
+          const randomBytes = crypto.getRandomValues(new Uint8Array(32));
+          const key = 'qk-' + Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+          chrome.storage.local.set({ _qatalyst_enc_key: key }, () => {
+            resolve(key);
+          });
+        }
+      });
+    });
   }
 
   /**

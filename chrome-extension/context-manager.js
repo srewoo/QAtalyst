@@ -12,8 +12,8 @@ if (typeof ContextManager === 'undefined') {
    */
   const MODEL_LIMITS = {
     // OpenAI
-    'gpt-4o': { maxInput: 128000, maxOutput: 16384, safeInput: 100000 },
-    'gpt-4o-mini': { maxInput: 128000, maxOutput: 16384, safeInput: 100000 },
+    'gpt-4.1': { maxInput: 1047576, maxOutput: 32768, safeInput: 900000 },
+    'gpt-4.1-mini': { maxInput: 1047576, maxOutput: 32768, safeInput: 900000 },
     'o1': { maxInput: 200000, maxOutput: 100000, safeInput: 150000 },
     'gpt-4-turbo': { maxInput: 128000, maxOutput: 4096, safeInput: 100000 },
     'gpt-4': { maxInput: 8192, maxOutput: 4096, safeInput: 6000 },
@@ -48,9 +48,9 @@ if (typeof ContextManager === 'undefined') {
   };
 
   class ContextManager {
-    constructor(model = 'gpt-4o') {
+    constructor(model = 'gpt-4.1') {
       this.model = model;
-      this.limits = MODEL_LIMITS[model] || MODEL_LIMITS['gpt-4o'];
+      this.limits = MODEL_LIMITS[model] || MODEL_LIMITS['gpt-4.1'];
       this.contextParts = [];
       this.images = [];
       this.totalTokens = 0;
@@ -345,7 +345,7 @@ if (typeof ContextManager === 'undefined') {
    * Factory function to create a context manager and populate it
    */
   async function buildContextForRequest(data, settings) {
-    const model = settings.llmModel || 'gpt-4o';
+    const model = settings.llmModel || 'gpt-4.1';
     const ctx = new ContextManager(model);
 
     const { ticketData, externalContent, appContext, images } = data;
