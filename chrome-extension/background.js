@@ -15,7 +15,6 @@ importScripts('context-manager.js');
 importScripts('graph-filter.js');
 importScripts('duplicate-detector.js');
 importScripts('agents.js');
-importScripts('ai-feature-agent.js');
 importScripts('evolution.js');
 importScripts('integrations.js');
 importScripts('enhancements.js');
@@ -70,6 +69,9 @@ const activeStreams = new Map();
 
 // Active test management integration (for cancellation)
 let activeIntegration = null;
+
+// Active multi-agent orchestrator (for cancellation)
+let activeOrchestrator = null;
 
 // Web Crawler state management - initialize AFTER config loads
 let activeCrawler = null;
@@ -387,6 +389,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'stopGeneration') {
     const cancelled = cancelStream(request.requestId);
     sendResponse({ success: cancelled });
+    return true;
+  }
+
+  if (request.action === 'stopMultiAgentGeneration') {
+    if (activeOrchestrator) {
+      activeOrchestrator.cancel();
+      sendResponse({ success: true });
+    } else {
+      sendResponse({ success: false, message: 'No active multi-agent generation' });
+    }
     return true;
   }
 
@@ -1205,6 +1217,8 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
     const geminiContent = contentParts.map(part => {
       if (typeof part === 'string') {
         return { text: part };
+      } else if (part.type === 'text') {
+        return { text: part.text };
       } else if (part.type === 'image_url') {
         const { base64Data, mediaType } = parseDataUri(part.image_url.url);
         if (base64Data) {
@@ -1607,6 +1621,8 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
     const geminiContent = contentParts.map(part => {
       if (typeof part === 'string') {
         return { text: part };
+      } else if (part.type === 'text') {
+        return { text: part.text };
       } else if (part.type === 'image_url') {
         const { base64Data, mediaType } = parseDataUri(part.image_url.url);
         if (base64Data) {
@@ -2123,6 +2139,58 @@ async function getCrawlDataFromStorage() {
   }
 }
 
+// Shared helper: Fetch and merge external content (Confluence, Figma, Google Docs)
+async function enrichTicketWithExternalContent(ticketData, settings) {
+  if (!settings.confluenceUrl && !settings.figmaToken && !settings.googleApiKey) {
+    return { enrichedTicketData: ticketData, externalContent: null, externalSources: null };
+  }
+
+  const integrationManager = new IntegrationManager(settings);
+  const externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
+
+  const externalSources = {
+    confluence: externalContent.confluence.length,
+    figma: externalContent.figma.length,
+    googleDocs: externalContent.googleDocs.length
+  };
+
+  // Build linkedPages from fetched content
+  const fetchedLinkedPages = [];
+  const typeMap = [
+    { key: 'confluence', titleField: 'title', defaultTitle: 'Confluence Page', type: 'confluence' },
+    { key: 'figma', titleField: 'name', defaultTitle: 'Figma File', type: 'figma' },
+    { key: 'googleDocs', titleField: 'title', defaultTitle: 'Google Doc', type: 'google_docs' }
+  ];
+
+  for (const { key, titleField, defaultTitle, type } of typeMap) {
+    externalContent[key].forEach((item, i) => {
+      fetchedLinkedPages.push({
+        id: `${type === 'google_docs' ? 'googledocs' : key}-${i}`,
+        title: item[titleField] || defaultTitle,
+        url: item.url || '',
+        type: type,
+        fetched: true
+      });
+    });
+  }
+
+  // Merge with existing linked pages (deduplicate by URL)
+  const existingUrls = new Set((ticketData.linkedPages || []).map(p => p.url));
+  const mergedLinkedPages = [
+    ...(ticketData.linkedPages || []),
+    ...fetchedLinkedPages.filter(p => !existingUrls.has(p.url))
+  ];
+
+  const enrichedTicketData = {
+    ...ticketData,
+    description: externalContent.enrichedDescription || ticketData.description,
+    linkedPages: mergedLinkedPages,
+    externalSources
+  };
+
+  return { enrichedTicketData, externalContent, externalSources };
+}
+
 // API call handlers
 async function handleAnalyzeRequirements(data) {
   validateSettings(data.settings);
@@ -2131,72 +2199,12 @@ async function handleAnalyzeRequirements(data) {
 
   // Fetch external content if integrations are configured
   let enrichedTicketData = ticketData;
-  let externalContent = null; // Declare at function scope
-  if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
-    const integrationManager = new IntegrationManager(settings);
-    externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
-
-    // Build linkedPages from fetched content for context checker
-    const fetchedLinkedPages = [];
-    if (externalContent.confluence.length > 0) {
-      externalContent.confluence.forEach((page, i) => {
-        fetchedLinkedPages.push({
-          id: `confluence-${i}`,
-          title: page.title || 'Confluence Page',
-          url: page.url || '',
-          type: 'confluence',
-          fetched: true
-        });
-      });
-    }
-    if (externalContent.figma.length > 0) {
-      externalContent.figma.forEach((file, i) => {
-        fetchedLinkedPages.push({
-          id: `figma-${i}`,
-          title: file.name || 'Figma File',
-          url: file.url || '',
-          type: 'figma',
-          fetched: true
-        });
-      });
-    }
-    if (externalContent.googleDocs.length > 0) {
-      externalContent.googleDocs.forEach((doc, i) => {
-        fetchedLinkedPages.push({
-          id: `googledocs-${i}`,
-          title: doc.title || 'Google Doc',
-          url: doc.url || '',
-          type: 'google_docs',
-          fetched: true
-        });
-      });
-    }
-
-    // Merge fetched pages with existing linked pages
-    const existingUrls = new Set((ticketData.linkedPages || []).map(p => p.url));
-    const mergedLinkedPages = [
-      ...(ticketData.linkedPages || []),
-      ...fetchedLinkedPages.filter(p => !existingUrls.has(p.url))
-    ];
-
-    // ALWAYS update enrichedTicketData with fetched content info
-    enrichedTicketData = {
-      ...ticketData,
-      description: externalContent.enrichedDescription || ticketData.description,
-      linkedPages: mergedLinkedPages,
-      externalSources: {
-        confluence: externalContent.confluence.length,
-        figma: externalContent.figma.length,
-        googleDocs: externalContent.googleDocs.length
-      }
-    };
-
-    console.log('📄 [Analyze] Enriched ticket with external sources:', {
-      linkedPages: mergedLinkedPages.length,
-      confluence: externalContent.confluence.length,
-      figma: externalContent.figma.length,
-      googleDocs: externalContent.googleDocs.length
-    });
+  let externalContent = null;
+  const enrichResult = await enrichTicketWithExternalContent(ticketData, settings);
+  enrichedTicketData = enrichResult.enrichedTicketData;
+  externalContent = enrichResult.externalContent;
+  if (enrichResult.externalSources) {
+    console.log('📄 [Analyze] Enriched ticket with external sources:', enrichResult.externalSources);
   }
 
   const systemMessage = `You are a senior business analyst and requirements quality expert specializing in requirement analysis.
@@ -2336,79 +2344,19 @@ async function handleGenerateTestScope(data) {
     // Fetch external content if integrations are configured
     let enrichedTicketData = ticketData;
     let currentExternalSources = null;
-    let externalContent = null; // Declare at function scope
-    if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
-      console.log('🔗 [Test Scope] Fetching external integrations...');
-      try {
-        const integrationManager = new IntegrationManager(settings);
-        externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
-
-        // Set external sources count (always, regardless of description change)
-        currentExternalSources = {
-          confluence: externalContent.confluence.length,
-          figma: externalContent.figma.length,
-          googleDocs: externalContent.googleDocs.length
-        };
-
-        console.log('✅ [Test Scope] External sources fetched:', currentExternalSources);
-
-        // Build linkedPages from fetched content
-        const fetchedLinkedPages = [];
-        if (externalContent.confluence.length > 0) {
-          externalContent.confluence.forEach((page, i) => {
-            fetchedLinkedPages.push({
-              id: `confluence-${i}`,
-              title: page.title || 'Confluence Page',
-              url: page.url || '',
-              type: 'confluence',
-              fetched: true
-            });
-          });
-        }
-        if (externalContent.figma.length > 0) {
-          externalContent.figma.forEach((file, i) => {
-            fetchedLinkedPages.push({
-              id: `figma-${i}`,
-              title: file.name || 'Figma File',
-              url: file.url || '',
-              type: 'figma',
-              fetched: true
-            });
-          });
-        }
-        if (externalContent.googleDocs.length > 0) {
-          externalContent.googleDocs.forEach((doc, i) => {
-            fetchedLinkedPages.push({
-              id: `googledocs-${i}`,
-              title: doc.title || 'Google Doc',
-              url: doc.url || '',
-              type: 'google_docs',
-              fetched: true
-            });
-          });
-        }
-
-        // Merge fetched pages with existing linked pages
-        const existingUrls = new Set((ticketData.linkedPages || []).map(p => p.url));
-        const mergedLinkedPages = [
-          ...(ticketData.linkedPages || []),
-          ...fetchedLinkedPages.filter(p => !existingUrls.has(p.url))
-        ];
-
-        // ALWAYS update enrichedTicketData with fetched content info
-        enrichedTicketData = {
-          ...ticketData,
-          description: externalContent.enrichedDescription || ticketData.description,
-          linkedPages: mergedLinkedPages,
-          externalSources: currentExternalSources
-        };
-        console.log('📝 [Test Scope] Enriched ticket with external sources:', mergedLinkedPages.length, 'linked pages');
-      } catch (integrationError) {
-        console.warn('⚠️ [Test Scope] Integration fetch failed, continuing with ticket data only:', integrationError.message);
-        // Continue with original ticket data
+    let externalContent = null;
+    try {
+      const enrichResult = await enrichTicketWithExternalContent(ticketData, settings);
+      enrichedTicketData = enrichResult.enrichedTicketData;
+      externalContent = enrichResult.externalContent;
+      currentExternalSources = enrichResult.externalSources;
+      if (currentExternalSources) {
+        console.log('📝 [Test Scope] Enriched ticket with external sources:', currentExternalSources);
       }
+    } catch (integrationError) {
+      console.warn('⚠️ [Test Scope] Integration fetch failed, continuing with ticket data only:', integrationError.message);
     }
-    
+
     const systemMessage = `You are a senior test architect. Create comprehensive test scope for Jira tickets.
 
 Include:
@@ -2486,33 +2434,16 @@ async function handleGenerateTestCases(data) {
   let enrichedTicketData = ticketData;
   let currentExternalSources = null;
   let externalContent = null;
-  if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
-    console.log('🔗 [Test Cases] Fetching external integrations...');
-    try {
-      const integrationManager = new IntegrationManager(settings);
-      externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
-
-      // Set external sources count
-      currentExternalSources = {
-        confluence: externalContent.confluence.length,
-        figma: externalContent.figma.length,
-        googleDocs: externalContent.googleDocs.length
-      };
-
-      console.log('✅ [Test Cases] External sources fetched:', currentExternalSources);
-
-      // Use enriched description if external content was found
-      if (externalContent.enrichedDescription !== ticketData.description) {
-        enrichedTicketData = {
-          ...ticketData,
-          description: externalContent.enrichedDescription,
-        };
-        console.log('📝 [Test Cases] Using enriched description with external content');
-      }
-    } catch (integrationError) {
-      console.warn('⚠️ [Test Cases] Integration fetch failed, continuing with ticket data only:', integrationError.message);
-      // Continue with original ticket data
+  try {
+    const enrichResult = await enrichTicketWithExternalContent(ticketData, settings);
+    enrichedTicketData = enrichResult.enrichedTicketData;
+    externalContent = enrichResult.externalContent;
+    currentExternalSources = enrichResult.externalSources;
+    if (currentExternalSources) {
+      console.log('📝 [Test Cases] Enriched ticket with external sources:', currentExternalSources);
     }
+  } catch (integrationError) {
+    console.warn('⚠️ [Test Cases] Integration fetch failed, continuing with ticket data only:', integrationError.message);
   }
 
   const systemMessage = `You are an expert test engineer. Generate detailed, executable test cases.
@@ -2928,30 +2859,16 @@ async function handleGenerateTestCasesStream(data, tabId) {
   let enrichedTicketData = ticketData;
   let currentExternalSources = null;
   let externalContent = null;
-  if (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey) {
-    console.log('🔗 [Test Cases Stream] Fetching external integrations...');
-    try {
-      const integrationManager = new IntegrationManager(settings);
-      externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
-
-      currentExternalSources = {
-        confluence: externalContent.confluence.length,
-        figma: externalContent.figma.length,
-        googleDocs: externalContent.googleDocs.length
-      };
-
-      console.log('✅ [Test Cases Stream] External sources fetched:', currentExternalSources);
-
-      if (externalContent.enrichedDescription !== ticketData.description) {
-        enrichedTicketData = {
-          ...ticketData,
-          description: externalContent.enrichedDescription,
-        };
-        console.log('📝 [Test Cases Stream] Using enriched description');
-      }
-    } catch (integrationError) {
-      console.warn('⚠️ [Test Cases Stream] Integration fetch failed, continuing with ticket data only:', integrationError.message);
+  try {
+    const enrichResult = await enrichTicketWithExternalContent(ticketData, settings);
+    enrichedTicketData = enrichResult.enrichedTicketData;
+    externalContent = enrichResult.externalContent;
+    currentExternalSources = enrichResult.externalSources;
+    if (currentExternalSources) {
+      console.log('📝 [Test Cases Stream] Enriched ticket with external sources:', currentExternalSources);
     }
+  } catch (integrationError) {
+    console.warn('⚠️ [Test Cases Stream] Integration fetch failed, continuing with ticket data only:', integrationError.message);
   }
 
   const systemMessage = `You are an expert QA engineer generating comprehensive test cases.
@@ -3084,75 +3001,14 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   let currentExternalSources = initialExternalSources;
   let externalContent = null; // Store at function scope for agent access
 
-  if (!currentExternalSources && (settings.confluenceUrl || settings.figmaToken || settings.googleApiKey)) {
-    const integrationManager = new IntegrationManager(settings);
-    externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
-
-    // Set external sources count (always, regardless of description change)
-    currentExternalSources = {
-      confluence: externalContent.confluence.length,
-      figma: externalContent.figma.length,
-      googleDocs: externalContent.googleDocs.length
-    };
-
-    // Build linkedPages from fetched content for context checker
-    // This ensures the context quality assessment reflects actually fetched content
-    const fetchedLinkedPages = [];
-    if (externalContent.confluence.length > 0) {
-      externalContent.confluence.forEach((page, i) => {
-        fetchedLinkedPages.push({
-          id: `confluence-${i}`,
-          title: page.title || 'Confluence Page',
-          url: page.url || '',
-          type: 'confluence',
-          fetched: true
-        });
-      });
+  if (!currentExternalSources) {
+    const enrichResult = await enrichTicketWithExternalContent(ticketData, settings);
+    enrichedTicketData = enrichResult.enrichedTicketData;
+    externalContent = enrichResult.externalContent;
+    currentExternalSources = enrichResult.externalSources;
+    if (currentExternalSources) {
+      console.log('📄 [Multi-Agent] Enriched ticket with external sources:', currentExternalSources);
     }
-    if (externalContent.figma.length > 0) {
-      externalContent.figma.forEach((file, i) => {
-        fetchedLinkedPages.push({
-          id: `figma-${i}`,
-          title: file.name || 'Figma File',
-          url: file.url || '',
-          type: 'figma',
-          fetched: true
-        });
-      });
-    }
-    if (externalContent.googleDocs.length > 0) {
-      externalContent.googleDocs.forEach((doc, i) => {
-        fetchedLinkedPages.push({
-          id: `googledocs-${i}`,
-          title: doc.title || 'Google Doc',
-          url: doc.url || '',
-          type: 'google_docs',
-          fetched: true
-        });
-      });
-    }
-
-    // Merge fetched pages with existing linked pages (avoid duplicates)
-    const existingUrls = new Set((ticketData.linkedPages || []).map(p => p.url));
-    const mergedLinkedPages = [
-      ...(ticketData.linkedPages || []),
-      ...fetchedLinkedPages.filter(p => !existingUrls.has(p.url))
-    ];
-
-    // ALWAYS update enrichedTicketData with fetched content info
-    enrichedTicketData = {
-      ...ticketData,
-      description: externalContent.enrichedDescription || ticketData.description,
-      linkedPages: mergedLinkedPages,
-      fetchedExternalSources: currentExternalSources
-    };
-
-    console.log('📄 [Multi-Agent] Enriched ticket with external sources:', {
-      linkedPages: mergedLinkedPages.length,
-      confluence: currentExternalSources.confluence,
-      figma: currentExternalSources.figma,
-      googleDocs: currentExternalSources.googleDocs
-    });
   }
 
   // Vision models that support image inputs (from centralized config)
@@ -3227,7 +3083,8 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       progress: progress
     });
   });
-  
+  activeOrchestrator = orchestrator;
+
   // Bind callAI to all agents
   orchestrator.agents.forEach(bindCallAI);
 
@@ -3387,6 +3244,16 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
       }
     });
 
+    // Remove tests with too many hallucinations (>2 = clearly invalid)
+    const beforeHallucinationFilter = results.testCases.length;
+    results.testCases = results.testCases.filter(tc =>
+      !tc.validation || tc.validation.hallucinations.length <= 2
+    );
+    const hallucinatedCount = beforeHallucinationFilter - results.testCases.length;
+    if (hallucinatedCount > 0) {
+      console.log(`🗑️ [Validation] Removed ${hallucinatedCount} hallucinated tests (>2 hallucinations each)`);
+    }
+
     // ========== NEW: SEMANTIC DUPLICATE DETECTION ==========
     console.log('🔍 [Duplicates] Running semantic duplicate detection...');
     const semanticDetector = new SemanticDuplicateDetector(0.65);
@@ -3451,8 +3318,9 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
 
     return baseResponse;
   } finally {
-    // Always clear keep-alive interval
+    // Always clear keep-alive interval and orchestrator reference
     clearInterval(keepAliveInterval);
+    activeOrchestrator = null;
     console.log('✅ Keep-alive heartbeat stopped');
   }
 }

@@ -4,7 +4,7 @@
  */
 
 /**
- * Token limits for different models
+ * Token limits for different models (exact match lookup)
  */
 const TOKEN_LIMITS = {
   // OpenAI
@@ -20,15 +20,57 @@ const TOKEN_LIMITS = {
   'claude-3-opus-20240229': { max: 200000, safe: 190000 },
 
   // Gemini
+  'gemini-2.5-pro-exp-03': { max: 1000000, safe: 950000 },
   'gemini-2.5-flash-exp': { max: 1000000, safe: 950000 },
   'gemini-2.0-flash-exp': { max: 1000000, safe: 950000 },
-  'gemini-1.5-pro': { max: 2000000, safe: 1900000 }
+  'gemini-1.5-pro': { max: 2000000, safe: 1900000 },
+
+  // Bedrock Claude models
+  'anthropic.claude-sonnet-4-5-20250514-v1:0': { max: 200000, safe: 190000 },
+  'anthropic.claude-3-5-sonnet-20241022-v2:0': { max: 200000, safe: 190000 },
+  'anthropic.claude-3-opus-20240229-v1:0': { max: 200000, safe: 190000 },
+
+  // Bedrock OpenAI models
+  'us.openai.gpt-4.1-2025-04-14-v1:0': { max: 128000, safe: 120000 },
+  'us.openai.o3-2025-04-16-v1:0': { max: 200000, safe: 190000 }
 };
 
 /**
+ * Prefix-based fallback for model families not in TOKEN_LIMITS
+ */
+const MODEL_FAMILY_LIMITS = [
+  { prefix: 'anthropic.claude', limits: { max: 200000, safe: 190000 } },
+  { prefix: 'us.openai.o3', limits: { max: 200000, safe: 190000 } },
+  { prefix: 'us.openai.gpt', limits: { max: 128000, safe: 120000 } },
+  { prefix: 'claude-', limits: { max: 200000, safe: 190000 } },
+  { prefix: 'gpt-4', limits: { max: 128000, safe: 120000 } },
+  { prefix: 'gpt-3', limits: { max: 16385, safe: 15000 } },
+  { prefix: 'gemini-', limits: { max: 1000000, safe: 950000 } },
+];
+
+/**
+ * Get token limits for a model, with prefix-matching fallback
+ * @param {string} model - Model name/ID
+ * @returns {{ max: number, safe: number }}
+ */
+function getModelLimits(model) {
+  if (!model) return { max: 128000, safe: 120000 };
+
+  // Exact match first
+  if (TOKEN_LIMITS[model]) return TOKEN_LIMITS[model];
+
+  // Prefix-based family matching
+  for (const { prefix, limits } of MODEL_FAMILY_LIMITS) {
+    if (model.startsWith(prefix)) return limits;
+  }
+
+  // Safe default (128K covers most modern models)
+  return { max: 128000, safe: 120000 };
+}
+
+/**
  * Estimate token count from text
- * Uses a rough approximation: ~4 characters per token for English text
- * This is not perfect but good enough for warnings
+ * Uses ~4 characters per token approximation (standard BPE heuristic)
  *
  * @param {string} text - Text to estimate tokens for
  * @returns {number} - Estimated token count
@@ -38,16 +80,8 @@ function estimateTokenCount(text) {
     return 0;
   }
 
-  // Basic estimation: 4 characters ≈ 1 token for English
-  // Adjust for whitespace and common patterns
-  const chars = text.length;
-  const words = text.split(/\s+/).length;
-
-  // More sophisticated estimation
-  // Average: 0.75 tokens per word, plus overhead for formatting
-  const estimated = Math.ceil((words * 0.75) + (chars / 100));
-
-  return estimated;
+  // Standard BPE approximation: ~4 characters per token for English text
+  return Math.ceil(text.length / 4);
 }
 
 /**
@@ -91,7 +125,7 @@ function estimateMessagesTokens(messages) {
  * @returns {Object} - { safe: boolean, limit: number, warning: string }
  */
 function checkTokenLimit(tokenCount, model, maxOutputTokens = 4000) {
-  const limits = TOKEN_LIMITS[model] || { max: 8000, safe: 7000 };
+  const limits = getModelLimits(model);
   const totalRequired = tokenCount + maxOutputTokens;
 
   if (totalRequired > limits.max) {
@@ -126,7 +160,7 @@ function checkTokenLimit(tokenCount, model, maxOutputTokens = 4000) {
  */
 function logTokenUsage(operation, inputTokens, outputTokens, model) {
   const total = inputTokens + outputTokens;
-  const limits = TOKEN_LIMITS[model] || { max: 8000, safe: 7000 };
+  const limits = getModelLimits(model);
   const percentage = ((total / limits.max) * 100).toFixed(1);
 
   console.log(`📊 Token Usage [${operation}]:`, {
@@ -157,9 +191,8 @@ function truncateToTokenLimit(text, maxTokens) {
     return text;
   }
 
-  // Calculate how many characters to keep (rough approximation)
-  const ratio = maxTokens / estimatedTokens;
-  const targetChars = Math.floor(text.length * ratio * 0.95); // 95% to be safe
+  // Calculate how many characters to keep (~4 chars per token, with 5% safety margin)
+  const targetChars = Math.floor(maxTokens * 4 * 0.95);
 
   const truncated = text.substring(0, targetChars);
   console.warn(`⚠️ Text truncated from ${estimatedTokens} to ~${maxTokens} tokens`);
@@ -200,7 +233,7 @@ function getTokenStatistics(requestData, model) {
     inputTokens = estimateTokenCount(JSON.stringify(requestData));
   }
 
-  const limits = TOKEN_LIMITS[model] || { max: 8000, safe: 7000 };
+  const limits = getModelLimits(model);
 
   return {
     inputTokens,

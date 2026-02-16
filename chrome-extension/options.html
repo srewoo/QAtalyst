@@ -1321,84 +1321,39 @@
     <div class="tab-content" id="help-tab">
       <div class="section">
         <h2>❓ Help & Documentation</h2>
-        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v12.5.0 - AI-powered test case generation with advanced features.</p>
+        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v12.9.0 - AI-powered test case generation with advanced features.</p>
 
         <!-- What's New -->
         <div class="help-card" style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border-color: #86efac;">
-          <h3 style="color: #16a34a;">✨ What's New in v12.5.0</h3>
+          <h3 style="color: #16a34a;">✨ What's New in v12.9.0</h3>
 
-          <h4 style="color: #15803d;">🎨 Visual UI/UX Test Generation from Figma & Screenshots (NEW - v12.5.0)</h4>
+          <h4 style="color: #15803d;">⚡ Parallel Agent Execution - 3-5x Faster Generation (NEW - v12.9.0)</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Direct Image Analysis:</strong> PositiveTestAgent now receives and analyzes Figma designs & Jira screenshots directly</li>
-            <li><strong>Accurate UI Tests:</strong> Uses ACTUAL button labels, field names, and layouts from your designs</li>
-            <li><strong>30% UI/UX Coverage:</strong> Automatically generates visual verification, accessibility, and responsive design tests</li>
-            <li><strong>Vision Model Support:</strong> Works with GPT-4o, Claude Sonnet, Gemini 2.5 (models with image understanding)</li>
-            <li><strong>How It Works:</strong> Link Figma files or attach screenshots to Jira → Extension sends images to AI → Tests reference real UI elements</li>
+            <li><strong>3-Phase Pipeline:</strong> Analysis agents run first, then all 6 test generation agents run in parallel via Promise.allSettled, then the Review agent runs last</li>
+            <li><strong>3-5x Speed Boost:</strong> Test generation that took 60-90 seconds now completes in 15-30 seconds</li>
+            <li><strong>Stop Button:</strong> Cancel multi-agent generation at any time — partial results are preserved</li>
+            <li><strong>Safe Parallelism:</strong> Each agent gets its own results snapshot to prevent race conditions</li>
           </ul>
 
-          <h4 style="color: #15803d;">🤖 AI Feature Test Agent (NEW - v12.4.0)</h4>
+          <h4 style="color: #15803d;">🛡️ Smarter Quality Pipeline (NEW - v12.9.0)</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Specialized AI Testing:</strong> Generates test cases for AI/LLM features (prompt testing, anti-hallucination, consistency)</li>
-            <li><strong>Smart Detection:</strong> Only activates when Jira ticket describes an AI-powered feature</li>
-            <li><strong>Semantic Analysis:</strong> Uses pattern scoring to avoid false positives (e.g., "support agent" ≠ AI feature)</li>
-            <li><strong>6 Test Categories:</strong> Consistency, Hallucination Prevention, Prompt Injection, Response Quality, Edge Cases, Performance</li>
+            <li><strong>ReviewAgent Feedback Loop:</strong> Review suggestions are now acted on — flagged tests are auto-removed and coverage gap suggestions are added as new test shells</li>
+            <li><strong>Hallucination Filtering:</strong> Tests with 3+ hallucinated references are automatically removed post-validation</li>
+            <li><strong>JSON Schema Validation:</strong> Every test case is guaranteed to have all required fields (id, title, category, priority, description, steps, expected_result, test_data) — missing fields are auto-filled with safe defaults</li>
+            <li><strong>Specificity Enforcement:</strong> Low-specificity tests (score &lt;40) are automatically refined with concrete details</li>
           </ul>
 
-          <h4 style="color: #15803d;">⚠️ No Crawl Data Warning (NEW - v12.4.0)</h4>
+          <h4 style="color: #15803d;">🔧 Reliability & Provider Fixes (v12.9.0)</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Quality Alert:</strong> Shows warning modal when generating tests without crawled application data</li>
-            <li><strong>Impact Explanation:</strong> Explains risks of hallucinated field names and non-existent endpoints</li>
-            <li><strong>User Choice:</strong> Option to proceed anyway or crawl first for better quality</li>
-          </ul>
-
-          <h4 style="color: #15803d;">🎯 Context Analysis Agent (v11.2.1)</h4>
-          <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Intelligent Feature Summarization:</strong> Creates concise 200-500 word summaries of crawled app data</li>
-            <li><strong>500x Size Reduction:</strong> Replaces 1-2 MB of raw JSON with 2-5 KB summary - solves quota exceeded errors!</li>
-            <li><strong>Runs in Background:</strong> Summary created in background script BEFORE sending to content script - no storage bridge needed!</li>
-            <li><strong>Structured Analysis:</strong> Focuses on Main Purpose, How It Works, and UI Components</li>
-            <li><strong>Better Test Quality:</strong> Provides analyzed context instead of raw data dump to test agents</li>
-            <li><strong>Graceful Fallback:</strong> Extension works perfectly even without crawled data - agent is optional</li>
-          </ul>
-
-          <h4 style="color: #15803d;">🗑️ Storage Bridge Removed (v11.2.1)</h4>
-          <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>No More Quota Issues:</strong> Removed storage-bridge.js completely - context summary is small enough to send directly</li>
-            <li><strong>Simpler Architecture:</strong> Background creates summary → sends directly to content (2-5 KB) → no intermediate storage</li>
-            <li><strong>Faster & More Reliable:</strong> No storage.local read/write operations, no chunking, no cleanup needed</li>
-          </ul>
-
-          <h4 style="color: #15803d;">🚀 Major Performance Improvements</h4>
-          <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>4-6x Faster Evolution:</strong> Parallel processing optimization reduces evolution time from 60-90s to just 10-15s (Light mode)!</li>
-            <li><strong>Optimized Defaults:</strong> Light mode now recommended for most cases - fast enough for daily use</li>
-          </ul>
-
-          <h4 style="color: #15803d; margin-top: 16px;">🧠 Historical Test Case Mining (NEW)</h4>
-          <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Learn from Past Bugs:</strong> Automatically searches Jira history for similar issues and generates bug-prevention tests</li>
-            <li><strong>30-50% Better Coverage:</strong> Identifies commonly missed edge cases from your organization's bug history</li>
-            <li><strong>Smart Authentication:</strong> Built-in Jira API token test button to verify setup</li>
-            <li><strong>Customizable JQL:</strong> Control which historical bugs to analyze</li>
-          </ul>
-
-          <h4 style="color: #15803d; margin-top: 16px;">📊 Critical Requirement Analysis (NEW)</h4>
-          <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Proactive Quality Gate:</strong> Identifies gaps, ambiguities, and untestable requirements BEFORE test generation</li>
-            <li><strong>Saves Time:</strong> Catch issues in minutes instead of days of back-and-forth during testing</li>
-            <li><strong>Testability Scoring:</strong> Rates each requirement as High/Medium/Low testability</li>
-            <li><strong>Actionable Recommendations:</strong> Specific questions to ask stakeholders</li>
-          </ul>
-
-          <h4 style="color: #15803d; margin-top: 16px;">🎨 UI Enhancements</h4>
-          <ul style="margin-left: 20px; line-height: 1.8;">
-            <li><strong>Expand Button:</strong> Click ⇔ next to close button to double the panel width (420px → 840px)</li>
-            <li><strong>Cleaner Header:</strong> Removed rocket emoji for a more professional look</li>
-            <li><strong>Better Visual Indicators:</strong> 🛡️ for bug-prevention tests, clear progress tracking</li>
+            <li><strong>Gemini Fix:</strong> Fixed content parts handling — text objects are now correctly converted to Gemini's native format</li>
+            <li><strong>Token Estimation:</strong> Switched to standard BPE heuristic (~4 chars/token) with prefix-matching for all model families including AWS Bedrock</li>
+            <li><strong>AWS Bedrock Models:</strong> Full token limit support for Bedrock Claude and Bedrock OpenAI models</li>
+            <li><strong>Shared Enrichment Pipeline:</strong> Confluence, Figma, and Google Docs content fetching is now a single reusable function across all generation paths</li>
+            <li><strong>Domain-Agnostic Prompts:</strong> All agent examples use generic patterns instead of hardcoded domain references</li>
           </ul>
 
           <p style="margin-top: 16px; padding: 12px; background: white; border-radius: 6px; font-size: 13px;">
-            <strong>💡 Quick Tip:</strong> Enable Historical Mining + Evolution Light mode for the best balance of coverage and speed!
+            <strong>💡 Quick Tip:</strong> Enable Multi-Agent System for parallel generation (3-5x faster) + Historical Mining + Evolution Light mode for the best balance of coverage and speed!
           </p>
         </div>
 
@@ -1408,8 +1363,8 @@
           <ol style="margin-left: 20px; color: #475569; line-height: 1.8;">
             <li><strong>Configure AI Provider</strong> (API Settings tab)
               <ul style="margin-left: 20px; margin-top: 8px;">
-                <li>Select provider: OpenAI (GPT-4o) / Anthropic Claude / Google Gemini</li>
-                <li>Enter your API key (<a href="#" id="openai-key-link">Get OpenAI</a> | <a href="#" id="claude-key-link">Get Claude</a> | <a href="#" id="gemini-key-link">Get Gemini</a>)</li>
+                <li>Select provider: OpenAI (GPT-4.1) / Anthropic Claude / Google Gemini / AWS Bedrock</li>
+                <li>Enter your API key (<a href="#" id="openai-key-link">Get OpenAI</a> | <a href="#" id="claude-key-link">Get Claude</a> | <a href="#" id="gemini-key-link">Get Gemini</a>) or configure Bedrock credentials</li>
                 <li>Set temperature (0.7 recommended) and max tokens (4000)</li>
               </ul>
             </li>
@@ -1450,28 +1405,36 @@
           <div class="feature-section">
             <h4>🎯 Phase 1: Foundation</h4>
             <ul>
-              <li><strong>3 AI Providers:</strong> OpenAI (GPT-4o, GPT-4 Turbo), Claude (3.5 Sonnet, 3 Opus), Gemini (2.0 Flash, 1.5 Pro)</li>
+              <li><strong>4 AI Providers:</strong> OpenAI (GPT-4.1, GPT-4o), Claude (Sonnet 4, 3.5 Sonnet), Gemini (2.5 Pro, 2.5 Flash), AWS Bedrock (Claude + OpenAI models)</li>
               <li><strong>Response Streaming:</strong> See AI responses in real-time with stop button</li>
               <li><strong>Configurable Test Count:</strong> Slider to generate 20-100 test cases</li>
             </ul>
           </div>
           
           <div class="feature-section">
-            <h4>🧬 Phase 2: Multi-Agent System</h4>
-            <p><strong>8 Specialized AI Agents:</strong></p>
+            <h4>🧬 Phase 2: Multi-Agent System (Parallel Execution)</h4>
+            <p><strong>9 Specialized AI Agents in 3-Phase Pipeline:</strong></p>
+            <p style="margin: 8px 0; font-size: 13px; color: #475569;"><strong>Phase 1 (Sequential):</strong> Analysis agents prepare context</p>
             <ul>
-              <li><strong>Context Analysis Agent (NEW):</strong> Analyzes crawled application data and creates intelligent feature summary (Main Purpose, How It Works, UI Components). Reduces context size by 500x while improving test quality!</li>
+              <li><strong>Context Analysis Agent:</strong> Analyzes crawled application data and creates intelligent feature summary (Main Purpose, How It Works, UI Components). Reduces context size by 500x while improving test quality!</li>
               <li><strong>Requirement Analysis Agent:</strong> Extracts and structures requirements</li>
+            </ul>
+            <p style="margin: 8px 0; font-size: 13px; color: #475569;"><strong>Phase 2 (Parallel - 3-5x faster):</strong> All test agents run simultaneously</p>
+            <ul>
               <li><strong>Positive Test Agent (40%):</strong> Happy path and valid input scenarios</li>
               <li><strong>Negative Test Agent (30%):</strong> Error handling and validation tests</li>
               <li><strong>Edge Case Agent (20%):</strong> Boundary conditions and corner cases</li>
               <li><strong>Regression Test Agent (5%):</strong> Ensures existing functionality works</li>
               <li><strong>Integration Test Agent (5%):</strong> API and system integration tests</li>
-              <li><strong>Review Agent:</strong> Quality check and coverage gap analysis</li>
+              <li><strong>AI Feature Test Agent:</strong> Generates AI/LLM-specific tests (only activates when AI features are detected)</li>
+            </ul>
+            <p style="margin: 8px 0; font-size: 13px; color: #475569;"><strong>Phase 3 (Sequential):</strong> Quality review and feedback</p>
+            <ul>
+              <li><strong>Review Agent:</strong> Quality check, coverage gap analysis, removes flagged tests, and suggests missing scenarios</li>
             </ul>
             <p style="margin-top: 12px;"><em>Enable in API Settings: "🧬 Enable Multi-Agent System"</em></p>
             <p style="margin-top: 8px; background: #f0fdf4; padding: 12px; border-radius: 6px; font-size: 13px; border-left: 4px solid #10b981;">
-              <strong>💡 Context Analysis Agent:</strong> When you crawl an app, this agent runs FIRST to create a concise 200-500 word summary of the feature instead of sending raw JSON data. This solves the quota exceeded issue and provides better context to test generation agents!
+              <strong>⚡ Parallel Execution:</strong> Test generation agents now run simultaneously instead of sequentially, cutting generation time by 3-5x. You can also cancel at any time with partial results preserved!
             </p>
           </div>
           
@@ -1880,7 +1843,7 @@
           <h4>Panel Issues:</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>Panel doesn't appear:</strong> Refresh Jira page, ensure you're on a ticket page (not board)</li>
-            <li><strong>Settings button error:</strong> Update to v12.5.0+</li>
+            <li><strong>Settings button error:</strong> Update to v12.9.0+</li>
             <li><strong>Panel position wrong:</strong> Resize browser window</li>
           </ul>
           

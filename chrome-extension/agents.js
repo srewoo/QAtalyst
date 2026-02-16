@@ -131,6 +131,12 @@ class AgentOrchestrator {
     this.settings = settings;
     this.onProgress = onProgress;
     this.agents = this.initializeAgents();
+    this.cancelled = false;
+  }
+
+  cancel() {
+    this.cancelled = true;
+    console.log('[ORCHESTRATOR] ⛔ Cancellation requested');
   }
   
   initializeAgents() {
@@ -178,86 +184,166 @@ class AgentOrchestrator {
 
     const enabledAgents = this.agents.filter(agent => agent.isEnabled(this.settings));
 
-    for (let i = 0; i < enabledAgents.length; i++) {
-      const agent = enabledAgents[i];
+    // Classify agents into 3 phases
+    const analysisAgents = enabledAgents.filter(a =>
+      a instanceof ContextAnalysisAgent || a instanceof RequirementAnalysisAgent
+    );
+    const testAgents = enabledAgents.filter(a =>
+      a instanceof PositiveTestAgent || a instanceof NegativeTestAgent ||
+      a instanceof EdgeCaseAgent || a instanceof RegressionTestAgent ||
+      a instanceof IntegrationTestAgent || a instanceof AIFeatureTestAgent
+    );
+    const reviewAgents = enabledAgents.filter(a => a instanceof ReviewAgent);
+    const totalSteps = analysisAgents.length + testAgents.length + reviewAgents.length;
+    let stepCounter = 0;
 
-      // Report progress
+    // ═══ PHASE 1: Analysis agents (sequential — downstream agents depend on their output) ═══
+    console.log(`[ORCHESTRATOR] 📋 Phase 1: Running ${analysisAgents.length} analysis agents sequentially`);
+    for (const agent of analysisAgents) {
+      if (this.cancelled) { console.log('[ORCHESTRATOR] ⛔ Cancelled before analysis'); break; }
+      stepCounter++;
       if (this.onProgress) {
-        this.onProgress({
-          agent: agent.name,
-          step: i + 1,
-          total: enabledAgents.length,
-          status: 'running',
-          description: agent.description
-        });
+        this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'running', description: agent.description });
       }
-
       try {
-        // Use batched execution for test agents to prevent timeouts
-        const isTestAgent = agent instanceof PositiveTestAgent ||
-                           agent instanceof NegativeTestAgent ||
-                           agent instanceof EdgeCaseAgent ||
-                           agent instanceof RegressionTestAgent ||
-                           agent instanceof IntegrationTestAgent ||
-                           agent instanceof AIFeatureTestAgent;
-
-        let agentResult;
-        if (isTestAgent) {
-          // Use batched execution: 4 batches of 3 tests each = 12 tests per agent
-          agentResult = await agent.executeBatched(ticketData, results, this.settings, appContext, {
-            batches: 4,
-            testsPerBatch: 3
-          });
-        } else {
-          // Regular execution for non-test agents (Context, Requirements, Review)
-          agentResult = await agent.execute(ticketData, results, this.settings, appContext);
-        }
-
-        // Store agent results
+        const agentResult = await agent.execute(ticketData, results, this.settings, appContext);
         results.agentResults[agent.name] = agentResult;
-
-        // Context Analysis stores context summary
         if (agent instanceof ContextAnalysisAgent) {
           results.contextSummary = agentResult.summary;
           console.log(`[ORCHESTRATOR] 📝 Context summary created: ${agentResult.summary?.length || 0} chars`);
-        }
-        // Requirement Analysis stores analysis
-        else if (agent instanceof RequirementAnalysisAgent) {
+        } else if (agent instanceof RequirementAnalysisAgent) {
           results.analysis = agentResult;
         }
-        // Review Agent stores review
-        else if (agent instanceof ReviewAgent) {
-          results.review = agentResult;
-        }
-        // Test agents add test cases
-        else if (Array.isArray(agentResult)) {
-          results.testCases.push(...agentResult);
-        }
-        
-        // Report completion
         if (this.onProgress) {
-          this.onProgress({
-            agent: agent.name,
-            step: i + 1,
-            total: enabledAgents.length,
-            status: 'completed',
-            count: Array.isArray(agentResult) ? agentResult.length : 0
-          });
+          this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'completed', count: 0 });
         }
       } catch (error) {
         console.error(`Agent ${agent.name} failed:`, error);
         if (this.onProgress) {
-          this.onProgress({
-            agent: agent.name,
-            step: i + 1,
-            total: enabledAgents.length,
-            status: 'error',
-            error: error.message
+          this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'error', error: error.message });
+        }
+      }
+    }
+
+    // ═══ PHASE 2: Test generation agents (parallel — all independent, share same analysis snapshot) ═══
+    if (!this.cancelled && testAgents.length > 0) {
+      console.log(`[ORCHESTRATOR] 🚀 Phase 2: Running ${testAgents.length} test agents in parallel`);
+
+      // Snapshot results for all parallel agents (each gets its own copy to avoid race conditions)
+      const resultsSnapshot = {
+        analysis: results.analysis,
+        testCases: [], // Each agent starts with empty testCases (no cross-agent dedup during parallel)
+        agentResults: { ...results.agentResults },
+        contextSummary: results.contextSummary,
+        appContext: results.appContext
+      };
+
+      // Report all test agents as running
+      const testAgentStartStep = stepCounter + 1;
+      testAgents.forEach((agent, i) => {
+        if (this.onProgress) {
+          this.onProgress({ agent: agent.name, step: testAgentStartStep + i, total: totalSteps, status: 'running', description: agent.description });
+        }
+      });
+
+      // Launch all test agents concurrently
+      const parallelResults = await Promise.allSettled(
+        testAgents.map(async (agent) => {
+          // Each agent gets its own results copy so batched dedup works within-agent
+          const agentResults = { ...resultsSnapshot, testCases: [] };
+          const agentResult = await agent.executeBatched(ticketData, agentResults, this.settings, appContext, {
+            batches: 4,
+            testsPerBatch: 3
           });
+          return { agent, result: agentResult };
+        })
+      );
+
+      // Collect results from all parallel agents
+      parallelResults.forEach((outcome, i) => {
+        stepCounter++;
+        const agent = testAgents[i];
+        if (outcome.status === 'fulfilled') {
+          const { result } = outcome.value;
+          results.agentResults[agent.name] = result;
+          if (Array.isArray(result)) {
+            results.testCases.push(...result);
+          }
+          if (this.onProgress) {
+            this.onProgress({ agent: agent.name, step: testAgentStartStep + i, total: totalSteps, status: 'completed', count: Array.isArray(result) ? result.length : 0 });
+          }
+        } else {
+          console.error(`Agent ${agent.name} failed:`, outcome.reason);
+          if (this.onProgress) {
+            this.onProgress({ agent: agent.name, step: testAgentStartStep + i, total: totalSteps, status: 'error', error: outcome.reason?.message || 'Unknown error' });
+          }
+        }
+      });
+      // Advance stepCounter past all test agents
+      stepCounter = testAgentStartStep + testAgents.length - 1;
+    }
+
+    // ═══ PHASE 3: Review agent (sequential — needs all test cases) ═══
+    if (!this.cancelled && reviewAgents.length > 0) {
+      console.log(`[ORCHESTRATOR] 📝 Phase 3: Running review agent`);
+      for (const agent of reviewAgents) {
+        stepCounter++;
+        if (this.onProgress) {
+          this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'running', description: agent.description });
+        }
+        try {
+          const agentResult = await agent.execute(ticketData, results, this.settings, appContext);
+          results.agentResults[agent.name] = agentResult;
+          results.review = agentResult;
+          if (this.onProgress) {
+            this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'completed', count: 0 });
+          }
+        } catch (error) {
+          console.error(`Agent ${agent.name} failed:`, error);
+          if (this.onProgress) {
+            this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'error', error: error.message });
+          }
         }
       }
     }
     
+    // Act on ReviewAgent feedback: remove flagged tests and add suggested tests
+    if (results.review) {
+      // Remove tests flagged for removal by ReviewAgent
+      if (Array.isArray(results.review.testsToRemove) && results.review.testsToRemove.length > 0) {
+        const idsToRemove = new Set(results.review.testsToRemove.map(t => t.id));
+        const beforeCount = results.testCases.length;
+        results.testCases = results.testCases.filter(tc => !idsToRemove.has(tc.id));
+        const removedCount = beforeCount - results.testCases.length;
+        if (removedCount > 0) {
+          console.log(`[ORCHESTRATOR] 🗑️ ReviewAgent: removed ${removedCount} flagged tests`);
+        }
+      }
+
+      // Add suggested tests from ReviewAgent as shells for the refinement loop
+      if (Array.isArray(results.review.suggestedTests) && results.review.suggestedTests.length > 0) {
+        const suggestedShells = results.review.suggestedTests
+          .filter(s => s.title && (s.rationale || s.storyReference))
+          .map((s, i) => ({
+            id: `TC-SUG-${String(i + 1).padStart(3, '0')}`,
+            title: s.title,
+            category: s.category || 'Positive',
+            priority: s.priority || 'P1',
+            storyReference: s.rationale || s.storyReference || '',
+            description: s.rationale || s.title,
+            preconditions: '',
+            steps: [],
+            expected_result: '',
+            test_data: '',
+            _needsRefinement: true
+          }));
+        if (suggestedShells.length > 0) {
+          results.testCases.push(...suggestedShells);
+          console.log(`[ORCHESTRATOR] ➕ ReviewAgent: added ${suggestedShells.length} suggested test shells`);
+        }
+      }
+    }
+
     // Validate test case quality and storyReference
     results.testCases = this.validateAndCleanTestCases(results.testCases, ticketData);
 
@@ -266,6 +352,8 @@ class AgentOrchestrator {
     const SPECIFICITY_THRESHOLD = 70;
 
     for (let pass = 1; pass <= MAX_REFINEMENT_PASSES; pass++) {
+      if (this.cancelled) { console.log('[ORCHESTRATOR] ⛔ Cancelled before refinement'); break; }
+
       // Re-score all tests after each pass
       if (pass > 1) {
         results.testCases = this.validateAndCleanTestCases(results.testCases, ticketData);
@@ -290,8 +378,8 @@ class AgentOrchestrator {
       if (this.onProgress) {
         this.onProgress({
           agent: 'Refinement',
-          step: enabledAgents.length + pass,
-          total: enabledAgents.length + MAX_REFINEMENT_PASSES,
+          step: totalSteps + pass,
+          total: totalSteps + MAX_REFINEMENT_PASSES,
           status: 'running',
           description: `Refinement pass ${pass}: improving ${lowQualityTests.length} test cases`
         });
@@ -323,8 +411,8 @@ class AgentOrchestrator {
         if (this.onProgress) {
           this.onProgress({
             agent: 'Refinement',
-            step: enabledAgents.length + pass,
-            total: enabledAgents.length + MAX_REFINEMENT_PASSES,
+            step: totalSteps + pass,
+            total: totalSteps + MAX_REFINEMENT_PASSES,
             status: 'completed',
             count: refined?.length || 0
           });
@@ -352,7 +440,27 @@ class AgentOrchestrator {
     const genericRefs = ['user story', 'the story', 'story requirement', 'requirement', 'n/a', 'na', 'none', 'general'];
     let fixedCount = 0;
 
-    return testCases.map(tc => {
+    return testCases.map((tc, index) => {
+      // JSON schema validation: ensure all required fields exist with correct types
+      const requiredDefaults = {
+        id: () => `TC-${(tc.category || 'GEN').substring(0, 3).toUpperCase()}-${String(index + 1).padStart(3, '0')}`,
+        title: () => (tc.description || '').substring(0, 80) || 'Untitled Test Case',
+        category: () => 'Positive',
+        priority: () => 'P2',
+        description: () => tc.title || '',
+        steps: () => [],
+        expected_result: () => '',
+        test_data: () => ''
+      };
+
+      for (const [field, defaultFn] of Object.entries(requiredDefaults)) {
+        if (tc[field] === undefined || tc[field] === null) {
+          tc[field] = defaultFn();
+          tc._autoFilled = tc._autoFilled || [];
+          tc._autoFilled.push(field);
+        }
+      }
+
       // Fix missing or generic storyReference
       const ref = (tc.storyReference || '').trim().toLowerCase();
       if (!ref || ref.length < 10 || genericRefs.some(g => ref === g)) {
@@ -1079,7 +1187,7 @@ For each screen/component in the Figma design, create visual tests:
 1. **Element Presence Tests:**
    - "Verify 'Start Recording' button is visible on the modal"
    - "Verify 'Meeting Title' label is displayed above the input field"
-   - "Verify consent checkbox is present before the submit button"
+   - "Verify terms checkbox is present before the submit button"
 
 2. **Text/Label Tests:**
    - "Verify modal title displays 'Record a Live Meeting'"
@@ -1093,7 +1201,7 @@ For each screen/component in the Figma design, create visual tests:
 
 4. **Layout/Position Tests:**
    - "Verify 'Cancel' button is positioned to the left of 'Start Recording'"
-   - "Verify consent checkbox appears below participant selection"
+   - "Verify terms checkbox appears below the form fields"
    - "Verify modal is centered on screen"
 
 5. **State Appearance Tests:**
@@ -1105,7 +1213,7 @@ For each screen/component in the Figma design, create visual tests:
 - WRONG: "Click submit button"
 - RIGHT: "Click 'Start Recording' button"
 - WRONG: "Check the box"
-- RIGHT: "Check 'I confirm all participants have given consent' checkbox"
+- RIGHT: "Check 'I agree to the terms and conditions' checkbox"
 
 **🎯 AT LEAST 30% OF TESTS SHOULD BE VISUAL VALIDATION TESTS when Figma is attached.**
 ` : '';
@@ -1183,10 +1291,10 @@ ${visualAnalysisSection}
 ❌ Any test where storyReference would be empty or vague
 
 **✅ CORRECT TEST PATTERNS:**
-✅ storyReference: "record meetings initiated without a prior calendar invite"
-✅ storyReference: "internal impromptu meetings hosted by internal participant"
-✅ storyReference: "bot was kicked-out from the meeting" (recovery scenario)
-✅ storyReference: "verbal consent after initial denial"
+✅ storyReference: "users can submit the form without uploading an attachment"
+✅ storyReference: "admin users can bulk-export records from the dashboard"
+✅ storyReference: "session is restored after unexpected logout" (recovery scenario)
+✅ storyReference: "user grants permission after initially declining the prompt"
 
 Generate test cases in this EXACT JSON format:
 {
@@ -1316,7 +1424,7 @@ Return as JSON array.`;
     }
 
     // Look for flow keywords
-    const flowKeywords = ['internal', 'external', 'impromptu', 'scheduled', 'recovery', 'kicked', 'denied', 'failed', 'consent', 'waiting room'];
+    const flowKeywords = ['create', 'update', 'delete', 'submit', 'cancel', 'recovery', 'retry', 'denied', 'failed', 'timeout', 'permission'];
     flowKeywords.forEach(keyword => {
       if (fullText.toLowerCase().includes(keyword)) {
         const sentences = fullText.split(/[.!?]+/).filter(s => s.toLowerCase().includes(keyword));
@@ -1469,7 +1577,7 @@ DO NOT generate generic security or validation tests.
 - "error/issue/problem" mentions → Test error states
 - "cannot/unable/not allowed" mentions → Test restriction handling
 - "recovery/retry" mentions → Test recovery flows
-- "consent" mentions → Test consent failure scenarios
+- "permission/access" mentions → Test permission denial scenarios
 ${visualSection}
 
 **🚫 REJECTED TEST PATTERNS (DO NOT GENERATE):**
@@ -1508,10 +1616,10 @@ ${visualSection}
 }
 
 **✅ EXAMPLES OF VALID storyReference:**
-✅ "bot was kicked-out from the meeting"
-✅ "bot was not allowed to join from the waiting room"
-✅ "technical issue on Call AI or recall's end"
-✅ "someone didn't provide consent initially"
+✅ "upload fails when file exceeds the maximum size limit"
+✅ "user is denied access when permissions are insufficient"
+✅ "service returns error due to third-party API timeout"
+✅ "user initially declines the required terms of service"
 
 Generate test cases in this EXACT JSON format:
 {
@@ -1588,7 +1696,7 @@ Return as JSON array.`;
     const scenarios = [];
 
     // Look for failure keywords
-    const failureKeywords = ['fail', 'error', 'denied', 'kicked', 'rejected', 'invalid', 'unable', 'cannot', 'issue', 'problem', 'not allowed', 'waiting room', 'consent', 'recovery', 'technical issue'];
+    const failureKeywords = ['fail', 'error', 'denied', 'rejected', 'invalid', 'unable', 'cannot', 'issue', 'problem', 'not allowed', 'timeout', 'permission', 'recovery', 'service error'];
 
     failureKeywords.forEach(keyword => {
       if (fullText.toLowerCase().includes(keyword)) {
@@ -1706,11 +1814,11 @@ ${visualSection}
   "test_data": "[Exact boundary values with reasoning: name='x'.repeat(51) because maxLength=50]"
 }
 
-**✅ EXAMPLES OF VALID EDGE CASES FOR "Impromptu Meeting" STORY:**
-✅ storyReference: "internal impromptu meetings" → Edge: Host leaves immediately after starting
-✅ storyReference: "external impromptu meetings" → Edge: All external participants, no internal
-✅ storyReference: "bot joining meeting" → Edge: Bot joins when meeting is ending
-✅ storyReference: "verbal consent" → Edge: Consent given then immediately revoked
+**✅ EXAMPLES OF VALID EDGE CASES:**
+✅ storyReference: "bulk export from dashboard" → Edge: Export triggered with zero records selected
+✅ storyReference: "multi-user collaboration" → Edge: All collaborators disconnect simultaneously
+✅ storyReference: "file upload processing" → Edge: Upload completes just as session expires
+✅ storyReference: "user permission grant" → Edge: Permission revoked during an active operation
 
 Return ONLY valid JSON, no markdown formatting.`;
   }
@@ -1868,8 +1976,8 @@ Analyze this story and return edge case opportunities grouped by dimension.`;
       }
     });
 
-    if (fullText.toLowerCase().includes('impromptu') || fullText.toLowerCase().includes('scheduled')) {
-      opportunities.push(`• Timing edge: Impromptu vs scheduled timing differences`);
+    if (fullText.toLowerCase().includes('real-time') || fullText.toLowerCase().includes('scheduled')) {
+      opportunities.push(`• Timing edge: Real-time vs scheduled timing differences`);
     }
 
     if (fullText.toLowerCase().includes('recovery') || fullText.toLowerCase().includes('retry')) {
@@ -1930,9 +2038,9 @@ Generate regression tests to ensure those existing features still work.
 3. If you can't identify both → DO NOT generate this test
 
 **EXAMPLES OF STORY-AWARE REGRESSION:**
-- New feature: "Impromptu meeting recording"
-  → storyReference: "impromptu meetings" impacts "scheduled meeting recording"
-  → storyReference: "impromptu meetings" impacts "recording list/history"
+- New feature: "Bulk export for reports"
+  → storyReference: "bulk export" impacts "individual report download"
+  → storyReference: "bulk export" impacts "report history page"
 
 **WHAT TO TEST:**
 - Features that SHARE components with the new story feature
@@ -2012,13 +2120,13 @@ Return as JSON array.`;
 
     // Common feature areas and their related existing features
     const featureAreas = {
-      'meeting': ['existing meeting list', 'meeting history', 'meeting notifications', 'meeting calendar'],
-      'recording': ['existing recordings', 'recording playback', 'recording storage', 'recording list'],
+      'form': ['existing form submissions', 'form validation', 'form history'],
+      'report': ['existing reports', 'report exports', 'report scheduling'],
       'user': ['user authentication', 'user profile', 'user permissions', 'user settings'],
       'notification': ['existing notifications', 'email delivery', 'in-app alerts'],
-      'consent': ['existing consent flows', 'consent records', 'consent verification'],
-      'bot': ['existing bot functionality', 'bot joining flows', 'bot status'],
-      'calendar': ['calendar sync', 'scheduled events', 'calendar integration']
+      'auth': ['existing login flow', 'session management', 'permission checks'],
+      'search': ['search results', 'search filters', 'saved searches'],
+      'dashboard': ['dashboard widgets', 'dashboard data', 'dashboard layout']
     };
 
     Object.entries(featureAreas).forEach(([area, relatedFeatures]) => {
@@ -2091,7 +2199,7 @@ DO NOT generate generic API or database tests.
 3. If NO → DO NOT generate this test
 
 **INTEGRATION KEYWORDS TO FIND IN STORY:**
-- Service names: "bot", "recall", "calendar", "notification"
+- Service names: "payment gateway", "email service", "search index", "notification service"
 - Integration verbs: "joins", "syncs", "sends", "receives"
 - System mentions: "API", "webhook", "service", "platform"
 
@@ -2106,7 +2214,7 @@ DO NOT generate generic API or database tests.
   "title": "[System A] ↔ [System B] for [story feature]",
   "category": "Integration",
   "priority": "P1|P2",
-  "storyReference": "QUOTE where story mentions this integration (e.g., 'bot didn't join due to technical issue on recall's end')",
+  "storyReference": "QUOTE where story mentions this integration (e.g., 'payment failed due to gateway timeout')",
   "description": "Verify that [integration from story] works. When [trigger], the system should [behavior].",
   "preconditions": "[Setup]",
   "steps": ["Integration steps"],
@@ -2114,10 +2222,10 @@ DO NOT generate generic API or database tests.
   "test_data": "[Data between systems]"
 }
 
-**✅ VALID storyReference EXAMPLES for "Impromptu Meeting" story:**
-✅ "bot didn't join...technical issue on Call AI or recall's end"
-✅ "bot was kicked-out from the meeting"
-✅ "bot was not allowed to join...waiting room"
+**✅ VALID storyReference EXAMPLES:**
+✅ "payment failed due to gateway timeout"
+✅ "email delivery failed due to invalid recipient"
+✅ "search index was unavailable during bulk import"
 
 Return ONLY valid JSON, no markdown formatting.`;
   }
@@ -2417,12 +2525,12 @@ Return your analysis in this EXACT JSON format:
 {
   "storyAlignmentScore": 75,
   "storyAlignmentIssues": [
-    "TC-XXX-001: Generic SQL injection test - not relevant to meeting recording story",
+    "TC-XXX-001: Generic SQL injection test - not relevant to this user story",
     "TC-YYY-002: Generic empty field validation - story doesn't specify field validations"
   ],
   "missingStoryScenarios": [
-    "No test for: Bot kicked out recovery (mentioned in story)",
-    "No test for: External host impromptu meeting (mentioned in story)"
+    "No test for: Error recovery after service timeout (mentioned in story)",
+    "No test for: Admin bulk export with filters applied (mentioned in story)"
   ],
   "coverageAssessment": "Detailed coverage analysis with specific examples",
   "coverageScore": 85,
