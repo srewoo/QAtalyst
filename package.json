@@ -8,7 +8,7 @@
     "test": "echo \"No tests configured yet\" && exit 0",
     "lint": "eslint chrome-extension/**/*.js",
     "format": "prettier --write chrome-extension/**/*.{js,html,css,json}",
-    "zip": "cd chrome-extension && zip -r ../qatalyst-v12.7-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
+    "zip": "cd chrome-extension && zip -r ../qatalyst-v12.9-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
   },
   "repository": {
     "type": "git",
