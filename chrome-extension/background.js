@@ -3327,6 +3327,14 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
 
 // Run evolutionary optimization in background without blocking
 async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, originalCount) {
+  // Keep service worker alive during evolution (Chrome MV3 kills idle workers after ~30s)
+  const evolutionKeepAlive = setInterval(() => {
+    safeSendMessageToTab(tabId, {
+      action: 'keepAlive',
+      timestamp: Date.now()
+    });
+  }, 5000);
+
   try {
     console.log('Starting background evolution with', settings.evolutionIntensity, 'intensity');
 
@@ -3401,6 +3409,9 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
       action: 'evolutionError',
       error: error.message
     });
+  } finally {
+    clearInterval(evolutionKeepAlive);
+    console.log('✅ Evolution keep-alive stopped');
   }
 }
 
