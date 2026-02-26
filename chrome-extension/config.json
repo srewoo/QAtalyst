@@ -289,7 +289,7 @@
     "storage": {
       "storageType": "indexeddb",
       "dbName": "QAtalystEmbeddings",
-      "dbVersion": 1,
+      "dbVersion": 3,
       "maxStorageSize": 52428800,
       "compressionEnabled": true
     }
@@ -335,8 +335,8 @@
 
     "textContent": {
       "enabled": true,
-      "maxLength": 4000,
-      "description": "MEMORY OPTIMIZED: Reduced from 5000 to 4000 chars to lower memory footprint. Extract main article/page text content for help sites and documentation."
+      "maxLength": 18000,
+      "description": "Increased to 18,000 chars (from 4,000) to leverage GPT-4.1/Claude's 1M token context. Provides richer LLM context without memory risk since streaming batches keep per-page cost bounded."
     },
 
     "features": {

@@ -13,6 +13,7 @@ importScripts('rate-limiter.js');
 importScripts('token-counter.js');
 importScripts('context-manager.js');
 importScripts('graph-filter.js');
+importScripts('bm25.js');
 importScripts('duplicate-detector.js');
 importScripts('agents.js');
 importScripts('evolution.js');
@@ -2205,56 +2206,59 @@ async function getFilteredCrawlData(keywords, maxSizeKB = 10) {
       return { summary: null, matchedPages: 0 };
     }
 
-    console.log(`🔍 Filtering ${crawledPages.length} pages from ${allApps.length} app(s) with ${keywords.length} keywords`);
+    console.log(`🔍 Filtering ${crawledPages.length} pages from ${allApps.length} app(s) with BM25 (${keywords.length} keywords)`);
 
-    // Score and rank pages by relevance
+    // Build a per-app BM25 index map (load from IndexedDB or build lazily)
+    const appBm25Map = new Map(); // appUrl → BM25Index
+    for (const app of allApps) {
+      if (!app.knowledgeGraph?.pages) continue;
+      try {
+        const saved = await storageManager.loadBm25Index(app.appUrl);
+        if (saved) {
+          appBm25Map.set(app.appUrl, BM25Index.deserialize(saved));
+          console.log(`[BM25] Loaded index for ${app.appUrl}`);
+        } else {
+          const bm25 = BM25Index.build(app.knowledgeGraph.pages);
+          appBm25Map.set(app.appUrl, bm25);
+          storageManager.saveBm25Index(app.appUrl, bm25.serialize())
+            .catch(e => console.warn('[BM25] Failed to persist index:', e.message));
+        }
+      } catch (e) {
+        console.warn(`[BM25] Index unavailable for ${app.appUrl}, will use keyword fallback:`, e.message);
+      }
+    }
+
+    const queryText = keywords.join(' ');
+
+    // Score pages: BM25 where index is available, keyword fallback otherwise
     const scoredPages = crawledPages.map(page => {
+      const pageUrl = page.url || page.metadata?.url || '';
+      // Find which app owns this page
+      const ownerApp = allApps.find(a => pageUrl.startsWith(a.appUrl));
+      const bm25 = ownerApp ? appBm25Map.get(ownerApp.appUrl) : null;
+
+      if (bm25) {
+        // BM25: score this single doc against the query
+        const queryTerms = BM25Index.tokenize(queryText);
+        return { page, score: bm25.scoreDoc(pageUrl, queryTerms) };
+      }
+
+      // Keyword fallback for pages without an index
       let score = 0;
       const description = page.description || page.metadata?.description || '';
-      const pageText = `${page.title || ''} ${page.url || ''} ${description} ${page.metadata?.keywords?.join(' ') || ''}`.toLowerCase();
-
-      // Calculate relevance score based on keyword matches
-      keywords.forEach(keyword => {
-        const keywordLower = keyword.toLowerCase();
-
-        // URL match (highest weight)
-        if (page.url && page.url.toLowerCase().includes(keywordLower)) {
-          score += 10;
-        }
-
-        // Title match (high weight)
-        if (page.title && page.title.toLowerCase().includes(keywordLower)) {
-          score += 5;
-        }
-
-        // Description match (medium weight)
-        if (description && description.toLowerCase().includes(keywordLower)) {
-          score += 3;
-        }
-
-        // Form field names match
-        if (page.forms) {
-          page.forms.forEach(form => {
-            if (form.fields) {
-              form.fields.forEach(field => {
-                if (field.name && field.name.toLowerCase().includes(keywordLower)) {
-                  score += 2;
-                }
-              });
-            }
-          });
-        }
-
-        // General content match (low weight)
-        if (pageText.includes(keywordLower)) {
-          score += 1;
-        }
+      keywords.forEach(kw => {
+        const k = kw.toLowerCase();
+        if (pageUrl.toLowerCase().includes(k)) score += 10;
+        if ((page.title || '').toLowerCase().includes(k)) score += 5;
+        if (description.toLowerCase().includes(k)) score += 3;
+        (page.forms || []).forEach(f => (f.fields || []).forEach(fi => {
+          if ((fi.name || '').toLowerCase().includes(k)) score += 2;
+        }));
       });
-
       return { page, score };
     });
 
-    // Sort by relevance score (descending)
+    // Sort by BM25 score (descending)
     scoredPages.sort((a, b) => b.score - a.score);
 
     // Filter pages with score > 0 (at least one keyword match)
@@ -2725,6 +2729,7 @@ async function handleGenerateTestCases(data) {
   validateSettings(data.settings);
 
   const { ticketKey, ticketData, settings } = data;
+  const crawledContext = data.crawledContext || formatAppContextAsCrawledContext(data.appContext);
 
   // Fetch external content if integrations are configured
   let enrichedTicketData = ticketData;
@@ -2767,6 +2772,7 @@ Format as JSON array.`;
 **Ticket:** ${ticketKey}
 **Summary:** ${enrichedTicketData.summary || 'N/A'}
 **Description:** ${enrichedTicketData.description || 'N/A'}
+${crawledContext}
 
 Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"Positive","priority":"P0","steps":["step1","step2"],"expectedResult":"...","preconditions":"...","testData":"..."}]`;
 
@@ -3186,10 +3192,60 @@ Provide detailed test scope covering all aspects.`;
   }
 }
 
+/**
+ * Convert a loaded appContext (knowledge graph) to a compact markdown
+ * crawledContext string so it can be injected into single-agent prompts.
+ * This bridges the gap between the two different crawl data formats.
+ */
+function formatAppContextAsCrawledContext(appContext) {
+  if (!appContext) return '';
+  const lines = [
+    `\n\n## 🌐 Application Context (from Crawled Data)`,
+    `**App:** ${appContext.appUrl || 'Unknown'}`,
+    `**Total Pages Crawled:** ${appContext.totalPages || 0}`,
+  ];
+
+  // Top relevant pages
+  const pages = appContext.pages || [];
+  if (pages.length > 0) {
+    lines.push(`\n### Relevant Pages (${pages.length})`);
+    pages.slice(0, 10).forEach(p => {
+      const url   = p.url || p.metadata?.url || '';
+      const title = p.title || p.metadata?.title || url;
+      lines.push(`- **${title}** — ${url}`);
+    });
+  }
+
+  // Forms
+  const forms = appContext.forms || [];
+  if (forms.length > 0) {
+    lines.push(`\n### Key Forms (${forms.length})`);
+    forms.slice(0, 8).forEach(f => {
+      const fields = (f.fields || []).map(fi => fi.label || fi.name).filter(Boolean).join(', ');
+      lines.push(`- ${f.action || 'Form'}: ${fields || '(no fields)'}`);
+    });
+  }
+
+  // APIs
+  const apis = appContext.apis || [];
+  if (apis.length > 0) {
+    lines.push(`\n### API Endpoints (${apis.length})`);
+    apis.slice(0, 12).forEach(a => {
+      lines.push(`- ${a.method || 'GET'} ${a.url || a.endpoint || ''}`);
+    });
+  }
+
+  return lines.join('\n');
+}
+
 async function handleGenerateTestCasesStream(data, tabId) {
   validateSettings(data.settings);
 
   const { ticketKey, ticketData, settings } = data;
+
+  // Resolve crawled context: prefer explicit crawledContext string; fall back to
+  // formatting the appContext knowledge graph object that the test gen path sends.
+  const crawledContext = data.crawledContext || formatAppContextAsCrawledContext(data.appContext);
   const requestId = `testcases-${Date.now()}`;
 
   // Fetch external content if integrations are configured
@@ -3248,7 +3304,7 @@ Generate ${settings.testCount || 30} test cases total.`;
 **Summary:** ${enrichedTicketData.summary || 'N/A'}
 **Description:** ${enrichedTicketData.description || 'N/A'}
 ${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
-${data.crawledContext || ''}`;
+${crawledContext}`;
 
   const contentParts = [
     { type: 'text', text: systemMessage },

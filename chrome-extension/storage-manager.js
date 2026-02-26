@@ -7,10 +7,11 @@
 
 class StorageManager {
   constructor() {
-    this.dbName = CONFIG.get('storage.dbName', 'QAtalystEmbeddings');
-    this.dbVersion = CONFIG.get('storage.dbVersion', 2); // Bumped to 2 for page batches
-    this.storeName = 'embeddings';
-    this.pageBatchStore = 'pageBatches'; // NEW: For streaming save
+    this.dbName        = CONFIG.get('storage.dbName', 'QAtalystEmbeddings');
+    this.dbVersion     = 3; // v3: bm25Indexes store + url index on embeddings
+    this.storeName     = 'embeddings';
+    this.pageBatchStore = 'pageBatches';
+    this.bm25Store     = 'bm25Indexes'; // BM25 index sidecar per app
     this.db = null;
   }
 
@@ -42,12 +43,19 @@ class StorageManager {
           console.log('📦 Created knowledge graph storage');
         }
 
-        // Version 2: Add page batches store for streaming save (P0.1)
+        // Version 2: Add page batches store for streaming save
         if (oldVersion < 2 && !db.objectStoreNames.contains(this.pageBatchStore)) {
           const batchStore = db.createObjectStore(this.pageBatchStore, { keyPath: 'id' });
           batchStore.createIndex('crawlId', 'crawlId', { unique: false });
           batchStore.createIndex('batchNumber', 'batchNumber', { unique: false });
           console.log('📦 Created page batches object store (streaming save)');
+        }
+
+        // Version 3: BM25 index sidecar store (one record per crawled app)
+        if (oldVersion < 3 && !db.objectStoreNames.contains(this.bm25Store)) {
+          const bm25Store = db.createObjectStore(this.bm25Store, { keyPath: 'appUrl' });
+          bm25Store.createIndex('builtAt', 'builtAt', { unique: false });
+          console.log('📦 Created BM25 index store');
         }
       };
     });
@@ -367,6 +375,62 @@ class StorageManager {
       warning: percentUsed > 80 // Warn at 80%
     };
   }
+
+  // ── BM25 Index Sidecar ─────────────────────────────────────────────────────
+
+  /**
+   * Persist a serialised BM25 index for an app.
+   * Called after lazy build so subsequent queries skip the build step.
+   * @param {string} appUrl
+   * @param {Object} indexData — output of BM25Index.serialize()
+   */
+  async saveBm25Index(appUrl, indexData) {
+    if (!this.db) await this.init();
+    return new Promise((resolve, reject) => {
+      const tx    = this.db.transaction([this.bm25Store], 'readwrite');
+      const store = tx.objectStore(this.bm25Store);
+      const req   = store.put({ appUrl, ...indexData });
+      req.onsuccess = () => {
+        console.log(`[BM25] Saved index for ${appUrl} (${Object.keys(indexData.docs || {}).length} docs)`);
+        resolve();
+      };
+      req.onerror = () => reject(new Error('Failed to save BM25 index'));
+    });
+  }
+
+  /**
+   * Load a previously-built BM25 index for an app.
+   * Returns null if no index has been built yet.
+   * @param {string} appUrl
+   * @returns {Object|null} raw serialised data (pass to BM25Index.deserialize)
+   */
+  async loadBm25Index(appUrl) {
+    if (!this.db) await this.init();
+    return new Promise((resolve, reject) => {
+      const tx    = this.db.transaction([this.bm25Store], 'readonly');
+      const store = tx.objectStore(this.bm25Store);
+      const req   = store.get(appUrl);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror   = () => reject(new Error('Failed to load BM25 index'));
+    });
+  }
+
+  /**
+   * Delete the BM25 index for an app (e.g. when the crawl is re-run).
+   * @param {string} appUrl
+   */
+  async deleteBm25Index(appUrl) {
+    if (!this.db) await this.init();
+    return new Promise((resolve, reject) => {
+      const tx    = this.db.transaction([this.bm25Store], 'readwrite');
+      const store = tx.objectStore(this.bm25Store);
+      const req   = store.delete(appUrl);
+      req.onsuccess = () => { console.log(`[BM25] Deleted index for ${appUrl}`); resolve(); };
+      req.onerror   = () => reject(new Error('Failed to delete BM25 index'));
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
 
   /**
    * Delete embeddings for an app

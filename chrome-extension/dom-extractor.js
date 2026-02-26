@@ -831,12 +831,32 @@ if (typeof DOMExtractor === 'undefined') {
     console.log(`  📦 Content container: ${contentSelectorUsed}`);
 
     // Extract text from semantic elements + common content divs (single query for performance)
-    // Added div, span, section, article, aside for better coverage of modern web apps
     const textElements = contentContainer.querySelectorAll(
-      'h1, h2, h3, h4, h5, h6, p, li, blockquote, pre, td, div[class*="content"], div[class*="text"], div[class*="description"], div[class*="body"], section, article'
+      'h1, h2, h3, h4, h5, h6, p, li, blockquote, pre, td, figcaption, ' +
+      'div[class*="content"], div[class*="text"], div[class*="description"], div[class*="body"], section, article'
     );
 
     console.log(`  📊 Found ${textElements.length} text elements to process`);
+
+    // ── Image alt/title text ──────────────────────────────────────────────
+    // Pixels are never fetched during crawl, but descriptive text attached to
+    // images (alt, title, aria-label, figcaption) is valuable for help/docs sites
+    // where screenshots carry important UI context.
+    const imageDescriptions = [];
+    const images = contentContainer.querySelectorAll('img[alt], img[title], img[aria-label]');
+    images.forEach(img => {
+      const desc = (img.getAttribute('alt') || img.getAttribute('title') || img.getAttribute('aria-label') || '').trim();
+      // Skip decorative/empty alts and very generic ones
+      if (desc.length > 3 && !/^(image|photo|pic|icon|logo|banner|screenshot)$/i.test(desc)) {
+        imageDescriptions.push(`[Image: ${desc}]`);
+      }
+    });
+    if (imageDescriptions.length > 0 && totalLength < maxLength) {
+      const imgText = imageDescriptions.join(' ') + '\n';
+      textParts.push(imgText);
+      totalLength += imgText.length;
+      console.log(`  🖼️ Captured ${imageDescriptions.length} image descriptions`);
+    }
 
     // MEMORY OPTIMIZATION: Limit to first 500 elements to prevent processing huge DOMs
     const limitedElements = Array.from(textElements).slice(0, 500);
@@ -895,6 +915,8 @@ if (typeof DOMExtractor === 'undefined') {
         text = text + '\n';
       } else if (element.matches('li')) {
         text = '• ' + text + '\n';
+      } else if (element.matches('figcaption')) {
+        text = '[Caption: ' + text + ']\n';
       }
 
       // Check if adding this would exceed limit

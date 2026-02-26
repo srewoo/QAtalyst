@@ -88,6 +88,17 @@ async function handleStartCrawl(data) {
     });
     console.log(`✅ Saved knowledge graph with ${knowledgeGraph.totalPages} pages`);
 
+    // Invalidate stale BM25 index and build a fresh one eagerly so the first
+    // query after a crawl doesn't pay the build cost.
+    try {
+      await storageManager.deleteBm25Index(config.startUrl);
+      const bm25 = BM25Index.build(knowledgeGraph.pages);
+      await storageManager.saveBm25Index(config.startUrl, bm25.serialize());
+      console.log(`✅ BM25 index built eagerly (${bm25.N} docs)`);
+    } catch (e) {
+      console.warn('⚠️ BM25 index build failed (will retry on first query):', e.message);
+    }
+
     const result = {
       pages: knowledgeGraph.totalPages,
       features: knowledgeGraph.stats.totalFeatures,
@@ -246,14 +257,68 @@ async function handleLoadEmbeddings(data) {
     let wasFiltered = false;
 
     if (fullPageCount > MAX_PAGES_TO_SEND && data.ticketData) {
-      console.log(`[LOAD GRAPH] 🎯 Filtering by ticket keywords...`);
+      console.log(`[LOAD GRAPH] 🎯 Filtering ${fullPageCount} pages by ticket relevance...`);
 
-      // Use GraphFilter to intelligently filter pages by relevance
-      knowledgeGraphToSend = GraphFilter.filterByRelevance(
-        embeddingData.knowledgeGraph,
-        data.ticketData,
-        MAX_PAGES_TO_SEND
-      );
+      // Load (or lazily build) the BM25 index for this app
+      let bm25 = null;
+      try {
+        const saved = await storageManager.loadBm25Index(data.appUrl);
+        if (saved) {
+          bm25 = BM25Index.deserialize(saved);
+          console.log(`[LOAD GRAPH] ✅ Loaded BM25 index (${bm25.N} docs, built ${new Date(bm25.builtAt).toLocaleTimeString()})`);
+        }
+      } catch (e) {
+        console.warn('[LOAD GRAPH] ⚠️ Could not load BM25 index:', e.message);
+      }
+
+      if (!bm25 && embeddingData.knowledgeGraph?.pages) {
+        console.log('[LOAD GRAPH] 🔨 Building BM25 index lazily...');
+        const t0 = Date.now();
+        bm25 = BM25Index.build(embeddingData.knowledgeGraph.pages);
+        console.log(`[LOAD GRAPH] ✅ BM25 built in ${Date.now() - t0}ms`);
+        storageManager.saveBm25Index(data.appUrl, bm25.serialize())
+          .catch(e => console.warn('[LOAD GRAPH] Failed to persist BM25 index:', e.message));
+      }
+
+      if (bm25) {
+        // BM25 semantic relevance scoring
+        const queryText = `${data.ticketData.summary || ''} ${data.ticketData.description || ''}`;
+        const topResults = bm25.search(queryText, MAX_PAGES_TO_SEND);
+        console.log(`[LOAD GRAPH] 🎯 BM25 top match: "${topResults[0]?.url}" (score ${topResults[0]?.score?.toFixed(2)})`);
+
+        const allPages = embeddingData.knowledgeGraph.pages;
+        const filteredPages = {};
+        for (const { url } of topResults) {
+          if (allPages[url]) filteredPages[url] = GraphFilter.stripPageData(allPages[url]);
+        }
+
+        // Pad to MAX_PAGES_TO_SEND with un-matched pages if BM25 returned fewer
+        if (Object.keys(filteredPages).length < MAX_PAGES_TO_SEND) {
+          const remaining = Object.keys(allPages)
+            .filter(u => !filteredPages[u])
+            .slice(0, MAX_PAGES_TO_SEND - Object.keys(filteredPages).length);
+          for (const url of remaining) {
+            filteredPages[url] = GraphFilter.stripPageData(allPages[url]);
+          }
+        }
+
+        knowledgeGraphToSend = {
+          ...embeddingData.knowledgeGraph,
+          pages: filteredPages,
+          filteredForTransfer: true,
+          transferPageCount: Object.keys(filteredPages).length,
+          filterMethod: 'bm25',
+          filterQuery: queryText.slice(0, 120),
+        };
+      } else {
+        // Fallback: legacy keyword scoring
+        console.log('[LOAD GRAPH] ⚠️ BM25 unavailable, falling back to keyword scoring');
+        knowledgeGraphToSend = GraphFilter.filterByRelevance(
+          embeddingData.knowledgeGraph,
+          data.ticketData,
+          MAX_PAGES_TO_SEND
+        );
+      }
 
       wasFiltered = true;
     } else if (fullPageCount > MAX_PAGES_TO_SEND) {
