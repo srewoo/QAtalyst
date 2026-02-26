@@ -24,7 +24,7 @@ if (typeof APP_CONFIG === 'undefined') {
 
   // AI Provider Defaults
   DEFAULT_TEMPERATURE: 0.7,
-  DEFAULT_MAX_TOKENS: 16000,
+  DEFAULT_MAX_TOKENS: 32768, // GPT-4.1 / Claude 3.5 max output (previously 16000 for gpt-4o)
   DEFAULT_TEST_COUNT: 30,
   MIN_TEST_COUNT: 20,
   MAX_TEST_COUNT: 100,
@@ -39,7 +39,7 @@ if (typeof APP_CONFIG === 'undefined') {
 
   // Vision models that support image inputs (single source of truth)
   VISION_MODELS: [
-    'gpt-4.1', 'gpt-4.1-mini', 'o1',
+    'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'o1',
     'claude-sonnet-4-20250514', 'claude-sonnet-4-20250111', 'claude-3-5-sonnet-20241022',
     'claude-3-opus', 'claude-3-sonnet',
     'gemini-pro-vision', 'gemini-1.5-pro', 'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp',

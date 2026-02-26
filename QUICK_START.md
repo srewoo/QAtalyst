@@ -17,7 +17,7 @@ Choose one AI provider:
 **Option A: OpenAI (Recommended)**
 - Visit: https://platform.openai.com/api-keys
 - Click "Create new secret key" → Copy it
-- Model: GPT-4o (best) or GPT-4 Turbo
+- Model: gpt-4.1 (best) or GPT-4 Turbo
 
 **Option B: Anthropic Claude**
 - Visit: https://console.anthropic.com/settings/keys
@@ -33,7 +33,7 @@ Choose one AI provider:
 
 1. Click **QAtalyst icon** in Chrome toolbar
 2. Select your **AI provider** (OpenAI/Claude/Gemini)
-3. Choose **model** (GPT-4o recommended)
+3. Choose **model** (gpt-4.1 recommended)
 4. Paste your **API key**
 5. Click **"Save Settings"**
 6. (Optional) Click **"Open Advanced Settings"** to enable:

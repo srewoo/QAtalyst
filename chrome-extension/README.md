@@ -24,7 +24,7 @@
 
 ### ⚙️ Flexible Configuration
 - Support for multiple AI providers:
-  - **OpenAI** (GPT-4o, GPT-4.1, GPT-4o Mini, O4 Mini)
+  - **OpenAI** (gpt-4.1, GPT-4.1, gpt-4.1 Mini, O4 Mini)
   - **Google Gemini** (Gemini 2.0 Flash Exp, Gemini 2.5 Pro/Flash)
 - **Your API key stays in your browser** - Never sent to our servers
 - Customizable temperature and max tokens
@@ -73,7 +73,7 @@ Search for "QAtalyst" in the Chrome Web Store and click "Add to Chrome"
 **OpenAI:**
 - Go to https://platform.openai.com/api-keys
 - Create new API key
-- Recommended model: **GPT-4o** (best quality) or **GPT-4o Mini** (faster/cheaper)
+- Recommended model: **gpt-4.1** (best quality) or **gpt-4.1 Mini** (faster/cheaper)
 
 **Google Gemini:**
 - Go to https://aistudio.google.com/app/apikey
@@ -153,7 +153,7 @@ Generated test cases include:
 1. **Write Clear Acceptance Criteria** - Better Jira tickets = better test cases
 2. **Include Context** - Add comments, attachments, and linked pages for comprehensive analysis
 3. **Review Generated Tests** - Always review AI-generated tests before using
-4. **Start with GPT-4o** - Best quality for critical features
+4. **Start with gpt-4.1** - Best quality for critical features
 5. **Use Gemini for Speed** - Faster generation for less critical features
 
 ## 🐛 Troubleshooting
@@ -174,7 +174,7 @@ Generated test cases include:
 - Ensure Jira ticket has detailed description
 - Add acceptance criteria and business rules
 - Try increasing temperature (0.7 → 0.9)
-- Try different AI model (e.g., GPT-4o instead of GPT-4o Mini)
+- Try different AI model (e.g., gpt-4.1 instead of gpt-4.1 Mini)
 
 ### Timeout Errors
 - Reduce max_tokens setting (4000 → 2000)

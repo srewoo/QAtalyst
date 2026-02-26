@@ -7,11 +7,13 @@
  * Token limits for different models (exact match lookup)
  */
 const TOKEN_LIMITS = {
-  // OpenAI
-  'gpt-4.1': { max: 128000, safe: 120000 },
-  'gpt-4.1-mini': { max: 128000, safe: 120000 },
+  // OpenAI GPT-4.1 family — 1M context window, 32K max output (released April 2025)
+  'gpt-4.1':      { max: 1047576, safe: 1000000 },
+  'gpt-4.1-mini': { max: 1047576, safe: 1000000 },
+  'gpt-4.1-nano': { max: 1047576, safe: 1000000 },
+  // Legacy OpenAI models
   'gpt-4-turbo': { max: 128000, safe: 120000 },
-  'gpt-4': { max: 8192, safe: 7500 },
+  'gpt-4':       { max: 8192,   safe: 7500    },
   'gpt-3.5-turbo': { max: 16385, safe: 15000 },
 
   // Claude
@@ -39,13 +41,17 @@ const TOKEN_LIMITS = {
  * Prefix-based fallback for model families not in TOKEN_LIMITS
  */
 const MODEL_FAMILY_LIMITS = [
-  { prefix: 'anthropic.claude', limits: { max: 200000, safe: 190000 } },
-  { prefix: 'us.openai.o3', limits: { max: 200000, safe: 190000 } },
-  { prefix: 'us.openai.gpt', limits: { max: 128000, safe: 120000 } },
-  { prefix: 'claude-', limits: { max: 200000, safe: 190000 } },
-  { prefix: 'gpt-4', limits: { max: 128000, safe: 120000 } },
-  { prefix: 'gpt-3', limits: { max: 16385, safe: 15000 } },
-  { prefix: 'gemini-', limits: { max: 1000000, safe: 950000 } },
+  { prefix: 'anthropic.claude',      limits: { max: 200000,  safe: 190000  } },
+  { prefix: 'global.anthropic',      limits: { max: 200000,  safe: 190000  } },
+  { prefix: 'us.openai.o3',         limits: { max: 200000,  safe: 190000  } },
+  { prefix: 'openai.gpt-oss',       limits: { max: 128000,  safe: 120000  } },
+  { prefix: 'us.openai.gpt',        limits: { max: 128000,  safe: 120000  } },
+  { prefix: 'claude-',              limits: { max: 200000,  safe: 190000  } },
+  // gpt-4.1 family has 1M context; keep gpt-4 (legacy) separate below
+  { prefix: 'gpt-4.1',             limits: { max: 1047576, safe: 1000000 } },
+  { prefix: 'gpt-4',               limits: { max: 128000,  safe: 120000  } },
+  { prefix: 'gpt-3',               limits: { max: 16385,   safe: 15000   } },
+  { prefix: 'gemini-',             limits: { max: 1000000, safe: 950000  } },
 ];
 
 /**

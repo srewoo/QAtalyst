@@ -3,9 +3,10 @@
 // Model options - keep in sync with popup.js
 const modelOptions = {
   openai: [
-    { value: 'gpt-4.1', label: 'GPT-4.1 (Recommended)' },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast & Cheap)' },
-    { value: 'o1', label: 'O1 (Reasoning)' }
+    { value: 'gpt-4.1',      label: 'GPT-4.1 (Recommended) — 1M ctx, 32K output' },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast & Cheap) — 1M ctx' },
+    { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano (Cheapest) — 1M ctx' },
+    { value: 'o1',           label: 'O1 (Reasoning)' }
   ],
   claude: [
     { value: 'claude-sonnet-4-20250514', label: 'Claude 4.5 Sonnet (Latest)' },
@@ -308,7 +309,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   
   document.getElementById('temperature').value = settings.temperature || 0.7;
-  document.getElementById('maxTokens').value = settings.maxTokens || 16000;
+  document.getElementById('maxTokens').value = settings.maxTokens || 32768;
   document.getElementById('enableStreaming').checked = settings.enableStreaming !== false;
   document.getElementById('enableMultiAgent').checked = settings.enableMultiAgent || false;
 

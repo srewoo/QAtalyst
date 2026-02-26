@@ -1424,7 +1424,7 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
     const tokenCheck = checkTokenLimit(
       estimateMessagesTokens(messages),
       model,
-      settings.maxTokens || 16000
+      settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
     );
 
     if (!tokenCheck.safe) {
@@ -1444,7 +1444,7 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
         model: settings.llmModel || 'gpt-4.1',
         messages: messages,
         temperature: settings.temperature || 0.7,
-        max_tokens: settings.maxTokens || 16000
+        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
       }),
       signal: controller.signal
     });
@@ -1537,7 +1537,7 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
         }],
         generationConfig: {
           temperature: settings.temperature || 0.7,
-          maxOutputTokens: settings.maxTokens || 16000
+          maxOutputTokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
         }
       }),
       signal: controller.signal
@@ -1630,7 +1630,7 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
       },
       body: JSON.stringify({
         model: settings.llmModel || 'claude-sonnet-4-20250514',
-        max_tokens: settings.maxTokens || 16000,
+        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
         messages: claudeMessages,
         temperature: settings.temperature || 0.7
       }),
@@ -3041,7 +3041,7 @@ Provide comprehensive requirement analysis.`;
         console.warn(`⚠️ Scanned PDF(s) skipped — current model is not vision-capable: ${settings.llmModel}`);
         contentParts.push({
           type: 'text',
-          text: `\n\nNote: The following attachment(s) are scanned PDFs and could not be read automatically: ${scannedDocs.map(d => d.fileName).join(', ')}. Switch to a vision-capable model (Claude Sonnet/Opus, GPT-4o) to extract their content.`
+          text: `\n\nNote: The following attachment(s) are scanned PDFs and could not be read automatically: ${scannedDocs.map(d => d.fileName).join(', ')}. Switch to a vision-capable model (Claude Sonnet/Opus, gpt-4.1) to extract their content.`
         });
       }
     }

@@ -17,7 +17,7 @@ QAtalyst is a production-ready Chrome extension that revolutionizes test case ge
 - **🧬 Evolutionary Optimization**: Genetic algorithm for +50-150% coverage
 - **🎯 Enhanced Features**: Gap analysis, complexity scaling, context-aware generation
 - **🔗 External Integrations**: Confluence, Figma, Google Docs auto-fetch
-- **🤖 3 AI Providers**: OpenAI (GPT-4o), Claude (3.5 Sonnet), Gemini (2.0 Flash)
+- **🤖 3 AI Providers**: OpenAI (gpt-4.1), Claude (3.5 Sonnet), Gemini (2.0 Flash)
 - **📊 Smart Test Count**: Configurable 20-100 tests with auto-scaling
 
 ## 🏗️ Architecture
@@ -58,7 +58,7 @@ chrome://extensions/
 
 1. **Click QAtalyst extension icon** in Chrome toolbar
 2. **Select AI Provider**: OpenAI / Claude / Gemini
-3. **Choose Model**: GPT-4o (Recommended) / Claude 3.5 Sonnet / Gemini 2.0 Flash
+3. **Choose Model**: gpt-4.1 (Recommended) / Claude 3.5 Sonnet / Gemini 2.0 Flash
 4. **Enter API Key**:
    - OpenAI: https://platform.openai.com/api-keys
    - Claude: https://console.anthropic.com/settings/keys
@@ -122,7 +122,7 @@ Configure in **Options → Agent Configuration**
 ## 🎯 All Features (5 Phases Implemented)
 
 ### Phase 1: Foundation
-- ✅ **3 AI Providers**: OpenAI (GPT-4o, GPT-4 Turbo), Claude (3.5 Sonnet, 3 Opus), Gemini (2.0 Flash, 1.5 Pro)
+- ✅ **3 AI Providers**: OpenAI (gpt-4.1, GPT-4 Turbo), Claude (3.5 Sonnet, 3 Opus), Gemini (2.0 Flash, 1.5 Pro)
 - ✅ **Response Streaming**: Real-time output with stop button
 - ✅ **Test Count Slider**: Configure 20-100 tests
 
