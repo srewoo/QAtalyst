@@ -268,11 +268,26 @@ async function fetchImageFromBackground(url) {
   console.log(`📷 [Background] Fetching image: ${url.substring(0, 80)}...`);
 
   try {
+    // Build headers — add Basic Auth for Jira/Atlassian URLs if credentials are stored
+    const fetchHeaders = { 'Accept': 'image/*, */*' };
+    const isJiraUrl = url.includes('atlassian.net') || url.includes('atlassian.com') || url.includes('jira.com');
+    if (isJiraUrl) {
+      const { jiraEmail, jiraApiToken } = await chrome.storage.sync.get(['jiraEmail', 'jiraApiToken']);
+      if (jiraEmail && jiraApiToken) {
+        let token = jiraApiToken;
+        try {
+          const sm = globalThis.securityManager;
+          if (sm && sm.decryptApiKeyFromStorage) {
+            token = await sm.decryptApiKeyFromStorage(jiraApiToken);
+          }
+        } catch (_) { /* use raw token if decrypt fails */ }
+        fetchHeaders['Authorization'] = 'Basic ' + btoa(`${jiraEmail}:${token}`);
+      }
+    }
+
     const response = await fetch(url, {
       credentials: 'include',
-      headers: {
-        'Accept': 'image/*'
-      }
+      headers: fetchHeaders
     });
 
     if (!response.ok) {
@@ -364,26 +379,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   
-  // Streaming actions
+  // Streaming actions — immediately ACK to release the message channel,
+  // then deliver the final result via safeSendMessageToTab('streamComplete').
+  // This prevents "message channel closed before response" in MV3 service workers.
   if (request.action === 'analyzeRequirementsStream') {
-    handleAnalyzeRequirementsStream(request.data, sender.tab.id)
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
+    const tabId = sender.tab.id;
+    sendResponse({ started: true }); // release channel immediately
+    handleAnalyzeRequirementsStream(request.data, tabId)
+      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'analyze', result }))
+      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'analyze', error: error.message }));
+    return false;
   }
-  
+
   if (request.action === 'generateTestScopeStream') {
-    handleGenerateTestScopeStream(request.data, sender.tab.id)
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
+    const tabId = sender.tab.id;
+    sendResponse({ started: true });
+    handleGenerateTestScopeStream(request.data, tabId)
+      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'scope', result }))
+      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'scope', error: error.message }));
+    return false;
   }
-  
+
   if (request.action === 'generateTestCasesStream') {
-    handleGenerateTestCasesStream(request.data, sender.tab.id)
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
+    const tabId = sender.tab.id;
+    sendResponse({ started: true });
+    handleGenerateTestCasesStream(request.data, tabId)
+      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'testcases', result }))
+      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'testcases', error: error.message }));
+    return false;
   }
   
   if (request.action === 'stopGeneration') {
@@ -602,6 +625,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // Keep the message channel open for async response
   }
 
+  if (request.action === 'testAIConnection') {
+    (async () => {
+      try {
+        const result = await handleTestAIConnection(request.data);
+        sendResponse(result);
+      } catch (error) {
+        sendResponse({ success: false, message: error.message });
+      }
+    })();
+    return true;
+  }
+
   if (request.action === 'stopResourceBlocker') {
     (async () => {
       try {
@@ -631,6 +666,145 @@ async function handleTestIntegration(data) {
       return testTestRail(credentials);
     default:
       return { success: false, message: 'Unknown integration type' };
+  }
+}
+
+/**
+ * Test AI provider connection using lightweight/free API endpoints
+ * - OpenAI:  GET /v1/models (no tokens used)
+ * - Claude:  GET /v1/models (no tokens used)
+ * - Gemini:  GET /v1beta/models (no tokens used)
+ * - Bedrock: InvokeModel with max_tokens=1 (minimal cost, confirms auth + model access)
+ */
+async function handleTestAIConnection({ provider, model, apiKey, bedrockAccessKeyId, bedrockSecretKey, bedrockSessionToken, bedrockRegion }) {
+  switch (provider) {
+    case 'openai':
+      return testOpenAIConnection(apiKey);
+    case 'claude':
+      return testClaudeConnection(apiKey);
+    case 'gemini':
+      return testGeminiConnection(apiKey);
+    case 'bedrock':
+      return testBedrockConnection({ model, bedrockAccessKeyId, bedrockSecretKey, bedrockSessionToken, bedrockRegion });
+    default:
+      return { success: false, message: `Unknown provider: ${provider}` };
+  }
+}
+
+async function testOpenAIConnection(apiKey) {
+  try {
+    const response = await fetch('https://api.openai.com/v1/models', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (response.ok) {
+      const data = await response.json();
+      const count = data.data?.length || 0;
+      return { success: true, message: `OpenAI connection successful! ${count} models available.` };
+    }
+    const err = await response.json().catch(() => ({}));
+    return { success: false, message: err.error?.message || `OpenAI returned HTTP ${response.status}. Check your API key.` };
+  } catch (e) {
+    return { success: false, message: `Network error: ${e.message}` };
+  }
+}
+
+async function testClaudeConnection(apiKey) {
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/models', {
+      method: 'GET',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json'
+      }
+    });
+    if (response.ok) {
+      const data = await response.json();
+      const count = data.data?.length || 0;
+      return { success: true, message: `Anthropic Claude connection successful! ${count} models available.` };
+    }
+    const err = await response.json().catch(() => ({}));
+    return { success: false, message: err.error?.message || `Claude returned HTTP ${response.status}. Check your API key.` };
+  } catch (e) {
+    return { success: false, message: `Network error: ${e.message}` };
+  }
+}
+
+async function testGeminiConnection(apiKey) {
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
+      method: 'GET'
+    });
+    if (response.ok) {
+      const data = await response.json();
+      const count = data.models?.length || 0;
+      return { success: true, message: `Google Gemini connection successful! ${count} models available.` };
+    }
+    const err = await response.json().catch(() => ({}));
+    return { success: false, message: err.error?.message || `Gemini returned HTTP ${response.status}. Check your API key.` };
+  } catch (e) {
+    return { success: false, message: `Network error: ${e.message}` };
+  }
+}
+
+async function testBedrockConnection({ model, bedrockAccessKeyId, bedrockSecretKey, bedrockSessionToken, bedrockRegion }) {
+  try {
+    const region = bedrockRegion || 'us-east-1';
+    // Global inference profiles work from any AWS region (shown as "Global" in Bedrock console).
+    // US-specific profiles only work in us-east-1/us-east-2/us-west-2.
+    const usRegions = ['us-east-1', 'us-east-2', 'us-west-2'];
+    const defaultPrefix = usRegions.includes(region) ? 'us.' : 'global.';
+    const testModel = model || `${defaultPrefix}anthropic.claude-sonnet-4-5-20250929-v1:0`;
+    const url = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(testModel)}/invoke`;
+
+    // Minimal payload — 1 token max to confirm auth + model access at near-zero cost
+    const requestBody = JSON.stringify({
+      anthropic_version: 'bedrock-2023-05-31',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]
+    });
+
+    const headers = { 'Content-Type': 'application/json' };
+    await awsSignRequest({
+      method: 'POST',
+      url,
+      headers,
+      body: requestBody,
+      region,
+      accessKeyId: bedrockAccessKeyId,
+      secretAccessKey: bedrockSecretKey,
+      sessionToken: bedrockSessionToken,
+      service: 'bedrock'
+    });
+
+    const response = await fetch(url, { method: 'POST', headers, body: requestBody });
+
+    if (response.ok) {
+      return { success: true, message: `AWS Bedrock connection successful! Model "${testModel}" is accessible in ${region}.` };
+    }
+
+    const err = await response.json().catch(() => ({}));
+    const msg = err.message || err.Message || `Bedrock returned HTTP ${response.status}`;
+
+    if (response.status === 403) {
+      return { success: false, message: `Access denied (403): ${msg}. Check IAM permissions or Session Token.` };
+    }
+    if (response.status === 400) {
+      // Direct model IDs (e.g. anthropic.claude-...) don't work in most regions.
+      // Models shown as "Global" in the Bedrock console require global.* inference profiles.
+      const isDirectId = !testModel.startsWith('global.') && !testModel.startsWith('us.') && !testModel.startsWith('eu.');
+      const hint = isDirectId
+        ? ` — Use a "Global" inference profile ID instead (e.g. "global.${testModel}"). Select one from the Model dropdown.`
+        : '';
+      return { success: false, message: `HTTP 400: ${msg}${hint}` };
+    }
+    return { success: false, message: `HTTP ${response.status}: ${msg}` };
+  } catch (e) {
+    return { success: false, message: `Network error: ${e.message}` };
   }
 }
 
@@ -738,7 +912,28 @@ function toHex(buffer) {
   return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function awsSignRequest({ method, url, headers, body, region, accessKeyId, secretAccessKey, service = 'bedrock' }) {
+/**
+ * SigV4 URI encoding per AWS spec:
+ * Encode every character except the unreserved set: A-Z a-z 0-9 - . _ ~
+ * This is stricter than encodeURIComponent — it also encodes ! ' ( ) *
+ * Critically, it encodes '%' itself (as %25), so an already-encoded %3A becomes %253A,
+ * which is exactly what AWS expects in the canonical URI.
+ */
+function sigV4UriEncode(str) {
+  return str.replace(/[^A-Za-z0-9\-._~]/g, c => {
+    return '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0');
+  });
+}
+
+/**
+ * Build the SigV4 canonical URI from a URL pathname.
+ * Each path segment is individually SigV4-encoded; '/' separators are preserved.
+ */
+function buildCanonicalUri(pathname) {
+  return pathname.split('/').map(sigV4UriEncode).join('/');
+}
+
+async function awsSignRequest({ method, url, headers, body, region, accessKeyId, secretAccessKey, sessionToken, service = 'bedrock' }) {
   const parsedUrl = new URL(url);
   const now = new Date();
   const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
@@ -746,6 +941,11 @@ async function awsSignRequest({ method, url, headers, body, region, accessKeyId,
 
   headers['x-amz-date'] = amzDate;
   headers['host'] = parsedUrl.host;
+
+  // Required for temporary credentials (ASIA... Access Key ID)
+  if (sessionToken && sessionToken.trim()) {
+    headers['x-amz-security-token'] = sessionToken.trim();
+  }
 
   const payloadHash = toHex(await sha256(body || ''));
   headers['x-amz-content-sha256'] = payloadHash;
@@ -755,10 +955,10 @@ async function awsSignRequest({ method, url, headers, body, region, accessKeyId,
   const canonicalHeaders = signedHeaderKeys.map(k => `${k}:${headers[Object.keys(headers).find(h => h.toLowerCase() === k)].trim()}`).join('\n') + '\n';
   const signedHeaders = signedHeaderKeys.join(';');
 
-  // Canonical request
+  // Canonical request — path must be SigV4-encoded (e.g. %3A → %253A)
   const canonicalRequest = [
     method,
-    parsedUrl.pathname,
+    buildCanonicalUri(parsedUrl.pathname),
     parsedUrl.search ? parsedUrl.search.substring(1) : '',
     canonicalHeaders,
     signedHeaders,
@@ -789,7 +989,8 @@ async function awsSignRequest({ method, url, headers, body, region, accessKeyId,
 // Call AWS Bedrock API (Claude models)
 // Detect if a Bedrock model ID is an OpenAI model
 function isBedrockOpenAIModel(modelId) {
-  return modelId && (modelId.includes('openai.gpt') || modelId.includes('openai.o3') || modelId.includes('openai.o1'));
+  // Real Bedrock OpenAI model IDs are openai.gpt-oss-* (not us.openai.*)
+  return modelId && modelId.startsWith('openai.');
 }
 
 async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
@@ -858,6 +1059,7 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
       region,
       accessKeyId: settings.bedrockAccessKeyId,
       secretAccessKey: settings.bedrockSecretKey,
+      sessionToken: settings.bedrockSessionToken,
       service: 'bedrock'
     });
 
@@ -994,6 +1196,7 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
       region,
       accessKeyId: settings.bedrockAccessKeyId,
       secretAccessKey: settings.bedrockSecretKey,
+      sessionToken: settings.bedrockSessionToken,
       service: 'bedrock'
     });
 
@@ -1010,75 +1213,75 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
     }
 
     reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
     const responseChunks = [];
     const streamStartTime = Date.now();
-    let iterationCount = 0;
+
+    // AWS Bedrock uses a binary event stream protocol.
+    // Each frame: [totalLen:4][headersLen:4][preludeCRC:4][headers:headersLen][payload:N][messageCRC:4]
+    // The payload is a JSON string containing the actual streaming event.
+    function extractBedrockEvents(binaryBuf) {
+      const events = [];
+      let offset = 0;
+      while (offset + 12 <= binaryBuf.length) {
+        const view = new DataView(binaryBuf.buffer, binaryBuf.byteOffset + offset);
+        const totalLen = view.getUint32(0, false);
+        const headersLen = view.getUint32(4, false);
+        if (totalLen < 12 || offset + totalLen > binaryBuf.length) break; // incomplete frame
+        const payloadStart = offset + 12 + headersLen;
+        const payloadLen = totalLen - 12 - headersLen - 4;
+        if (payloadLen > 0) {
+          try {
+            const payloadBytes = binaryBuf.slice(payloadStart, payloadStart + payloadLen);
+            const text = new TextDecoder().decode(payloadBytes);
+            events.push(JSON.parse(text));
+          } catch (_) { /* skip malformed */ }
+        }
+        offset += totalLen;
+      }
+      return { events, remaining: binaryBuf.slice(offset) };
+    }
+
+    let binaryBuffer = new Uint8Array(0);
 
     while (true) {
       if (Date.now() - streamStartTime > STREAMING_TIMEOUT_MS) {
         logger.warn('Bedrock streaming timeout reached');
         break;
       }
-      if (++iterationCount > MAX_STREAMING_ITERATIONS) {
-        logger.warn('Bedrock streaming max iterations reached');
-        break;
-      }
 
       const { done, value } = await reader.read();
       if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
+      // Append incoming bytes
+      const merged = new Uint8Array(binaryBuffer.length + value.length);
+      merged.set(binaryBuffer);
+      merged.set(value, binaryBuffer.length);
+      binaryBuffer = merged;
 
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+      const { events, remaining } = extractBedrockEvents(binaryBuffer);
+      binaryBuffer = remaining;
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-
+      for (const rawEvent of events) {
         try {
+          // Bedrock wraps the real event payload as {bytes: "<base64>"}.
+          // Unwrap it when present; otherwise treat the event as-is.
+          let event = rawEvent;
+          if (rawEvent.bytes && typeof rawEvent.bytes === 'string') {
+            event = JSON.parse(atob(rawEvent.bytes));
+          }
+
           if (isOpenAI) {
-            // OpenAI streaming format: SSE data lines
-            if (trimmed.startsWith('data: ')) {
-              const data = trimmed.slice(6);
-              if (data === '[DONE]') continue;
-              const parsed = JSON.parse(data);
-              const chunk = parsed.choices?.[0]?.delta?.content;
-              if (chunk) {
-                responseChunks.push(chunk);
-                onChunk(chunk);
-              }
-            } else {
-              // Try parsing as JSON directly (Bedrock event wrapper)
-              const event = JSON.parse(trimmed);
-              if (event.bytes) {
-                const decoded = JSON.parse(atob(event.bytes));
-                const chunk = decoded.choices?.[0]?.delta?.content;
-                if (chunk) {
-                  responseChunks.push(chunk);
-                  onChunk(chunk);
-                }
-              }
-            }
+            // OpenAI-on-Bedrock: choices[].delta.content
+            const chunk = event.choices?.[0]?.delta?.content;
+            if (chunk) { responseChunks.push(chunk); onChunk(chunk); }
           } else {
-            // Claude streaming format: Bedrock event stream
-            const event = JSON.parse(trimmed);
-            if (event.bytes) {
-              const decoded = JSON.parse(atob(event.bytes));
-              if (decoded.type === 'content_block_delta' && decoded.delta?.text) {
-                responseChunks.push(decoded.delta.text);
-                onChunk(decoded.delta.text);
-              }
-            } else if (event.type === 'content_block_delta' && event.delta?.text) {
-              responseChunks.push(event.delta.text);
-              onChunk(event.delta.text);
+            // Claude-on-Bedrock: content_block_delta → text_delta
+            if (event.type === 'content_block_delta') {
+              const chunk = event.delta?.text ?? event.delta?.partial_json ?? null;
+              if (chunk) { responseChunks.push(chunk); onChunk(chunk); }
             }
           }
-        } catch (e) {
-          // Skip unparseable chunks
-        }
+        } catch (_) { /* skip malformed events */ }
       }
     }
 

@@ -8,6 +8,10 @@
   let streamingContent = '';
   let isStreaming = false;
 
+  // Pending stream completions: streamType -> {resolve, reject}
+  // Used to bridge the gap between the immediate ACK and the final streamComplete message.
+  const pendingStreamCompletions = new Map();
+
   /**
    * Escape HTML special characters to prevent XSS
    * @param {string} text - Text to escape
@@ -107,6 +111,23 @@
     if (request.action === 'streamChunk') {
       handleStreamChunk(request.requestId, request.chunk);
     }
+
+    // Final result delivered via tab message (avoids message-channel-closed error in MV3)
+    if (request.action === 'streamComplete') {
+      const pending = pendingStreamCompletions.get(request.streamType);
+      if (pending) {
+        pendingStreamCompletions.delete(request.streamType);
+        pending.resolve(request.result);
+      }
+    }
+    if (request.action === 'streamError') {
+      const pending = pendingStreamCompletions.get(request.streamType);
+      if (pending) {
+        pendingStreamCompletions.delete(request.streamType);
+        pending.reject(new Error(request.error));
+      }
+    }
+
     if (request.action === 'keepAlive') {
       // Keep-alive heartbeat to prevent timeout - no action needed
       console.log('💓 Keep-alive heartbeat received');
@@ -203,6 +224,9 @@
     }
     if (settings.bedrockSecretKey) {
       settings.bedrockSecretKey = await securityManager.decryptApiKeyFromStorage(settings.bedrockSecretKey);
+    }
+    if (settings.bedrockSessionToken) {
+      settings.bedrockSessionToken = await securityManager.decryptApiKeyFromStorage(settings.bedrockSessionToken);
     }
 
     return settings;
@@ -1134,36 +1158,29 @@
                                     attachment.url.includes('atlassian.com');
 
         if (isAuthenticatedUrl) {
-          // Jira images need base64 conversion because LLM can't access authenticated URLs
-          console.log(`🔐 Converting authenticated image to base64: ${attachment.name}`);
+          // Route through background service worker — it has <all_urls> host_permissions
+          // and bypasses the CORS restrictions that block content-script fetches.
+          console.log(`🔐 Fetching authenticated image via background: ${attachment.name}`);
 
           try {
-            // Try fetching with credentials (content script has session cookies)
-            const response = await fetch(attachment.url, {
-              credentials: 'include',
-              mode: 'cors'
+            const result = await new Promise((resolve) => {
+              chrome.runtime.sendMessage(
+                { action: 'fetchImage', url: attachment.url },
+                (response) => resolve(response || { success: false, error: 'No response' })
+              );
             });
 
-            if (response.ok) {
-              const blob = await response.blob();
-
-              // Skip very small images
-              if (blob.size < 1024) {
-                console.warn(`⚠️ Skipping ${attachment.name} - too small (${blob.size} bytes)`);
-                continue;
-              }
-
-              const base64 = await blobToBase64(blob);
+            if (result.success) {
               imageData.push({
                 name: attachment.name,
-                data: base64,
+                data: result.data,
                 url: attachment.url,
-                mimeType: blob.type,
+                mimeType: result.mimeType,
                 isInline: attachment.isInline || false
               });
-              console.log(`✅ Converted to base64: ${attachment.name} (${(blob.size / 1024).toFixed(2)} KB)`);
+              console.log(`✅ Fetched via background: ${attachment.name} (${(result.size / 1024).toFixed(2)} KB)`);
             } else {
-              console.warn(`⚠️ Failed to fetch ${attachment.name}: ${response.status}`);
+              console.warn(`⚠️ Background fetch failed for ${attachment.name}: ${result.error}`);
             }
           } catch (fetchError) {
             console.warn(`⚠️ Cannot fetch authenticated image ${attachment.name}: ${fetchError.message}`);
@@ -1593,7 +1610,7 @@
 
     try {
       const settings = await loadAndDecryptSettings([
-        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion', 'enableStreaming',
+        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'enableStreaming',
         'confluenceUrl', 'confluenceEmail', 'confluenceToken',
         'figmaToken', 'googleApiKey'
       ]);
@@ -1632,24 +1649,19 @@
         }
 
         const response = await new Promise((resolve, reject) => {
+          pendingStreamCompletions.set('analyze', { resolve, reject });
           chrome.runtime.sendMessage({
             action: 'analyzeRequirementsStream',
-            data: {
-              ticketKey,
-              ticketData,
-              settings,
-              crawledContext: crawledContext
-            }
-          }, response => {
+            data: { ticketKey, ticketData, settings, crawledContext }
+          }, ack => {
             if (chrome.runtime.lastError) {
+              pendingStreamCompletions.delete('analyze');
               reject(new Error(chrome.runtime.lastError.message));
-            } else if (!response) {
-              reject(new Error('No response received from extension'));
-            } else if (response.error) {
-              reject(new Error(response.error));
-            } else {
-              resolve(response);
+            } else if (ack?.error) {
+              pendingStreamCompletions.delete('analyze');
+              reject(new Error(ack.error));
             }
+            // Otherwise, wait for 'streamComplete' / 'streamError' tab message
           });
         });
 
@@ -1725,7 +1737,7 @@
 
     try {
       const settings = await loadAndDecryptSettings([
-        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion', 'enableStreaming',
+        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'enableStreaming',
         'confluenceUrl', 'confluenceEmail', 'confluenceToken',
         'figmaToken', 'googleApiKey'
       ]);
@@ -1764,23 +1776,17 @@
         }
 
         const response = await new Promise((resolve, reject) => {
+          pendingStreamCompletions.set('scope', { resolve, reject });
           chrome.runtime.sendMessage({
             action: 'generateTestScopeStream',
-            data: {
-              ticketKey,
-              ticketData,
-              settings,
-              crawledContext: crawledContext
-            }
-          }, response => {
+            data: { ticketKey, ticketData, settings, crawledContext }
+          }, ack => {
             if (chrome.runtime.lastError) {
+              pendingStreamCompletions.delete('scope');
               reject(new Error(chrome.runtime.lastError.message));
-            } else if (!response) {
-              reject(new Error('No response received from extension'));
-            } else if (response.error) {
-              reject(new Error(response.error));
-            } else {
-              resolve(response);
+            } else if (ack?.error) {
+              pendingStreamCompletions.delete('scope');
+              reject(new Error(ack.error));
             }
           });
         });
@@ -1847,7 +1853,7 @@
     
     try {
       const settings = await loadAndDecryptSettings([
-        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion', 'enableStreaming', 'enableMultiAgent',
+        'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'enableStreaming', 'enableMultiAgent',
         'enableEvolution', 'evolutionIntensity', 'testCount',
         'positivePercent', 'negativePercent', 'edgePercent', 'integrationPercent',
         'enablePositiveAgent', 'enableNegativeAgent', 'enableEdgeAgent',
@@ -1988,25 +1994,17 @@
         resultsContainer.innerHTML = '<div class="qatalyst-loading">🤖 Generating test cases (streaming enabled)...</div>';
         
         const response = await new Promise((resolve, reject) => {
+          pendingStreamCompletions.set('testcases', { resolve, reject });
           chrome.runtime.sendMessage({
             action: 'generateTestCasesStream',
-            data: {
-              ticketKey,
-              ticketData,
-              settings,
-              appContext: appContext // Add crawled app context
-            }
-          }, response => {
+            data: { ticketKey, ticketData, settings, appContext }
+          }, ack => {
             if (chrome.runtime.lastError) {
-              const errorMsg = chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError);
-              reject(new Error(errorMsg));
-            } else if (!response) {
-              reject(new Error('No response received from extension'));
-            } else if (response.error) {
-              const errorMsg = typeof response.error === 'string' ? response.error : (response.error.message || JSON.stringify(response.error));
-              reject(new Error(errorMsg));
-            } else {
-              resolve(response);
+              pendingStreamCompletions.delete('testcases');
+              reject(new Error(chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError)));
+            } else if (ack?.error) {
+              pendingStreamCompletions.delete('testcases');
+              reject(new Error(typeof ack.error === 'string' ? ack.error : (ack.error.message || JSON.stringify(ack.error))));
             }
           });
         });
@@ -3367,7 +3365,7 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion']);
 
       // Check if AI provider is configured
       if (!settings.llmProvider) {
@@ -3419,7 +3417,7 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion']);
 
       // Check if AI provider is configured
       if (!settings.llmProvider) {
@@ -3473,7 +3471,7 @@ Expected Result: ${expectedResult}`;
     if (btn) btn.disabled = true;
 
     try {
-      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockRegion', 'testCount']);
+      const settings = await loadAndDecryptSettings(['llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'testCount']);
 
       // Check if AI provider is configured
       if (!settings.llmProvider) {

@@ -17,13 +17,32 @@ const modelOptions = {
     { value: 'gemini-2.5-flash-exp', label: 'Gemini 2.5 Flash (Fast & Cheap)' }
   ],
   bedrock: [
-    { value: 'anthropic.claude-sonnet-4-5-20250514-v1:0', label: 'Claude 4.5 Sonnet (Recommended)' },
-    { value: 'anthropic.claude-opus-4-20250514-v1:0', label: 'Claude Opus 4' },
-    { value: 'anthropic.claude-3-5-sonnet-20241022-v2:0', label: 'Claude 3.5 Sonnet v2' },
-    { value: 'anthropic.claude-3-5-haiku-20241022-v1:0', label: 'Claude 3.5 Haiku (Fast & Cheap)' },
-    { value: 'us.openai.gpt-4.1-2025-04-14-v1:0', label: 'GPT-4.1 (Bedrock)' },
-    { value: 'us.openai.gpt-5-2-20250709-v1:0', label: 'GPT-5.2 (Bedrock)' },
-    { value: 'us.openai.o3-2025-04-16-v1:0', label: 'O3 (Bedrock - Reasoning)' }
+    // ── Global Inference Profiles — callable from any AWS region incl. ap-southeast-1 ──
+    // These are the IDs shown as "Global" in the Bedrock console
+    { value: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0', label: 'Claude Sonnet 4.5 — Global ✓ All regions incl. Singapore' },
+    { value: 'global.anthropic.claude-sonnet-4-6',                label: 'Claude Sonnet 4.6 — Global ✓ All regions incl. Singapore' },
+    { value: 'global.anthropic.claude-sonnet-4-20250514-v1:0',    label: 'Claude Sonnet 4 — Global ✓ All regions incl. Singapore' },
+    { value: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',   label: 'Claude Haiku 4.5 — Global ✓ All regions incl. Singapore' },
+    { value: 'global.anthropic.claude-opus-4-5-20251101-v1:0',    label: 'Claude Opus 4.5 — Global ✓ All regions incl. Singapore' },
+    { value: 'global.anthropic.claude-opus-4-6-v1',               label: 'Claude Opus 4.6 — Global ✓ All regions incl. Singapore' },
+    // ── US Cross-Region Inference Profiles (us-east-1, us-east-2, us-west-2 only) ──
+    { value: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', label: 'Claude Sonnet 4.5 — US regions only' },
+    { value: 'us.anthropic.claude-sonnet-4-6',                label: 'Claude Sonnet 4.6 — US regions only' },
+    { value: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',   label: 'Claude Haiku 4.5 — US regions only' },
+    { value: 'us.anthropic.claude-opus-4-5-20251101-v1:0',    label: 'Claude Opus 4.5 — US regions only' },
+    { value: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',  label: 'Claude 3.5 Sonnet v2 — US regions only' },
+    { value: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',   label: 'Claude 3.5 Haiku — US regions only' },
+    // ── EU Cross-Region Inference Profiles (eu-west-1, eu-central-1 etc.) ──
+    { value: 'eu.anthropic.claude-3-7-sonnet-20250219-v1:0',  label: 'Claude 3.7 Sonnet — EU regions only' },
+    { value: 'eu.anthropic.claude-3-5-sonnet-20241022-v2:0',  label: 'Claude 3.5 Sonnet v2 — EU regions only' },
+    { value: 'eu.anthropic.claude-3-5-haiku-20241022-v1:0',   label: 'Claude 3.5 Haiku — EU regions only' },
+    // ── Direct Model IDs (only in the model's home region, typically us-east-1) ──
+    { value: 'anthropic.claude-sonnet-4-5-20250929-v1:0',    label: 'Claude Sonnet 4.5 — Direct (us-east-1)' },
+    { value: 'anthropic.claude-3-5-sonnet-20241022-v2:0',    label: 'Claude 3.5 Sonnet v2 — Direct' },
+    { value: 'anthropic.claude-3-5-haiku-20241022-v1:0',     label: 'Claude 3.5 Haiku — Direct' },
+    // ── OpenAI OSS on Bedrock (US/EU/Tokyo/Mumbai only, not ap-southeast-1) ──
+    { value: 'openai.gpt-oss-120b-1:0', label: 'GPT OSS 120B (US/EU/Tokyo/Mumbai only)' },
+    { value: 'openai.gpt-oss-20b-1:0',  label: 'GPT OSS 20B (US/EU/Tokyo/Mumbai only)' }
   ]
 };
 
@@ -153,6 +172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'apiKey',
     'bedrockAccessKeyId',
     'bedrockSecretKey',
+    'bedrockSessionToken',
     'bedrockRegion',
     'temperature',
     'maxTokens',
@@ -250,6 +270,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (settings.bedrockSecretKey) {
     settings.bedrockSecretKey = await securityManager.decryptApiKeyFromStorage(settings.bedrockSecretKey);
   }
+  if (settings.bedrockSessionToken) {
+    settings.bedrockSessionToken = await securityManager.decryptApiKeyFromStorage(settings.bedrockSessionToken);
+  }
 
   // API Settings
   if (settings.llmProvider) {
@@ -271,9 +294,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   if (settings.bedrockAccessKeyId) {
     document.getElementById('bedrockAccessKeyId').value = settings.bedrockAccessKeyId;
+    // Show warning hint if it's a temporary credential (ASIA prefix)
+    toggleSessionTokenHint(settings.bedrockAccessKeyId);
   }
   if (settings.bedrockSecretKey) {
     document.getElementById('bedrockSecretKey').value = settings.bedrockSecretKey;
+  }
+  if (settings.bedrockSessionToken) {
+    document.getElementById('bedrockSessionToken').value = settings.bedrockSessionToken;
   }
   if (settings.bedrockRegion) {
     document.getElementById('bedrockRegion').value = settings.bedrockRegion;
@@ -469,6 +497,19 @@ function toggleBedrockFields(provider) {
   }
 }
 
+// Show/hide the session token warning hint based on Access Key ID prefix
+function toggleSessionTokenHint(accessKeyId) {
+  const hint = document.getElementById('bedrockSessionTokenHint');
+  if (!hint) return;
+  // ASIA prefix = temporary STS credentials, session token is required
+  hint.style.display = accessKeyId && accessKeyId.trim().toUpperCase().startsWith('ASIA') ? 'block' : 'none';
+}
+
+// Live hint toggle as user types the Access Key ID
+document.getElementById('bedrockAccessKeyId').addEventListener('input', (e) => {
+  toggleSessionTokenHint(e.target.value);
+});
+
 function updateModelOptions(provider) {
   const modelSelect = document.getElementById('llmModel');
   modelSelect.innerHTML = '';
@@ -487,6 +528,78 @@ function updateKeyLink(provider) {
   keyLink.href = keyLinks[provider] || keyLinks.openai;
 }
 
+// Test Connection
+document.getElementById('testConnectionBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('testConnectionBtn');
+  const icon = document.getElementById('testConnectionIcon');
+  const result = document.getElementById('testConnectionResult');
+
+  const provider = document.getElementById('llmProvider').value;
+  const model = document.getElementById('llmModel').value;
+
+  // Collect credentials directly from UI (no need to save first)
+  const credentials = {
+    provider,
+    model,
+    apiKey: document.getElementById('apiKey').value.trim(),
+    bedrockAccessKeyId: document.getElementById('bedrockAccessKeyId').value.trim(),
+    bedrockSecretKey: document.getElementById('bedrockSecretKey').value.trim(),
+    bedrockSessionToken: document.getElementById('bedrockSessionToken').value.trim(),
+    bedrockRegion: document.getElementById('bedrockRegion').value
+  };
+
+  // Basic validation before sending
+  if (provider === 'bedrock') {
+    if (!credentials.bedrockAccessKeyId || !credentials.bedrockSecretKey) {
+      showTestResult(result, false, 'Please enter your AWS Access Key ID and Secret Access Key.');
+      return;
+    }
+    const isTemp = credentials.bedrockAccessKeyId.toUpperCase().startsWith('ASIA');
+    if (isTemp && !credentials.bedrockSessionToken) {
+      showTestResult(result, false, 'Temporary credentials (ASIA...) require a Session Token. Please enter it above.');
+      return;
+    }
+  } else {
+    if (!credentials.apiKey) {
+      showTestResult(result, false, 'Please enter your API key.');
+      return;
+    }
+  }
+
+  // Show loading state
+  btn.disabled = true;
+  icon.textContent = '⏳';
+  btn.style.opacity = '0.7';
+  result.style.display = 'none';
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'testAIConnection',
+      data: credentials
+    });
+
+    if (response && response.success) {
+      showTestResult(result, true, response.message || 'Connection successful! Credentials are valid.');
+    } else {
+      showTestResult(result, false, response?.message || 'Connection failed. Please check your credentials.');
+    }
+  } catch (err) {
+    showTestResult(result, false, `Error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    icon.textContent = '🔌';
+    btn.style.opacity = '1';
+  }
+});
+
+function showTestResult(el, success, message) {
+  el.style.display = 'block';
+  el.textContent = (success ? '✅ ' : '❌ ') + message;
+  el.style.background = success ? '#f0fdf4' : '#fef2f2';
+  el.style.color = success ? '#166534' : '#991b1b';
+  el.style.borderColor = success ? '#86efac' : '#fca5a5';
+}
+
 // Save settings
 document.getElementById('saveBtn').addEventListener('click', async () => {
   const settings = {
@@ -496,6 +609,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     apiKey: document.getElementById('apiKey').value,
     bedrockAccessKeyId: document.getElementById('bedrockAccessKeyId').value,
     bedrockSecretKey: document.getElementById('bedrockSecretKey').value,
+    bedrockSessionToken: document.getElementById('bedrockSessionToken').value,
     bedrockRegion: document.getElementById('bedrockRegion').value,
     temperature: parseFloat(document.getElementById('temperature').value),
     maxTokens: parseInt(document.getElementById('maxTokens').value),
@@ -717,6 +831,9 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   }
   if (settings.bedrockSecretKey && settings.bedrockSecretKey.trim()) {
     settings.bedrockSecretKey = await securityManager.encryptApiKeyForStorage(settings.bedrockSecretKey.trim());
+  }
+  if (settings.bedrockSessionToken && settings.bedrockSessionToken.trim()) {
+    settings.bedrockSessionToken = await securityManager.encryptApiKeyForStorage(settings.bedrockSessionToken.trim());
   }
 
   // Debug logging before saving

@@ -425,7 +425,7 @@
           <div class="form-row">
             <div class="form-group">
               <label for="bedrockAccessKeyId">AWS Access Key ID:</label>
-              <input type="text" id="bedrockAccessKeyId" placeholder="AKIA..." data-testid="bedrock-access-key-input">
+              <input type="text" id="bedrockAccessKeyId" placeholder="AKIA... or ASIA..." data-testid="bedrock-access-key-input">
             </div>
             <div class="form-group">
               <label for="bedrockSecretKey">AWS Secret Access Key:</label>
@@ -433,19 +433,68 @@
             </div>
           </div>
           <div class="form-group">
+            <label for="bedrockSessionToken">AWS Session Token: <span style="font-weight: normal; color: #6b7280;">(Required for temporary credentials — ASIA... keys)</span></label>
+            <input type="password" id="bedrockSessionToken" placeholder="Paste your session token here (required when Access Key ID starts with ASIA...)" data-testid="bedrock-session-token-input">
+            <div id="bedrockSessionTokenHint" style="display: none; margin-top: 6px; padding: 8px 12px; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; font-size: 12px; color: #92400e;">
+              ⚠️ Your Access Key ID starts with <strong>ASIA</strong> — this is a <strong>temporary credential</strong>. A Session Token is required. Get it from AWS SSO, <code>aws sts assume-role</code>, or your AWS CLI credentials file (<code>~/.aws/credentials</code>).
+            </div>
+          </div>
+          <div class="form-group">
             <label for="bedrockRegion">AWS Region:</label>
             <select id="bedrockRegion" data-testid="bedrock-region-select">
-              <option value="us-east-1">US East (N. Virginia)</option>
-              <option value="us-west-2">US West (Oregon)</option>
-              <option value="eu-west-1">EU (Ireland)</option>
-              <option value="eu-central-1">EU (Frankfurt)</option>
-              <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
-              <option value="ap-northeast-1">Asia Pacific (Tokyo)</option>
+              <optgroup label="United States">
+                <option value="us-east-1">US East — N. Virginia (us-east-1)</option>
+                <option value="us-east-2">US East — Ohio (us-east-2)</option>
+                <option value="us-west-1">US West — N. California (us-west-1)</option>
+                <option value="us-west-2">US West — Oregon (us-west-2)</option>
+              </optgroup>
+              <optgroup label="Asia Pacific">
+                <option value="ap-south-1">Asia Pacific — Mumbai (ap-south-1)</option>
+                <option value="ap-northeast-3">Asia Pacific — Osaka (ap-northeast-3)</option>
+                <option value="ap-northeast-2">Asia Pacific — Seoul (ap-northeast-2)</option>
+                <option value="ap-southeast-1">Asia Pacific — Singapore (ap-southeast-1)</option>
+                <option value="ap-southeast-2">Asia Pacific — Sydney (ap-southeast-2)</option>
+                <option value="ap-northeast-1">Asia Pacific — Tokyo (ap-northeast-1)</option>
+              </optgroup>
+              <optgroup label="Canada">
+                <option value="ca-central-1">Canada — Central (ca-central-1)</option>
+              </optgroup>
+              <optgroup label="Europe">
+                <option value="eu-central-1">Europe — Frankfurt (eu-central-1)</option>
+                <option value="eu-west-1">Europe — Ireland (eu-west-1)</option>
+                <option value="eu-west-2">Europe — London (eu-west-2)</option>
+                <option value="eu-west-3">Europe — Paris (eu-west-3)</option>
+                <option value="eu-north-1">Europe — Stockholm (eu-north-1)</option>
+              </optgroup>
+              <optgroup label="South America">
+                <option value="sa-east-1">South America — São Paulo (sa-east-1)</option>
+              </optgroup>
             </select>
             <a href="https://docs.aws.amazon.com/bedrock/latest/userguide/setting-up.html" class="help-link" target="_blank">AWS Bedrock setup guide</a>
           </div>
         </div>
         
+        <!-- Test Connection -->
+        <div class="form-group" style="margin-top: 8px;">
+          <button id="testConnectionBtn" data-testid="test-connection-btn" style="
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 9px 18px;
+            background: #0f172a;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s;
+          ">
+            <span id="testConnectionIcon">🔌</span> Test Connection
+          </button>
+          <div id="testConnectionResult" style="display: none; margin-top: 10px; padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; border: 1px solid;"></div>
+        </div>
+
         <div class="form-row">
           <div class="form-group">
             <label for="temperature">Temperature (0-1):</label>

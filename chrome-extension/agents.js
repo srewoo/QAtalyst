@@ -46,17 +46,28 @@ function parseRobustJSON(jsonString) {
     try {
       return JSON.parse(fixed);
     } catch (e2) {
-      // Try to handle truncated array responses
-      // Extract complete objects from a truncated array like [{...}, {...}, {incomplete...
+      // Truncated array: [{...}, {...}, {incomplete...
       if (fixed.trim().startsWith('[')) {
         const completeObjects = extractCompleteObjectsFromArray(fixed);
         if (completeObjects.length > 0) {
-          console.log(`[parseRobustJSON] Recovered ${completeObjects.length} complete objects from truncated response`);
+          console.log(`[parseRobustJSON] Recovered ${completeObjects.length} complete objects from truncated array`);
           return completeObjects;
         }
       }
 
-      // Last resort: try to extract valid JSON object
+      // Truncated wrapper object: {"testCases": [{...}, {incomplete...
+      // Extract the inner array value and salvage complete items from it
+      const innerArrayMatch = fixed.match(/"testCases"\s*:\s*(\[[\s\S]*)/);
+      if (innerArrayMatch) {
+        const innerArray = innerArrayMatch[1];
+        const completeObjects = extractCompleteObjectsFromArray(innerArray);
+        if (completeObjects.length > 0) {
+          console.log(`[parseRobustJSON] Recovered ${completeObjects.length} test cases from truncated wrapper`);
+          return { testCases: completeObjects };
+        }
+      }
+
+      // Last resort: try to find any complete JSON object
       const match = fixed.match(/\{[\s\S]*\}/);
       if (match) {
         try {
@@ -124,6 +135,18 @@ function extractCompleteObjectsFromArray(jsonString) {
   }
 
   return objects;
+}
+
+/**
+ * Safely coerce any value to a string.
+ * Arrays are joined; objects are JSON-serialised; null/undefined become ''.
+ */
+function toStr(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(toStr).join('\n');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }
 
 class AgentOrchestrator {
@@ -475,14 +498,26 @@ class AgentOrchestrator {
         }
       }
 
-      // Ensure steps is always an array
+      // Ensure steps is always an array of strings
       if (!Array.isArray(tc.steps)) {
-        tc.steps = tc.steps ? [tc.steps] : [];
+        tc.steps = tc.steps ? [toStr(tc.steps)] : [];
+      } else {
+        tc.steps = tc.steps.map(toStr);
       }
+
+      // Coerce all string fields — AI can return objects/arrays instead of strings
+      tc.title = toStr(tc.title);
+      tc.description = toStr(tc.description);
+      tc.preconditions = toStr(tc.preconditions);
+      tc.test_data = toStr(tc.test_data);
+      tc.category = toStr(tc.category);
+      tc.priority = toStr(tc.priority);
 
       // Normalize expected_result / expectedResult
       if (!tc.expected_result && tc.expectedResult) {
-        tc.expected_result = tc.expectedResult;
+        tc.expected_result = toStr(tc.expectedResult);
+      } else {
+        tc.expected_result = toStr(tc.expected_result);
       }
 
       // Specificity scoring
@@ -503,11 +538,11 @@ class AgentOrchestrator {
     let score = 50; // Base score
 
     const allText = [
-      tc.title || '',
-      tc.description || '',
-      tc.expected_result || '',
-      ...(tc.steps || []),
-      tc.test_data || ''
+      toStr(tc.title),
+      toStr(tc.description),
+      toStr(tc.expected_result),
+      ...(Array.isArray(tc.steps) ? tc.steps.map(toStr) : []),
+      toStr(tc.test_data)
     ].join(' ');
 
     const allTextLower = allText.toLowerCase();
@@ -546,7 +581,7 @@ class AgentOrchestrator {
     if (tc.steps && tc.steps.length >= 5) score += 5;
 
     // Expected result has specific text to look for
-    const er = (tc.expected_result || '').toLowerCase();
+    const er = toStr(tc.expected_result).toLowerCase();
     if (er.includes('message') || er.includes('toast') || er.includes('displays') || er.includes('shows')) score += 5;
 
     // Description length (longer = more detailed)
@@ -3112,11 +3147,11 @@ Return as JSON array with "testCases" key.`;
 
   parseResponse(response) {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found in response');
-
-      const parsed = parseRobustJSON(jsonMatch[0]);
-      return parsed.testCases || [];
+      // Strip markdown code fences if present
+      const stripped = response.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+      const parsed = parseRobustJSON(stripped);
+      const cases = parsed.testCases || (Array.isArray(parsed) ? parsed : []);
+      return cases;
     } catch (error) {
       console.error('Failed to parse AI feature test cases:', error);
       console.error('Response preview:', response.substring(0, 500));
