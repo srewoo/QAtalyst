@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "QAtalyst - AI Test Case Generator",
-  "version": "12.9.1",
+  "version": "12.9.2",
   "description": "AI-powered Jira assistant with intelligent web app crawling and context-aware test generation.",
   "permissions": [
     "storage",
