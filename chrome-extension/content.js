@@ -286,15 +286,25 @@
         }));
       }
 
-      // Extract attachments
+      // Extract attachments — flag images and documents for downstream processing
       if (issueData.fields.attachment) {
-        data.attachments = issueData.fields.attachment.map((att, index) => ({
-          id: index + 1,
-          fileName: att.filename || 'Unknown',
-          url: att.content || '',
-          mimeType: att.mimeType || '',
-          size: att.size || 0
-        }));
+        data.attachments = issueData.fields.attachment.map((att, index) => {
+          const name = att.filename || 'Unknown';
+          const ext = name.split('.').pop().toLowerCase();
+          const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+          const docExts = ['pdf', 'txt', 'md', 'csv', 'doc', 'docx', 'log', 'json', 'xml'];
+          return {
+            id: index + 1,
+            fileName: name,
+            name,
+            url: att.content || '',
+            mimeType: att.mimeType || '',
+            size: att.size || 0,
+            isImage: imageExts.includes(ext) || (att.mimeType || '').startsWith('image/'),
+            isDocument: docExts.includes(ext) || (att.mimeType || '').includes('pdf')
+              || (att.mimeType || '').includes('text/')
+          };
+        });
       }
 
       return data;
@@ -1205,6 +1215,71 @@
     return imageData;
   }
 
+  /**
+   * Enrich ticketData with both image and document attachment content.
+   * Call this once before sending data to any AI handler.
+   */
+  async function enrichTicketAttachments(ticketData, settings) {
+    if (!ticketData.attachments?.length) return;
+
+    // Images — only for vision-capable models
+    const visionModels = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.VISION_MODELS) ||
+      ['gpt-4.1', 'gpt-4.1-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision',
+       'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
+    if (visionModels.some(m => settings.llmModel?.includes(m))) {
+      ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
+    }
+
+    // Documents — always extract text (PDF, TXT, CSV, MD…)
+    const jiraSettings = await loadAndDecryptSettings(['jiraEmail', 'jiraApiToken']);
+    const docTexts = await fetchDocumentAttachments(
+      ticketData.attachments,
+      jiraSettings.jiraEmail,
+      jiraSettings.jiraApiToken
+    );
+    if (docTexts.length > 0) {
+      ticketData.documentAttachments = docTexts;
+      console.log(`📄 Extracted text from ${docTexts.length} document(s) for LLM context`);
+    }
+  }
+
+  /**
+   * Fetch document attachments (PDF, TXT, MD, CSV…) and extract their text content.
+   * Returns an array of { fileName, text } objects to be injected as LLM context.
+   */
+  async function fetchDocumentAttachments(attachments, jiraEmail, jiraApiToken) {
+    const docAttachments = attachments.filter(att => att.isDocument && !att.isImage && att.url);
+    if (docAttachments.length === 0) return [];
+
+    console.log(`📄 Found ${docAttachments.length} document attachment(s) to extract`);
+    const results = [];
+
+    for (const att of docAttachments.slice(0, 5)) { // cap at 5 to avoid token overload
+      try {
+        const result = await new Promise(resolve => {
+          chrome.runtime.sendMessage({
+            action: 'fetchDocument',
+            url: att.url,
+            fileName: att.fileName || att.name || 'document',
+            jiraEmail,
+            jiraApiToken
+          }, response => resolve(response || { success: false, error: 'No response' }));
+        });
+
+        if (result.success && result.text) {
+          console.log(`✅ Extracted ${result.text.length} chars from ${att.fileName}`);
+          results.push({ fileName: att.fileName || att.name, text: result.text, type: result.type });
+        } else {
+          console.warn(`⚠️ Could not extract ${att.fileName}: ${result.error}`);
+        }
+      } catch (err) {
+        console.warn(`⚠️ Error extracting ${att.fileName}:`, err.message);
+      }
+    }
+
+    return results;
+  }
+
   // Convert blob to base64
   function blobToBase64(blob) {
     return new Promise((resolve, reject) => {
@@ -1615,13 +1690,9 @@
         'figmaToken', 'googleApiKey'
       ]);
 
-      // Fetch Jira image attachments if model supports vision
-      const visionModels = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.VISION_MODELS) || ['gpt-4.1', 'gpt-4.1-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
-      if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
-        console.log('📷 Vision model detected, fetching Jira image attachments...');
-        ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
-      }
-      
+      // Enrich ticket with image and document attachment content
+      await enrichTicketAttachments(ticketData, settings);
+
       // Validate settings
       const validationErrors = validateSettingsUI(settings);
       if (validationErrors.length > 0) {
@@ -1742,12 +1813,8 @@
         'figmaToken', 'googleApiKey'
       ]);
 
-      // Fetch Jira image attachments if model supports vision
-      const visionModels = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.VISION_MODELS) || ['gpt-4.1', 'gpt-4.1-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
-      if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
-        console.log('📷 Vision model detected, fetching Jira image attachments...');
-        ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
-      }
+      // Enrich ticket with image and document attachment content
+      await enrichTicketAttachments(ticketData, settings);
 
       // Validate settings
       const validationErrors = validateSettingsUI(settings);

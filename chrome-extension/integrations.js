@@ -221,7 +221,7 @@ class IntegrationManager {
     console.log('🔗 [IntegrationManager] Settings configured:', {
       hasConfluence: !!(this.settings.confluenceUrl && this.settings.confluenceEmail && this.settings.confluenceToken),
       hasFigma: !!this.settings.figmaToken,
-      hasGoogleDocs: !!this.settings.googleApiKey
+      hasGoogleDocs: true  // Public docs work without an API key via the export endpoint
     });
 
     // Log detailed configuration status for debugging
@@ -329,12 +329,9 @@ class IntegrationManager {
       }
     }
     if (googleDocsUrls.length > 0) {
-      // Only fetch if Google Docs is properly configured
-      if (this.settings.googleApiKey) {
-        fetchTasks.push(this.fetchGoogleDocs(googleDocsUrls));
-      } else {
-        console.error('❌ [IntegrationManager] Google Docs URLs found but integration not configured (missing googleApiKey)');
-      }
+      // Public Google Docs work without an API key (uses the public export endpoint).
+      // Fetch whenever URLs are found — no credential gate needed.
+      fetchTasks.push(this.fetchGoogleDocs(googleDocsUrls));
     }
 
     // Track which tasks were actually added (to properly map results)
@@ -345,7 +342,7 @@ class IntegrationManager {
     if (figmaUrls.length > 0 && this.settings.figmaToken) {
       taskTypes.push('figma');
     }
-    if (googleDocsUrls.length > 0 && this.settings.googleApiKey) {
+    if (googleDocsUrls.length > 0) {
       taskTypes.push('googleDocs');
     }
 
@@ -615,26 +612,22 @@ class ConfluenceIntegration {
       }
 
       // For Jira bridge shortcut URLs (/wiki?xpis=...), decode the base64 payload
-      // to extract the Confluence content ID
-      const xpisMatch = url.match(/[?&]xpis=([A-Za-z0-9_+/=-]+)/);
+      // to extract the Confluence content ID.
+      // The xpis value is a URL-encoded base64 JSON: {"bridge":"globalShortcuts","id":"<pageId>","source":"jira"}
+      // Skip verification — return the ID directly and let fetchDocument surface real errors.
+      const xpisMatch = url.match(/[?&]xpis=([A-Za-z0-9_+/=%-]+)/);
       if (xpisMatch) {
         try {
-          const decoded = JSON.parse(atob(decodeURIComponent(xpisMatch[1])));
+          const raw = xpisMatch[1];
+          // Handle both URL-encoded (%3D) and plain base64
+          const b64 = decodeURIComponent(raw);
+          const decoded = JSON.parse(atob(b64));
           if (decoded.id) {
-            console.log(`📄 Confluence - Jira bridge shortcut detected, trying content ID: ${decoded.id}`);
-            // Verify the ID is a valid Confluence page by fetching it
-            const verifyUrl = `${apiBase}/content/${decoded.id}?expand=body`;
-            const verifyResp = await fetch(verifyUrl, {
-              headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
-            });
-            if (verifyResp.ok) {
-              console.log(`📄 Confluence - Successfully resolved bridge shortcut to page ID: ${decoded.id}`);
-              return decoded.id;
-            }
-            console.log(`📄 Confluence - Bridge ID ${decoded.id} is not a valid Confluence content ID`);
+            console.log(`📄 Confluence - Jira bridge shortcut decoded: bridge="${decoded.bridge}", id="${decoded.id}", source="${decoded.source}"`);
+            return String(decoded.id);
           }
         } catch (e) {
-          console.warn(`📄 Confluence - Failed to decode xpis parameter:`, e.message);
+          console.warn(`📄 Confluence - Failed to decode xpis parameter: ${e.message}`);
         }
       }
 
@@ -740,8 +733,6 @@ class ConfluenceIntegration {
     }
 
     // Return null for URLs without numeric IDs — resolvePageIdByUrl() will handle them
-    return null;
-
     return null;
   }
   
@@ -1221,10 +1212,15 @@ class GoogleDocsIntegration {
   }
   
   extractUrls(text) {
-    // Match Google Docs URLs with optional /edit suffix and query parameters
-    const pattern = /https:\/\/docs\.google\.com\/document\/d\/[A-Za-z0-9_-]+(?:\/edit)?(?:\?[A-Za-z0-9=&_-]+)?/gi;
+    // Match Google Docs URLs including /edit, /view, ?tab=, #heading= variants
+    // e.g. https://docs.google.com/document/d/ID/edit?tab=t.0#heading=h.xyz
+    const pattern = /https:\/\/docs\.google\.com\/document\/d\/[A-Za-z0-9_-]+(?:\/(?:edit|view|pub))?(?:\?[^\s"'<>]*)??(?:#[^\s"'<>]*)?/gi;
     const matches = text.match(pattern) || [];
-    return [...new Set(matches)];
+    // Normalise: strip fragment (#) and query params — only the doc ID matters for export
+    return [...new Set(matches.map(u => {
+      const docId = this.extractDocId(u);
+      return docId ? `https://docs.google.com/document/d/${docId}` : u;
+    }))];
   }
   
   async fetchDocument(url) {

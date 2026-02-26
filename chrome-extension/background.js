@@ -331,12 +331,105 @@ async function fetchImageFromBackground(url) {
   }
 }
 
+/**
+ * Fetch a Jira attachment and extract its text content.
+ * Supports: PDF (raw text extraction), TXT, MD, CSV, plain text formats.
+ * Returns extracted text — NOT base64 — so it can be sent as context to the LLM.
+ */
+async function fetchAndExtractDocument(url, fileName, jiraEmail, jiraApiToken) {
+  console.log(`📄 [Background] Extracting document: ${fileName}`);
+  try {
+    const fetchHeaders = { 'Accept': '*/*' };
+    const isJiraUrl = url.includes('atlassian.net') || url.includes('atlassian.com') || url.includes('jira.com');
+    if (isJiraUrl && jiraEmail && jiraApiToken) {
+      fetchHeaders['Authorization'] = 'Basic ' + btoa(`${jiraEmail}:${jiraApiToken}`);
+    }
+
+    const response = await fetch(url, { credentials: 'include', headers: fetchHeaders });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const contentType = response.headers.get('content-type') || '';
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+
+    // Plain-text formats — read directly as text
+    if (['txt', 'md', 'csv', 'log', 'json', 'xml', 'yaml', 'yml'].includes(ext) ||
+        contentType.includes('text/')) {
+      const text = await response.text();
+      return { success: true, text: text.slice(0, 20000), fileName, type: 'text' };
+    }
+
+    // PDF — extract text from raw bytes using regex (no external lib needed)
+    if (ext === 'pdf' || contentType.includes('pdf')) {
+      const arrayBuffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      const raw = new TextDecoder('latin1').decode(bytes);
+
+      // Extract text from PDF stream objects using simple pattern matching
+      // Works for most non-scanned PDFs that have embedded text streams
+      const textChunks = [];
+      const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+      let match;
+      while ((match = streamRegex.exec(raw)) !== null) {
+        const streamContent = match[1];
+        // Extract text operators: (text)Tj / [(text)]TJ / BT...ET blocks
+        const textOps = streamContent.match(/\(([^)\\]|\\.)*\)\s*Tj|\[(([^[\]\\]|\\.)*)\]\s*TJ/g) || [];
+        for (const op of textOps) {
+          // Decode escaped PDF string literals
+          const inner = op.replace(/^\[?\s*|\s*\]?\s*TJ$|\s*Tj$/g, '');
+          const decoded = inner.replace(/\(([^)\\]|\\.)*\)/g, m => {
+            return m.slice(1, -1)
+              .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+              .replace(/\\\\/g, '\\').replace(/\\(.)/g, '$1');
+          }).replace(/\s+/g, ' ');
+          if (decoded.trim().length > 1) textChunks.push(decoded.trim());
+        }
+      }
+
+      const extracted = textChunks.join(' ').replace(/\s+/g, ' ').trim();
+      if (extracted.length > 50) {
+        return { success: true, text: extracted.slice(0, 20000), fileName, type: 'pdf' };
+      }
+      // Scanned/image-only PDF — no embedded text streams found.
+      // Return the raw bytes as base64 so a vision-capable LLM can read it.
+      console.warn(`⚠️ [Background] ${fileName}: no text streams found, returning as base64 for vision LLM`);
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      return {
+        success: true,
+        text: '',          // no text to inject as markdown
+        base64,            // caller may pass this as an image part to a vision model
+        mimeType: 'application/pdf',
+        isScannedPdf: true,
+        fileName,
+        type: 'scanned-pdf'
+      };
+    }
+
+    // DOCX — extract from XML content inside zip (basic extraction)
+    if (ext === 'docx' || contentType.includes('officedocument')) {
+      // We can't unzip in a service worker without a library, so note it
+      return { success: false, error: 'DOCX files require a zip parser. Consider converting to PDF or TXT.', fileName };
+    }
+
+    return { success: false, error: `Unsupported document type: ${ext}`, fileName };
+  } catch (error) {
+    console.warn(`⚠️ [Background] Document extraction failed: ${error.message}`);
+    return { success: false, error: error.message, fileName };
+  }
+}
+
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Fetch image from URL (background script has broader permissions)
   // Used for CORS-blocked images in Jira
   if (request.action === 'fetchImage') {
     fetchImageFromBackground(request.url)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'fetchDocument') {
+    fetchAndExtractDocument(request.url, request.fileName, request.jiraEmail, request.jiraApiToken)
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
@@ -2905,12 +2998,53 @@ Provide comprehensive requirement analysis.`;
     });
   }
 
-  // Add Jira image attachments if available
+  // Add Jira image attachments if available (vision models only)
   if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
     console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to streaming analysis`);
     enrichedTicketData.imageAttachments.forEach(image => {
       contentParts.push({ type: 'image_url', image_url: { url: image.data } });
     });
+  }
+
+  // Inject extracted document text (PDF, TXT, CSV…) as additional context
+  if (enrichedTicketData.documentAttachments && enrichedTicketData.documentAttachments.length > 0) {
+    const textDocs = enrichedTicketData.documentAttachments.filter(d => !d.isScannedPdf && d.text);
+    const scannedDocs = enrichedTicketData.documentAttachments.filter(d => d.isScannedPdf && d.base64);
+
+    if (textDocs.length > 0) {
+      console.log(`📄 Injecting text from ${textDocs.length} document(s)`);
+      const docContext = textDocs.map(doc =>
+        `\n\n--- Attached document: ${doc.fileName} ---\n${doc.text}`
+      ).join('\n');
+      contentParts.push({ type: 'text', text: `\n\n## Attachment Content\n${docContext}` });
+    }
+
+    // For scanned/image-based PDFs, send as vision input if the model supports it
+    if (scannedDocs.length > 0) {
+      const isVisionModel = settings.llmModel && (
+        APP_CONFIG.VISION_MODELS || ['gpt-4', 'claude-3', 'claude-sonnet', 'claude-opus', 'anthropic.claude', 'global.anthropic', 'gemini']
+      ).some(m => settings.llmModel.includes(m));
+
+      if (isVisionModel) {
+        console.log(`📄 Sending ${scannedDocs.length} scanned PDF(s) as vision input`);
+        scannedDocs.forEach(doc => {
+          contentParts.push({
+            type: 'image_url',
+            image_url: { url: `data:${doc.mimeType};base64,${doc.base64}` }
+          });
+        });
+        contentParts.push({
+          type: 'text',
+          text: `\n\nThe above attachment(s) are scanned PDF documents (${scannedDocs.map(d => d.fileName).join(', ')}). Please read and incorporate their content in your analysis.`
+        });
+      } else {
+        console.warn(`⚠️ Scanned PDF(s) skipped — current model is not vision-capable: ${settings.llmModel}`);
+        contentParts.push({
+          type: 'text',
+          text: `\n\nNote: The following attachment(s) are scanned PDFs and could not be read automatically: ${scannedDocs.map(d => d.fileName).join(', ')}. Switch to a vision-capable model (Claude Sonnet/Opus, GPT-4o) to extract their content.`
+        });
+      }
+    }
   }
 
   // Ensure content fits within model limits (with graceful truncation)
