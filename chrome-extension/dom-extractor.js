@@ -26,6 +26,62 @@ if (typeof DOMExtractor === 'undefined') {
       this.features = [];
       this.errorPatterns = [];
       this.pageHints = {};
+      this.pierceShadowDom = getConfig('domExtraction.pierceShadowDom', true);
+      this.extractIframes = getConfig('domExtraction.extractIframes', true);
+    }
+
+    /**
+     * Query elements across the main document, shadow DOMs, and same-origin iframes.
+     * Falls back to standard querySelectorAll if shadow/iframe piercing is disabled.
+     * @param {string} selector - CSS selector
+     * @param {number} maxResults - Maximum elements to return (default 100)
+     * @returns {Array<Element>}
+     */
+    querySelectorDeep(selector, maxResults = 100) {
+      const results = [];
+
+      // Main document
+      try {
+        results.push(...document.querySelectorAll(selector));
+      } catch (e) { /* invalid selector */ }
+
+      if (results.length >= maxResults) return results.slice(0, maxResults);
+
+      // Pierce shadow DOM roots
+      if (this.pierceShadowDom) {
+        try {
+          const allElements = document.querySelectorAll('*');
+          for (let i = 0; i < allElements.length && results.length < maxResults; i++) {
+            const shadowRoot = allElements[i].shadowRoot;
+            if (shadowRoot) {
+              try {
+                const shadowResults = shadowRoot.querySelectorAll(selector);
+                results.push(...shadowResults);
+              } catch (e) { /* skip */ }
+            }
+          }
+        } catch (e) { /* skip shadow DOM scan */ }
+      }
+
+      // Same-origin iframes
+      if (this.extractIframes) {
+        try {
+          const iframes = document.querySelectorAll('iframe');
+          for (let i = 0; i < iframes.length && results.length < maxResults; i++) {
+            try {
+              const iframeDoc = iframes[i].contentDocument;
+              if (iframeDoc) {
+                const iframeResults = iframeDoc.querySelectorAll(selector);
+                results.push(...iframeResults);
+              }
+            } catch (e) {
+              // Cross-origin iframe — cannot access, skip silently
+            }
+          }
+        } catch (e) { /* skip iframe scan */ }
+      }
+
+      return results.slice(0, maxResults);
     }
 
   /**
@@ -80,7 +136,7 @@ if (typeof DOMExtractor === 'undefined') {
    */
   extractForms() {
     const maxForms = getConfig('domExtraction.features.forms.maxForms', 10);
-    const forms = document.querySelectorAll('form');
+    const forms = this.querySelectorDeep('form', maxForms);
     const formsArray = Array.from(forms).slice(0, maxForms);
     return formsArray.map((form, index) => {
       const fields = Array.from(form.querySelectorAll('input, select, textarea'))
@@ -110,6 +166,17 @@ if (typeof DOMExtractor === 'undefined') {
           const formatHints = this.getFieldFormatHints(field);
           if (formatHints) {
             fieldData._formatHints = formatHints;
+          }
+
+          // Extract <select> option values for domain-specific test data
+          if (field.tagName.toLowerCase() === 'select') {
+            const options = Array.from(field.options || [])
+              .filter(opt => opt.value && opt.value !== '' && !opt.disabled)
+              .slice(0, 15)
+              .map(opt => ({ value: opt.value, label: opt.textContent?.trim() || opt.value }));
+            if (options.length > 0) {
+              fieldData._options = options;
+            }
           }
 
           return fieldData;
@@ -291,7 +358,7 @@ if (typeof DOMExtractor === 'undefined') {
    */
   extractTables() {
     const maxTables = getConfig('domExtraction.features.tables.maxTables', 10);
-    const tables = document.querySelectorAll('table');
+    const tables = this.querySelectorDeep('table', 20);
     const tablesArray = Array.from(tables).slice(0, maxTables);
     return tablesArray.map((table, index) => {
       const headers = Array.from(table.querySelectorAll('th'))
@@ -389,7 +456,7 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract button features with intent detection and handler parsing
    */
   extractButtons() {
-    const buttons = document.querySelectorAll('button:not([type="submit"]), a.btn, a.button, [role="button"]');
+    const buttons = this.querySelectorDeep('button:not([type="submit"]), a.btn, a.button, [role="button"]', 60);
     const seen = new Set();
 
     return Array.from(buttons)
@@ -588,7 +655,7 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract navigation features
    */
   extractNavigation() {
-    const navs = document.querySelectorAll('nav, [role="navigation"], header, .navbar, .nav');
+    const navs = this.querySelectorDeep('nav, [role="navigation"], header, .navbar, .nav', 15);
     const navsArray = Array.from(navs).slice(0, 5); // MEMORY OPTIMIZATION: Limit to 5 nav elements
     return navsArray.map((nav, index) => {
       const links = Array.from(nav.querySelectorAll('a'))
@@ -614,7 +681,7 @@ if (typeof DOMExtractor === 'undefined') {
    */
   extractModals() {
     const maxModals = getConfig('domExtraction.features.modals.maxModals', 5);
-    const modals = document.querySelectorAll('[role="dialog"], .modal, [aria-modal="true"]');
+    const modals = this.querySelectorDeep('[role="dialog"], .modal, [aria-modal="true"]', 10);
     const modalsArray = Array.from(modals).slice(0, maxModals); // MEMORY OPTIMIZATION: Limit modals
     return modalsArray.map((modal, index) => {
       const title = modal.querySelector('[role="heading"], .modal-title, h1, h2, h3');
@@ -633,7 +700,7 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract card/panel features
    */
   extractCards() {
-    const cards = document.querySelectorAll('.card, [role="article"], .panel');
+    const cards = this.querySelectorDeep('.card, [role="article"], .panel', 25);
     return Array.from(cards)
       .map((card, index) => {
         const title = card.querySelector('h1, h2, h3, h4, .card-title, .panel-title');
@@ -654,7 +721,7 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract list features
    */
   extractLists() {
-    const lists = document.querySelectorAll('ul, ol');
+    const lists = this.querySelectorDeep('ul, ol', 20);
     const minItems = getConfig('domExtraction.features.lists.minItems', 3);
     const maxItemsPerList = getConfig('domExtraction.features.lists.maxItemsPerList', 10);
     const maxLists = getConfig('domExtraction.features.lists.maxLists', 10);
@@ -947,29 +1014,50 @@ if (typeof DOMExtractor === 'undefined') {
     console.log(`  📝 Extraction stats: ${textParts.length} parts, skipped: ${skippedHidden} hidden, ${skippedNav} nav, ${skippedShort} short, ${skippedDuplicate} duplicate`);
     console.log(`  📏 Structured extraction result: ${fullText.length} chars`);
 
-    // Fallback: If structured extraction got very little text, try simple body extraction
+    // Fallback 1: If structured extraction got little text, try text-density scoring
     if (fullText.length < 200) {
-      console.warn(`⚠️ Structured extraction only got ${fullText.length} chars, using fallback (threshold: 200)`);
+      console.warn(`⚠️ Structured extraction only got ${fullText.length} chars, trying density-based extraction`);
 
-      // Try to exclude navigation elements from fallback
-      let fallbackText = '';
+      // Score direct children of body by text density: textLength / totalHTML length
+      // High-density nodes are likely content; low-density are nav/chrome
+      const bodyChildren = Array.from(document.body.children).filter(el => {
+        const tag = el.tagName?.toLowerCase();
+        return tag !== 'script' && tag !== 'style' && tag !== 'link' && tag !== 'noscript';
+      });
 
-      // Try innerText directly (respects display: none, visibility: hidden)
-      // Don't remove nav elements as it might be too aggressive
-      fallbackText = document.body.innerText || document.body.textContent || '';
+      const scored = bodyChildren.map(el => {
+        const textLen = (el.innerText || '').trim().length;
+        const htmlLen = el.innerHTML?.length || 1;
+        const density = textLen / htmlLen;
+        return { el, textLen, density };
+      }).filter(s => s.textLen > 50); // Skip near-empty nodes
 
-      // If fallback text is still too short, try without filtering
+      // Sort by text density (descending), then by text length
+      scored.sort((a, b) => b.density - a.density || b.textLen - a.textLen);
+
+      // Take top 3 highest-density nodes
+      const densityText = scored.slice(0, 3).map(s => {
+        let text = (s.el.innerText || '').trim();
+        if (text.length > maxLength / 3) text = text.substring(0, Math.floor(maxLength / 3));
+        return text;
+      }).join('\n\n');
+
+      if (densityText.length >= 200) {
+        const cleanDensity = densityText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+/g, ' ').trim();
+        console.log(`✅ Density-based extraction got ${cleanDensity.length} chars from ${scored.length} candidate nodes`);
+        return cleanDensity.substring(0, maxLength);
+      }
+
+      // Fallback 2: Simple body innerText
+      console.warn(`⚠️ Density extraction also short, using innerText fallback`);
+      let fallbackText = document.body.innerText || document.body.textContent || '';
+
       if (fallbackText.length < 200) {
-        console.warn(`  ⚠️ innerText also short (${fallbackText.length} chars), trying textContent`);
         fallbackText = document.body.textContent || '';
       }
 
-      // Basic cleanup: remove excessive whitespace
-      fallbackText = fallbackText.replace(/\n{3,}/g, '\n\n');
-      fallbackText = fallbackText.replace(/[ \t]+/g, ' ');
-      fallbackText = fallbackText.trim();
+      fallbackText = fallbackText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+/g, ' ').trim();
 
-      // Limit to maxLength
       if (fallbackText.length > maxLength) {
         fallbackText = fallbackText.substring(0, maxLength) + '...';
       }

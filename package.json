@@ -1,14 +1,16 @@
 {
   "name": "qatalyst",
-  "version": "12.9.2",
+  "version": "13.0",
   "description": "From QA Analyst to QA Visionary — Powered by QAtalyst. AI-Powered Test Case Generation for Jira - Advanced Chrome Extension with Multi-Agent System & Evolutionary Optimization",
   "main": "chrome-extension/background.js",
   "scripts": {
     "build": "./build.sh",
-    "test": "echo \"No tests configured yet\" && exit 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "lint": "eslint chrome-extension/**/*.js",
     "format": "prettier --write chrome-extension/**/*.{js,html,css,json}",
-    "zip": "cd chrome-extension && zip -r ../qatalyst-v12.9-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
+    "zip": "cd chrome-extension && zip -r ../qatalyst-v13.0-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
   },
   "repository": {
     "type": "git",
@@ -31,7 +33,8 @@
   "license": "PROPRIETARY",
   "devDependencies": {
     "eslint": "^8.56.0",
-    "prettier": "^3.2.4"
+    "prettier": "^3.2.4",
+    "vitest": "^4.1.4"
   },
   "engines": {
     "node": ">=16.0.0"

@@ -10,6 +10,94 @@ class SPARouteDiscoverer {
     this.clickedElements = new WeakSet();
     this.maxClicksPerPage = CONFIG.get('crawler.spaDiscovery.maxClicksPerPage', 20);
     this.clickDelay = CONFIG.get('crawler.spaDiscovery.clickDelay', 500);
+    this.timeBudgetMs = CONFIG.get('crawler.spaDiscovery.timeBudgetMs', 5000);
+  }
+
+  /**
+   * Passive route discovery: intercept History API calls (pushState/replaceState)
+   * and popstate/hashchange events without clicking anything.
+   * Runs for a configurable time budget, collecting any routes triggered by
+   * the page's own JavaScript (lazy loading, auto-navigation, etc.).
+   * @param {number} tabId - Tab to monitor
+   * @param {number} durationMs - How long to listen (default: 3000ms)
+   * @returns {Promise<Array>} Discovered routes
+   */
+  async discoverRoutesPassive(tabId, durationMs = 3000) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: function(duration) {
+          return new Promise((resolve) => {
+            const routes = [];
+            const seen = new Set();
+            seen.add(window.location.href);
+
+            // Monkey-patch pushState
+            const origPushState = history.pushState.bind(history);
+            history.pushState = function(...args) {
+              origPushState(...args);
+              const url = window.location.href;
+              if (!seen.has(url)) {
+                seen.add(url);
+                routes.push({ type: 'pushState', url, title: document.title, timestamp: Date.now() });
+              }
+            };
+
+            // Monkey-patch replaceState
+            const origReplaceState = history.replaceState.bind(history);
+            history.replaceState = function(...args) {
+              origReplaceState(...args);
+              const url = window.location.href;
+              if (!seen.has(url)) {
+                seen.add(url);
+                routes.push({ type: 'replaceState', url, title: document.title, timestamp: Date.now() });
+              }
+            };
+
+            // Listen for popstate (back/forward) and hashchange
+            const onPopstate = () => {
+              const url = window.location.href;
+              if (!seen.has(url)) {
+                seen.add(url);
+                routes.push({ type: 'popstate', url, title: document.title, timestamp: Date.now() });
+              }
+            };
+            const onHashchange = () => {
+              const url = window.location.href;
+              if (!seen.has(url)) {
+                seen.add(url);
+                routes.push({ type: 'hashchange', url, title: document.title, timestamp: Date.now() });
+              }
+            };
+
+            window.addEventListener('popstate', onPopstate);
+            window.addEventListener('hashchange', onHashchange);
+
+            // Cleanup after duration
+            setTimeout(() => {
+              history.pushState = origPushState;
+              history.replaceState = origReplaceState;
+              window.removeEventListener('popstate', onPopstate);
+              window.removeEventListener('hashchange', onHashchange);
+              resolve(routes);
+            }, duration);
+          });
+        },
+        args: [durationMs]
+      });
+
+      if (results && results[0] && results[0].result) {
+        const routes = results[0].result;
+        if (routes.length > 0) {
+          console.log(`🔍 Passive SPA discovery: found ${routes.length} routes via History API`);
+        }
+        return routes;
+      }
+      return [];
+    } catch (error) {
+      console.warn('⚠️ Passive SPA discovery failed:', error.message);
+      return [];
+    }
   }
 
   /**

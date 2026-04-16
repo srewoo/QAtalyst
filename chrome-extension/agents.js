@@ -172,6 +172,7 @@ class AgentOrchestrator {
       new RegressionTestAgent(),
       new IntegrationTestAgent(),
       new AIFeatureTestAgent(),
+      new AccessibilityTestAgent(),
       new ReviewAgent()
     ];
   }
@@ -184,6 +185,11 @@ class AgentOrchestrator {
       statistics: {},
       appContext: appContext || null // Store app context in results
     };
+
+    // Classify ticket complexity upfront — used by all agents for CoT depth + batch scaling
+    const ticketComplexity = BaseAgent.calculateTicketComplexity(ticketData);
+    results.complexity = ticketComplexity;
+    console.log(`[ORCHESTRATOR] 🧮 Ticket complexity: ${ticketComplexity.level.toUpperCase()} (score: ${ticketComplexity.score})`, ticketComplexity.factors);
 
     // Check if we have knowledge graph to analyze
     if (appContext && appContext.knowledgeGraph) {
@@ -214,7 +220,8 @@ class AgentOrchestrator {
     const testAgents = enabledAgents.filter(a =>
       a instanceof PositiveTestAgent || a instanceof NegativeTestAgent ||
       a instanceof EdgeCaseAgent || a instanceof RegressionTestAgent ||
-      a instanceof IntegrationTestAgent || a instanceof AIFeatureTestAgent
+      a instanceof IntegrationTestAgent || a instanceof AIFeatureTestAgent ||
+      a instanceof AccessibilityTestAgent
     );
     const reviewAgents = enabledAgents.filter(a => a instanceof ReviewAgent);
     const totalSteps = analysisAgents.length + testAgents.length + reviewAgents.length;
@@ -248,14 +255,18 @@ class AgentOrchestrator {
       }
     }
 
-    // ═══ PHASE 2: Test generation agents (parallel — all independent, share same analysis snapshot) ═══
+    // ═══ PHASE 2: Test generation agents (parallel — with cross-agent dedup) ═══
     if (!this.cancelled && testAgents.length > 0) {
       console.log(`[ORCHESTRATOR] 🚀 Phase 2: Running ${testAgents.length} test agents in parallel`);
+
+      // Shared dedup list: all agents can read from this, and append after each batch.
+      // This enables cross-agent deduplication during parallel execution.
+      const sharedTestSummaries = [];
 
       // Snapshot results for all parallel agents (each gets its own copy to avoid race conditions)
       const resultsSnapshot = {
         analysis: results.analysis,
-        testCases: [], // Each agent starts with empty testCases (no cross-agent dedup during parallel)
+        testCases: [], // Each agent starts with empty testCases
         agentResults: { ...results.agentResults },
         contextSummary: results.contextSummary,
         appContext: results.appContext
@@ -269,15 +280,23 @@ class AgentOrchestrator {
         }
       });
 
-      // Launch all test agents concurrently
+      // Launch all test agents concurrently with shared dedup context
       const parallelResults = await Promise.allSettled(
         testAgents.map(async (agent) => {
-          // Each agent gets its own results copy so batched dedup works within-agent
-          const agentResults = { ...resultsSnapshot, testCases: [] };
+          // Each agent gets its own results copy but shares the dedup list
+          const agentResults = { ...resultsSnapshot, testCases: [], _sharedTestSummaries: sharedTestSummaries };
           const agentResult = await agent.executeBatched(ticketData, agentResults, this.settings, appContext, {
             batches: 4,
             testsPerBatch: 3
           });
+
+          // After agent completes, add its test summaries to shared list for cross-agent dedup
+          if (Array.isArray(agentResult)) {
+            agentResult.forEach(tc => {
+              sharedTestSummaries.push(`[${agent.name}] ${tc.title || ''}: ${(tc.description || '').substring(0, 80)}`);
+            });
+          }
+
           return { agent, result: agentResult };
         })
       );
@@ -306,144 +325,191 @@ class AgentOrchestrator {
       stepCounter = testAgentStartStep + testAgents.length - 1;
     }
 
-    // ═══ PHASE 3: Review agent (sequential — needs all test cases) ═══
-    if (!this.cancelled && reviewAgents.length > 0) {
-      console.log(`[ORCHESTRATOR] 📝 Phase 3: Running review agent`);
-      for (const agent of reviewAgents) {
-        stepCounter++;
-        if (this.onProgress) {
-          this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'running', description: agent.description });
-        }
-        try {
-          const agentResult = await agent.execute(ticketData, results, this.settings, appContext);
-          results.agentResults[agent.name] = agentResult;
-          results.review = agentResult;
-          if (this.onProgress) {
-            this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'completed', count: 0 });
-          }
-        } catch (error) {
-          console.error(`Agent ${agent.name} failed:`, error);
-          if (this.onProgress) {
-            this.onProgress({ agent: agent.name, step: stepCounter, total: totalSteps, status: 'error', error: error.message });
-          }
-        }
-      }
-    }
-    
-    // Act on ReviewAgent feedback: remove flagged tests and add suggested tests
-    if (results.review) {
-      // Remove tests flagged for removal by ReviewAgent
-      if (Array.isArray(results.review.testsToRemove) && results.review.testsToRemove.length > 0) {
-        const idsToRemove = new Set(results.review.testsToRemove.map(t => t.id));
-        const beforeCount = results.testCases.length;
-        results.testCases = results.testCases.filter(tc => !idsToRemove.has(tc.id));
-        const removedCount = beforeCount - results.testCases.length;
-        if (removedCount > 0) {
-          console.log(`[ORCHESTRATOR] 🗑️ ReviewAgent: removed ${removedCount} flagged tests`);
-        }
-      }
-
-      // Add suggested tests from ReviewAgent as shells for the refinement loop
-      if (Array.isArray(results.review.suggestedTests) && results.review.suggestedTests.length > 0) {
-        const suggestedShells = results.review.suggestedTests
-          .filter(s => s.title && (s.rationale || s.storyReference))
-          .map((s, i) => ({
-            id: `TC-SUG-${String(i + 1).padStart(3, '0')}`,
-            title: s.title,
-            category: s.category || 'Positive',
-            priority: s.priority || 'P1',
-            storyReference: s.rationale || s.storyReference || '',
-            description: s.rationale || s.title,
-            preconditions: '',
-            steps: [],
-            expected_result: '',
-            test_data: '',
-            _needsRefinement: true
-          }));
-        if (suggestedShells.length > 0) {
-          results.testCases.push(...suggestedShells);
-          console.log(`[ORCHESTRATOR] ➕ ReviewAgent: added ${suggestedShells.length} suggested test shells`);
-        }
-      }
-    }
-
-    // Validate test case quality and storyReference
+    // Initial validation pass before the Review→Refine loop
     results.testCases = this.validateAndCleanTestCases(results.testCases, ticketData);
 
-    // Multi-pass refinement loop: up to 3 passes, stop when all specificity scores > 70
-    const MAX_REFINEMENT_PASSES = 3;
-    const SPECIFICITY_THRESHOLD = 70;
+    // ═══ PHASE 3: Iterative Review → Refine loop (up to MAX_CYCLES) ═══
+    // Stop conditions (checked before each Review call and after each Refine pass):
+    //   a) avgSpecificityScore >= 65 AND no LOW_SPECIFICITY / LOW_EXECUTABILITY warnings
+    //   b) Cancelled
+    //   c) No improvement in the last cycle
+    //   d) Max cycles reached
+    const MAX_CYCLES = 3;
+    const AVG_QUALITY_TARGET = 65; // avg specificityScore to aim for
+    const PER_TEST_THRESHOLD = 65; // per-test threshold for "good enough"
 
-    for (let pass = 1; pass <= MAX_REFINEMENT_PASSES; pass++) {
-      if (this.cancelled) { console.log('[ORCHESTRATOR] ⛔ Cancelled before refinement'); break; }
+    // Shared refinement agent — wired up once and reused across cycles
+    const refinementAgent = new RefinementAgent();
+    const boundAgent = this.agents.find(a => a.callAI && a.callAI !== BaseAgent.prototype.callAI);
+    if (boundAgent) {
+      refinementAgent.callAI = boundAgent.callAI;
+      refinementAgent.settings = this.settings;
+    }
 
-      // Re-score all tests after each pass
-      if (pass > 1) {
+    // Track suggestions already added to avoid cross-cycle duplicates
+    const addedSuggestionTitles = new Set();
+    // Track how many tests were "bad" in the previous cycle (for convergence check)
+    let prevCycleLowCount = Infinity;
+
+    for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
+      if (this.cancelled) { console.log('[ORCHESTRATOR] ⛔ Cancelled before review cycle'); break; }
+
+      // ── Stop condition check ──
+      const scores = results.testCases.map(tc => tc._specificityScore || 0);
+      const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+      const lowQualityCount = results.testCases.filter(tc =>
+        tc._qualityWarning === 'LOW_SPECIFICITY' || tc._executabilityWarning === 'LOW_EXECUTABILITY'
+      ).length;
+
+      console.log(`[ORCHESTRATOR] 📊 Cycle ${cycle} quality snapshot: avg=${avgScore.toFixed(1)}, low-quality=${lowQualityCount}/${results.testCases.length}`);
+
+      if (avgScore >= AVG_QUALITY_TARGET && lowQualityCount === 0) {
+        console.log(`[ORCHESTRATOR] ✅ Quality target reached before cycle ${cycle} — skipping review`);
+        break;
+      }
+
+      // ── Step 1: Run ReviewAgent ──
+      if (reviewAgents.length > 0 && !this.cancelled) {
+        const reviewAgent = reviewAgents[0];
+        stepCounter++;
+        if (this.onProgress) {
+          this.onProgress({
+            agent: reviewAgent.name,
+            step: stepCounter,
+            total: totalSteps + MAX_CYCLES * 2,
+            status: 'running',
+            description: `Review cycle ${cycle}/${MAX_CYCLES}: checking quality and alignment`
+          });
+        }
+
+        try {
+          const reviewResult = await reviewAgent.execute(ticketData, results, this.settings, appContext);
+          results.agentResults[`${reviewAgent.name}_cycle${cycle}`] = reviewResult;
+          results.review = reviewResult;
+
+          // Cycle 1: apply all actions (remove flagged, add suggested shells, flag rewrites)
+          // Cycles 2+: skip removal (avoid culling already-refined tests) but apply rewrites
+          if (reviewResult) {
+            // Remove tests (cycle 1 only — prevents aggressive re-removal of refined tests)
+            if (cycle === 1 && Array.isArray(reviewResult.testsToRemove) && reviewResult.testsToRemove.length > 0) {
+              const idsToRemove = new Set(reviewResult.testsToRemove.map(t => t.id));
+              const before = results.testCases.length;
+              results.testCases = results.testCases.filter(tc => !idsToRemove.has(tc.id));
+              console.log(`[ORCHESTRATOR] 🗑️ Cycle ${cycle} review: removed ${before - results.testCases.length} flagged tests`);
+            }
+
+            // Add suggested test shells (deduplicated across cycles)
+            if (Array.isArray(reviewResult.suggestedTests)) {
+              const shells = reviewResult.suggestedTests
+                .filter(s => s.title && (s.rationale || s.storyReference) && !addedSuggestionTitles.has(s.title))
+                .map((s, i) => {
+                  addedSuggestionTitles.add(s.title);
+                  return {
+                    id: `TC-SUG-C${cycle}-${String(i + 1).padStart(3, '0')}`,
+                    title: s.title,
+                    category: s.category || 'Positive',
+                    priority: s.priority || 'P1',
+                    storyReference: s.rationale || s.storyReference || '',
+                    description: s.rationale || s.title,
+                    preconditions: '',
+                    steps: [],
+                    expected_result: '',
+                    test_data: '',
+                    _needsRefinement: true
+                  };
+                });
+              if (shells.length > 0) {
+                results.testCases.push(...shells);
+                console.log(`[ORCHESTRATOR] ➕ Cycle ${cycle} review: added ${shells.length} new test shells`);
+              }
+            }
+
+            // Flag tests for targeted rewrite based on review feedback
+            if (Array.isArray(reviewResult.testsToRewrite) && reviewResult.testsToRewrite.length > 0) {
+              const rewriteMap = new Map(reviewResult.testsToRewrite.map(t => [t.id, t]));
+              results.testCases.forEach(tc => {
+                const rw = rewriteMap.get(tc.id);
+                if (rw) {
+                  tc._reviewFeedback = rw.improvementInstructions || rw.issues || '';
+                  tc._needsRefinement = true;
+                  tc._specificityScore = Math.min(tc._specificityScore || 50, 40);
+                }
+              });
+              console.log(`[ORCHESTRATOR] ✏️ Cycle ${cycle} review: flagged ${reviewResult.testsToRewrite.length} tests for rewrite`);
+            }
+          }
+
+          if (this.onProgress) {
+            this.onProgress({ agent: reviewAgent.name, step: stepCounter, total: totalSteps + MAX_CYCLES * 2, status: 'completed', count: 0 });
+          }
+        } catch (err) {
+          console.error(`[ORCHESTRATOR] Review cycle ${cycle} failed (non-critical):`, err.message);
+        }
+
+        // Re-score after applying review actions
         results.testCases = this.validateAndCleanTestCases(results.testCases, ticketData);
       }
 
-      const lowQualityTests = results.testCases.filter(tc => (tc._specificityScore || 0) < SPECIFICITY_THRESHOLD);
+      // ── Step 2: Refine poor-quality tests ──
+      if (this.cancelled) break;
 
-      // Stop if all tests meet the threshold
-      if (lowQualityTests.length === 0) {
-        console.log(`[ORCHESTRATOR] ✅ All tests above specificity threshold (${SPECIFICITY_THRESHOLD}) after pass ${pass - 1}`);
+      const testsToRefine = results.testCases.filter(tc =>
+        tc._needsRefinement ||
+        tc._qualityWarning === 'LOW_SPECIFICITY' ||
+        tc._executabilityWarning === 'LOW_EXECUTABILITY' ||
+        (tc._specificityScore || 0) < PER_TEST_THRESHOLD
+      );
+
+      if (testsToRefine.length === 0) {
+        console.log(`[ORCHESTRATOR] ✅ No tests need refinement in cycle ${cycle} — stopping`);
         break;
       }
 
-      // Skip if too many tests are low quality (>50%) — likely a systemic prompt issue, not worth refining
-      if (lowQualityTests.length > Math.ceil(results.testCases.length * 0.5)) {
-        console.log(`[ORCHESTRATOR] ⚠️ Too many low-quality tests (${lowQualityTests.length}/${results.testCases.length}), skipping refinement`);
+      // Convergence guard: if the count hasn't improved since last cycle, stop
+      if (testsToRefine.length >= prevCycleLowCount) {
+        console.log(`[ORCHESTRATOR] ⚠️ No improvement in low-quality count (${testsToRefine.length}), stopping refinement`);
         break;
       }
+      prevCycleLowCount = testsToRefine.length;
 
-      console.log(`[ORCHESTRATOR] 🔄 Refinement pass ${pass}/${MAX_REFINEMENT_PASSES}: ${lowQualityTests.length} tests below threshold`);
-
+      console.log(`[ORCHESTRATOR] 🔄 Cycle ${cycle}/${MAX_CYCLES} refine: ${testsToRefine.length} tests below threshold`);
+      stepCounter++;
       if (this.onProgress) {
         this.onProgress({
           agent: 'Refinement',
-          step: totalSteps + pass,
-          total: totalSteps + MAX_REFINEMENT_PASSES,
+          step: stepCounter,
+          total: totalSteps + MAX_CYCLES * 2,
           status: 'running',
-          description: `Refinement pass ${pass}: improving ${lowQualityTests.length} test cases`
+          description: `Refine cycle ${cycle}: improving ${testsToRefine.length} tests`
         });
       }
 
       try {
-        const refinementAgent = new RefinementAgent();
-        const boundAgent = this.agents.find(a => a.callAI && a.callAI !== BaseAgent.prototype.callAI);
-        if (boundAgent) {
-          refinementAgent.callAI = boundAgent.callAI;
-          refinementAgent.settings = this.settings;
-        }
-
-        const refined = await refinementAgent.refineTests(
-          lowQualityTests, ticketData, results, this.settings, appContext, pass
-        );
+        const refined = await refinementAgent.refineTests(testsToRefine, ticketData, results, this.settings, appContext, cycle);
 
         if (refined && refined.length > 0) {
-          // Replace low-quality tests with refined versions
-          const lowQualityIds = new Set(lowQualityTests.map(tc => tc.id));
-          results.testCases = results.testCases.filter(tc => !lowQualityIds.has(tc.id));
+          const refinedIds = new Set(testsToRefine.map(tc => tc.id));
+          results.testCases = results.testCases.filter(tc => !refinedIds.has(tc.id));
           results.testCases.push(...refined);
-          console.log(`[ORCHESTRATOR] ✅ Pass ${pass}: refined ${refined.length} tests`);
+          console.log(`[ORCHESTRATOR] ✅ Cycle ${cycle}: refined ${refined.length} tests`);
         } else {
-          console.log(`[ORCHESTRATOR] ⚠️ Pass ${pass}: no improvements returned, stopping`);
+          console.log(`[ORCHESTRATOR] ⚠️ Cycle ${cycle}: refinement returned no improvements, stopping`);
+          if (this.onProgress) {
+            this.onProgress({ agent: 'Refinement', step: stepCounter, total: totalSteps + MAX_CYCLES * 2, status: 'completed', count: 0 });
+          }
           break;
         }
 
         if (this.onProgress) {
-          this.onProgress({
-            agent: 'Refinement',
-            step: totalSteps + pass,
-            total: totalSteps + MAX_REFINEMENT_PASSES,
-            status: 'completed',
-            count: refined?.length || 0
-          });
+          this.onProgress({ agent: 'Refinement', step: stepCounter, total: totalSteps + MAX_CYCLES * 2, status: 'completed', count: refined.length });
         }
-      } catch (error) {
-        console.error(`[ORCHESTRATOR] Refinement pass ${pass} failed (non-critical):`, error.message);
+      } catch (err) {
+        console.error(`[ORCHESTRATOR] Refinement cycle ${cycle} failed (non-critical):`, err.message);
         break;
       }
+
+      // Re-score after refinement
+      results.testCases = this.validateAndCleanTestCases(results.testCases, ticketData);
     }
 
     // Calculate statistics
@@ -526,8 +592,69 @@ class AgentOrchestrator {
         tc._qualityWarning = 'LOW_SPECIFICITY';
       }
 
+      // Executability scoring — separate dimension from specificity
+      tc._executabilityScore = this.calculateExecutabilityScore(tc);
+      if (tc._executabilityScore < 40) {
+        tc._executabilityWarning = 'LOW_EXECUTABILITY';
+      }
+
       return tc;
     });
+  }
+
+  /**
+   * Calculate executability score for a test case (0-100).
+   * Measures whether a manual tester can actually run the test as written:
+   *   - Step verbs are actionable (click, enter, navigate, …)
+   *   - expected_result contains a measurable assertion
+   *   - preconditions name a concrete user/system state
+   *   - step count is adequate (3-10 steps is ideal)
+   */
+  calculateExecutabilityScore(tc) {
+    let score = 0;
+
+    // ── SECTION 1: Step verb actionability (0–35 points) ──
+    const ACTIONABLE = /^\s*(click|tap|enter|type|navigate|go to|open|select|check|uncheck|verify|assert|confirm|submit|upload|download|drag|hover|press|scroll|clear|search|filter|expand|collapse|fill|choose|login|logout|sign in|sign out|refresh|switch to|copy|paste)\b/i;
+    const steps = Array.isArray(tc.steps) ? tc.steps.map(toStr) : [];
+    if (steps.length > 0) {
+      const actionableCount = steps.filter(s => ACTIONABLE.test(s.trim())).length;
+      score += Math.round((actionableCount / steps.length) * 35);
+    }
+
+    // ── SECTION 2: Expected result has a measurable assertion (0–30 points) ──
+    const er = toStr(tc.expected_result).toLowerCase();
+    const ASSERTION_KEYWORDS = [
+      'displays', 'shows', 'appears', 'redirects', 'navigates', 'returns', 'toast',
+      'message', 'error', 'success', 'contains', 'confirms', 'sends', 'changes',
+      'updates', 'closes', 'opens', 'loads', 'visible', 'hidden', 'enabled', 'disabled',
+    ];
+    const VAGUE_EXPECTED = [
+      'works correctly', 'responds appropriately', 'behaves as expected',
+      'functions correctly', 'as expected', 'should work', 'correctly',
+    ];
+    const hasAssertion = ASSERTION_KEYWORDS.some(kw => er.includes(kw));
+    const isVague = VAGUE_EXPECTED.some(v => er.includes(v));
+    if (hasAssertion && !isVague) score += 30;
+    else if (hasAssertion) score += 15;
+    else if (!isVague && er.length > 20) score += 10;
+
+    // ── SECTION 3: Preconditions name a concrete state (0–20 points) ──
+    const pre = toStr(tc.preconditions).toLowerCase();
+    const CONCRETE_PRE = ['role', 'admin', 'user ', '@', 'page', '/dashboard', '/login',
+      'logged in as', 'with ', 'account', 'has ', 'existing'];
+    const concreteCount = CONCRETE_PRE.filter(indicator => pre.includes(indicator)).length;
+    if (concreteCount >= 3) score += 20;
+    else if (concreteCount >= 2) score += 15;
+    else if (concreteCount >= 1 && pre.length >= 20) score += 10;
+    // empty/vague preconditions get 0
+
+    // ── SECTION 4: Step count adequacy (0–15 points) ──
+    const n = steps.length;
+    if (n >= 3 && n <= 10) score += 15;
+    else if (n >= 2 && n <= 12) score += 8;
+    // < 2 or > 12 gets 0
+
+    return Math.max(0, Math.min(100, score));
   }
 
   /**
@@ -587,6 +714,39 @@ class AgentOrchestrator {
     // Description length (longer = more detailed)
     if ((tc.description || '').length > 80) score += 5;
 
+    // ── NEW: Requirement coverage check ──
+    // Verify that storyReference keywords actually appear in steps/expected_result
+    const storyRef = toStr(tc.storyReference).toLowerCase();
+    if (storyRef && storyRef.length > 15) {
+      const refKeywords = storyRef.split(/\s+/).filter(w => w.length > 4);
+      const stepsAndResult = (Array.isArray(tc.steps) ? tc.steps.map(toStr).join(' ') : '') + ' ' + toStr(tc.expected_result);
+      const stepsLower = stepsAndResult.toLowerCase();
+      const coveredKeywords = refKeywords.filter(kw => stepsLower.includes(kw));
+      const coverageRatio = refKeywords.length > 0 ? coveredKeywords.length / refKeywords.length : 0;
+      if (coverageRatio >= 0.5) score += 8; // Good requirement coverage
+      else if (coverageRatio >= 0.25) score += 4;
+      else if (coverageRatio === 0 && refKeywords.length > 2) score -= 5; // No overlap = suspicious
+    } else {
+      score -= 5; // Missing or too-short storyReference
+    }
+
+    // ── NEW: Completeness check ──
+    if (!tc.steps || tc.steps.length < 2) score -= 10; // Too few steps
+    if (!tc.preconditions || toStr(tc.preconditions).length < 10) score -= 5; // No preconditions
+    if (!tc.test_data || toStr(tc.test_data).length < 5) score -= 3; // No test data
+
+    // ── NEW: Step-level specificity ──
+    // Each step should reference a named element (quoted strings or specific actions)
+    if (tc.steps && tc.steps.length > 0) {
+      const specificSteps = tc.steps.filter(step => {
+        const s = toStr(step);
+        return /['"][^'"]{2,}['"]/.test(s) || /click|enter|select|navigate|verify|check/i.test(s);
+      });
+      const stepSpecificityRatio = specificSteps.length / tc.steps.length;
+      if (stepSpecificityRatio >= 0.8) score += 5;
+      else if (stepSpecificityRatio < 0.4) score -= 5;
+    }
+
     return Math.max(0, Math.min(100, score));
   }
 
@@ -629,6 +789,10 @@ class BaseAgent {
     this.name = name;
     this.description = description;
     this.defaultEnabled = defaultEnabled;
+    // Two-call CoT: subclasses set this to true to enable a reasoning pre-pass
+    this.useTwoCallCoT = false;
+    // Cached reasoning output from the CoT pre-pass (set before batch loop)
+    this._cotReasoning = null;
   }
   
   isEnabled(settings) {
@@ -637,6 +801,10 @@ class BaseAgent {
   }
   
   async execute(ticketData, previousResults, settings, appContext = null) {
+    // Compute ticket complexity once — available to getSystemMessage/getUserMessage via this._complexity
+    this._complexity = BaseAgent.calculateTicketComplexity(ticketData);
+    console.log(`[${this.name}] 📊 Ticket complexity: ${this._complexity.level} (score: ${this._complexity.score})`);
+
     const systemMessage = this.getSystemMessage(previousResults);
     let userMessage = await this.getUserMessage(ticketData, previousResults, appContext);
 
@@ -652,13 +820,34 @@ class BaseAgent {
   // Batched execution to prevent timeouts on large requests
   // Splits the work into smaller batches and aggregates results
   async executeBatched(ticketData, previousResults, settings, appContext = null, batchConfig = null) {
-    // Default batch configuration
-    const config = batchConfig || {
-      batches: 3,           // Number of batches
-      testsPerBatch: 3      // Tests to generate per batch
-    };
+    // Compute complexity (if not already set by execute())
+    if (!this._complexity) {
+      this._complexity = BaseAgent.calculateTicketComplexity(ticketData);
+    }
 
-    console.log(`[${this.name}] 🔄 Using batched execution: ${config.batches} batches × ${config.testsPerBatch} tests each`);
+    // Scale batch config to ticket complexity — complex tickets get more batches
+    const config = batchConfig || (() => {
+      const level = this._complexity.level;
+      if (level === 'simple') return { batches: 1, testsPerBatch: 5 };
+      if (level === 'complex') return { batches: 4, testsPerBatch: 4 };
+      return { batches: 3, testsPerBatch: 3 }; // medium
+    })();
+
+    console.log(`[${this.name}] 🔄 Batched execution (${this._complexity.level} ticket): ${config.batches} batches × ${config.testsPerBatch} tests each`);
+
+    // Two-call CoT: one reasoning pre-pass before all batches (not repeated per batch)
+    if (this.useTwoCallCoT && !this._cotReasoning) {
+      try {
+        console.log(`[${this.name}] 🧠 CoT pre-pass: reasoning about requirements...`);
+        this._cotReasoning = await this.buildReasoningContext(ticketData, previousResults, appContext, settings);
+        if (this._cotReasoning) {
+          console.log(`[${this.name}] 🧠 CoT pre-pass complete: ${(this._cotReasoning.testableRequirements || []).length} requirements, ${(this._cotReasoning.scenarios || []).length} scenarios identified`);
+        }
+      } catch (err) {
+        console.warn(`[${this.name}] CoT pre-pass failed, continuing without reasoning context:`, err.message);
+        this._cotReasoning = null;
+      }
+    }
 
     const allResults = [];
 
@@ -692,25 +881,49 @@ class BaseAgent {
   }
 
   // Override this in subclasses to customize batch messages
-  // Default implementation: modifies the regular getUserMessage to request fewer tests
+  // Batch 1: full context. Batch 2+: condensed context with only delta (dedup list + focus area).
   async getUserMessageBatched(ticketData, previousResults, appContext, batchNum, totalBatches, testsPerBatch) {
-    const originalMessage = await this.getUserMessage(ticketData, previousResults, appContext);
-
-    // Replace any "Generate X test cases" with "Generate testsPerBatch test cases"
-    const batchMessage = originalMessage.replace(
-      /Generate \d+ (?:UNIQUE )?(?:positive|negative|edge|regression|integration)? ?test cases/gi,
-      `Generate ${testsPerBatch} test cases (batch ${batchNum}/${totalBatches})`
-    );
-
-    // Append structured previous test summaries for deduplication (batch 2+)
-    if (batchNum > 1 && previousResults.testCases?.length > 0) {
-      const existingSummaries = previousResults.testCases.slice(-15).map(tc =>
-        `  - "${tc.title}" (${tc.category || 'unknown'}): ${(tc.description || '').substring(0, 100)}`
-      ).join('\n');
-      return batchMessage + `\n\n⚠️ AVOID DUPLICATING these previously generated tests:\n${existingSummaries}\n\nGenerate DIFFERENT scenarios not covered above.`;
+    if (batchNum === 1) {
+      // First batch: send full context (will be cached by prompt caching)
+      const originalMessage = await this.getUserMessage(ticketData, previousResults, appContext);
+      return originalMessage.replace(
+        /Generate \d+ (?:UNIQUE )?(?:positive|negative|edge|regression|integration)? ?test cases/gi,
+        `Generate ${testsPerBatch} test cases (batch ${batchNum}/${totalBatches})`
+      );
     }
 
-    return batchMessage;
+    // Batch 2+: condensed message — skip repeating full story/context, focus on delta
+    // Include both this agent's own tests AND cross-agent shared summaries for dedup
+    const ownTests = previousResults.testCases?.slice(-20).map(tc =>
+      `  - "${tc.title}" (${tc.category || 'unknown'}): ${(tc.description || '').substring(0, 100)}`
+    ).join('\n') || '';
+
+    const crossAgentTests = (previousResults._sharedTestSummaries || []).slice(-20).map(s =>
+      `  - ${s}`
+    ).join('\n') || '';
+
+    const existingSummaries = [ownTests, crossAgentTests].filter(Boolean).join('\n') || 'None yet';
+
+    const batchFocusAreas = {
+      2: 'alternative user flows and different user types',
+      3: 'error recovery, edge cases, and failure scenarios',
+      4: 'UI/UX validation and integration points'
+    };
+    const focus = batchFocusAreas[batchNum] || 'additional uncovered scenarios';
+
+    return `**CONTINUATION — Batch ${batchNum}/${totalBatches}**
+
+**Ticket:** ${ticketData.key}
+**Summary:** ${ticketData.summary}
+
+**BATCH FOCUS:** ${focus}
+
+**PREVIOUSLY GENERATED TESTS (DO NOT DUPLICATE):**
+${existingSummaries}
+
+Generate ${testsPerBatch} NEW test cases covering ${focus}.
+Each test MUST have a "storyReference" field and follow the specificity rules from the system prompt.
+Return as JSON array.`;
   }
 
   getSystemMessage(previousResults) {
@@ -736,6 +949,7 @@ class BaseAgent {
     const name = (field.name || field.id || '').toLowerCase();
     const validation = field.validation || [];
     const format = field._formatHints?.format;
+    const placeholder = field.placeholder || '';
 
     // Extract constraints
     let minLen = null, maxLen = null, min = null, max = null, pattern = null;
@@ -747,17 +961,40 @@ class BaseAgent {
       if (v.startsWith('pattern:')) pattern = v.split(':').slice(1).join(':');
     });
 
+    // Use <select> option values if available — most specific data possible
+    if (type === 'select' && field._options && field._options.length > 0) {
+      const opts = field._options;
+      const first = opts[0];
+      const last = opts[opts.length - 1];
+      return {
+        valid: `"${first.value}" (${first.label})`,
+        boundary: `"${first.value}" (first option), "${last.value}" (last option)`,
+        invalid: '"nonexistent_value" (not in dropdown options)',
+        options: opts.map(o => o.label).join(', ')
+      };
+    }
+
+    // Use placeholder as hint for realistic data
+    const placeholderHint = placeholder && placeholder.length > 3 ? ` (placeholder: "${placeholder}")` : '';
+
+    // Domain-contextual names based on field name patterns
+    const domainName = this._inferDomainValue(name);
+
     // Generate hints based on type + constraints
     if (type === 'email' || format === 'email' || name.includes('email')) {
+      const validEmail = domainName === 'healthcare' ? '"dr.sarah.chen@hospital.org"' :
+                         domainName === 'finance' ? '"analyst@tradecorp.com"' :
+                         domainName === 'ecommerce' ? '"customer@shopmart.com"' :
+                         '"jane.smith@company.com"';
       return {
-        valid: '"user@example.com"',
+        valid: validEmail,
         boundary: '"a@b.co" (min valid), "' + 'x'.repeat(Math.min(maxLen || 64, 64)) + '@test.com" (max length)',
         invalid: '"not-an-email", "" (empty), "@missing-local.com"'
       };
     }
     if (type === 'password' || name.includes('password')) {
       return {
-        valid: '"SecureP@ss123"',
+        valid: '"SecureP@ss2025!"',
         boundary: minLen ? `"${'a'.repeat(minLen)}" (min ${minLen} chars)` : '"Ab1@5678" (8 chars)',
         invalid: minLen ? `"${'a'.repeat(minLen - 1)}" (${minLen - 1} chars, below min)` : '"short"'
       };
@@ -787,22 +1024,34 @@ class BaseAgent {
     }
     if (type === 'date' || format === 'date') {
       return {
-        valid: '"2025-06-15"',
+        valid: '"2025-07-15"',
         boundary: '"2025-01-01" (start of year), "2025-12-31" (end of year)',
         invalid: '"2025-13-01" (invalid month), "not-a-date"'
       };
     }
-    // Default text field
+    // Default text field — use placeholder if available
     if (type === 'text' || type === 'textarea') {
       const mv = maxLen || 255;
       const mnv = minLen || 1;
+      const validValue = placeholder && placeholder.length > 3 ? `"${placeholder}"` : `"Sample ${name || 'text'} value"`;
       return {
-        valid: `"Sample ${name || 'text'} value"`,
+        valid: `${validValue}${placeholderHint}`,
         boundary: `"${'a'.repeat(Math.min(mnv, 5))}" (min ${mnv}), "${'x'.repeat(Math.min(mv, 50))}..." (max ${mv} chars)`,
         invalid: minLen ? `"" (empty), "${'a'.repeat(Math.max(mv + 1, 256))}" (exceeds max)` : '"" (empty if required)'
       };
     }
     return null;
+  }
+
+  /**
+   * Infer domain category from field name patterns for contextual test data.
+   */
+  _inferDomainValue(fieldName) {
+    const name = (fieldName || '').toLowerCase();
+    if (/patient|diagnosis|prescription|medical|health|clinic|doctor|nurse/.test(name)) return 'healthcare';
+    if (/price|payment|cart|order|shipping|product|sku|inventory/.test(name)) return 'ecommerce';
+    if (/account|balance|transaction|portfolio|trade|investment|loan|credit/.test(name)) return 'finance';
+    return 'general';
   }
 
   /**
@@ -873,10 +1122,26 @@ class BaseAgent {
       formatted += `🌐 Application: ${appContext.appUrl || 'Unknown'}\n`;
       formatted += `📄 Total Pages Crawled: ${appContext.pageCount || Object.keys(kg.pages || {}).length}\n\n`;
 
-      // Add forms from knowledge graph with FULL field constraints
+      // Helper: score relevance of an item to the ticket keywords
+      const ticketText = ((previousResults?.analysis || '') + ' ' + (appContext._ticketSummary || '')).toLowerCase();
+      const ticketKeywords = ticketText.split(/\s+/).filter(w => w.length > 3);
+      const scoreRelevance = (text) => {
+        if (!text || !ticketKeywords.length) return 0;
+        const lower = text.toLowerCase();
+        return ticketKeywords.reduce((score, kw) => score + (lower.includes(kw) ? 1 : 0), 0);
+      };
+
+      // Add forms from knowledge graph with FULL field constraints, sorted by relevance
       if (kg.forms && kg.forms.length > 0) {
+        // Sort forms by relevance to ticket
+        const rankedForms = [...kg.forms].sort((a, b) => {
+          const aText = `${a.name || ''} ${a.id || ''} ${a.url || ''} ${(a.inputs || []).map(i => i.name || i.label || '').join(' ')}`;
+          const bText = `${b.name || ''} ${b.id || ''} ${b.url || ''} ${(b.inputs || []).map(i => i.name || i.label || '').join(' ')}`;
+          return scoreRelevance(bText) - scoreRelevance(aText);
+        });
+
         formatted += '📝 FORMS FOUND (with field constraints for test data generation):\n';
-        kg.forms.slice(0, 5).forEach((form, index) => {
+        rankedForms.slice(0, 5).forEach((form, index) => {
           formatted += `\n${index + 1}. Form: "${form.name || form.id || 'unnamed'}" on ${form.url}\n`;
           formatted += `   • Action: ${form.action || 'N/A'} | Method: ${form.method}\n`;
           if (form.inputs && form.inputs.length > 0) {
@@ -912,16 +1177,34 @@ class BaseAgent {
         formatted += '\n';
       }
 
-      // Add APIs from knowledge graph
+      // Add APIs from knowledge graph, sorted by relevance
       if (kg.apis && kg.apis.length > 0) {
+        const rankedApis = [...kg.apis].sort((a, b) => {
+          return scoreRelevance(`${b.endpoint || ''} ${b.url || ''}`) - scoreRelevance(`${a.endpoint || ''} ${a.url || ''}`);
+        });
+
         formatted += '🔌 API ENDPOINTS DETECTED:\n';
-        kg.apis.slice(0, 10).forEach((api, index) => {
+        rankedApis.slice(0, 10).forEach((api, index) => {
           formatted += `\n${index + 1}. ${api.method} ${api.endpoint}\n`;
           formatted += `   • Page: ${api.url}\n`;
+          if (api.statusCode) formatted += `   • Status: ${api.statusCode}\n`;
+          if (api.payload) {
+            const keys = Object.keys(api.payload).slice(0, 6).join(', ');
+            formatted += `   • Request fields: ${keys}\n`;
+          }
         });
         if (kg.apis.length > 10) {
           formatted += `\n   ... and ${kg.apis.length - 10} more API endpoints\n`;
         }
+        formatted += '\n';
+      }
+
+      // Add API error summary if available
+      if (kg.apiErrors && kg.apiErrors.length > 0) {
+        formatted += '⚠️ API ERRORS CAPTURED:\n';
+        kg.apiErrors.slice(0, 5).forEach((err, i) => {
+          formatted += `   ${i + 1}. ${err.method || 'GET'} ${err.endpoint} → ${err.statusCode} (${err.category || 'error'})\n`;
+        });
         formatted += '\n';
       }
 
@@ -1007,6 +1290,168 @@ class BaseAgent {
 
     return formatted;
   }
+
+  /**
+   * Two-call CoT: first LLM call that reasons about requirements before generating tests.
+   * Returns structured JSON with testable requirements, key scenarios, risky areas, and
+   * a coverage priority statement. Subclasses that set useTwoCallCoT=true inherit this
+   * default implementation; EdgeCaseAgent keeps its own analyzeEdgeCasesWithLLM instead.
+   *
+   * Returns null if the call fails — callers must handle gracefully.
+   */
+  async buildReasoningContext(ticketData, previousResults, appContext, settings) {
+    const priorAnalysis = toStr(previousResults?.analysis || previousResults?.contextSummary || '').substring(0, 600);
+    const agentFocus = this.name.replace('Test', '').toLowerCase();
+
+    const systemMsg = `You are a senior QA analyst specialising in ${agentFocus} test case design. Given a Jira user story, identify ALL testable scenarios for ${agentFocus} testing. Return ONLY valid JSON — no markdown, no prose.`;
+
+    const userMsg = `**Ticket:** ${ticketData.key}
+**Summary:** ${ticketData.summary}
+**Description:**
+${(ticketData.description || '').substring(0, 2500)}
+
+${priorAnalysis ? `**Prior requirement analysis (summary):**\n${priorAnalysis}` : ''}
+
+Analyze and return this JSON structure:
+{
+  "testableRequirements": ["<exact quote or paraphrase from story>", ...],
+  "scenarios": [
+    { "name": "<scenario name>", "focus": "${agentFocus}", "priority": "P0|P1|P2", "rationale": "<why this scenario matters>" }
+  ],
+  "integrationPoints": ["<service/API/system to validate>", ...],
+  "riskyAreas": ["<area with high failure probability>", ...],
+  "coveragePriority": "<one paragraph on what to prioritise and why>"
+}`;
+
+    try {
+      const response = await this.callAI(systemMsg, userMsg, settings);
+      const parsed = parseRobustJSON(response);
+      // Validate we got a useful object back
+      if (parsed && (parsed.testableRequirements || parsed.scenarios)) {
+        return parsed;
+      }
+      return null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  /**
+   * Format CoT reasoning context for injection into user messages.
+   * Returns empty string when _cotReasoning is not available.
+   */
+  formatCotReasoning() {
+    const r = this._cotReasoning;
+    if (!r) return '';
+
+    const reqs = Array.isArray(r.testableRequirements) ? r.testableRequirements.slice(0, 8).map((req, i) => `  ${i + 1}. ${req}`).join('\n') : '';
+    const scenarios = Array.isArray(r.scenarios) ? r.scenarios.slice(0, 10).map(s => `  • [${s.priority || 'P1'}] ${s.name}${s.rationale ? ` — ${s.rationale}` : ''}`).join('\n') : '';
+    const risks = Array.isArray(r.riskyAreas) ? r.riskyAreas.slice(0, 5).join(', ') : '';
+
+    return `
+**PRE-ANALYSIS — REASONING PASS OUTPUT (use this to guide your test generation):**
+${reqs ? `Testable requirements identified:\n${reqs}` : ''}
+${scenarios ? `\nKey scenarios to cover:\n${scenarios}` : ''}
+${risks ? `\nRisky areas: ${risks}` : ''}
+${r.coveragePriority ? `\nCoverage priority: ${r.coveragePriority}` : ''}
+`;
+  }
+
+  /**
+   * Classify a Jira ticket by complexity.
+   * Scores 6 factors (description length, AC density, integration surface, user roles,
+   * story points, linked items) and returns { level, score, factors }.
+   * level: 'simple' | 'medium' | 'complex'
+   */
+  static calculateTicketComplexity(ticketData) {
+    let score = 0;
+    const factors = {};
+    const descText = (ticketData.description || '') + ' ' + (ticketData.summary || '');
+    const descLower = descText.toLowerCase();
+
+    // F1: Description word count
+    const descWords = descText.split(/\s+/).filter(Boolean).length;
+    factors.descWords = descWords;
+    if (descWords > 400) score += 3;
+    else if (descWords > 150) score += 2;
+    else score += 1;
+
+    // F2: Acceptance criteria density (Given/When/Then, AC:, must, shall)
+    const acHits = (descText.match(/acceptance criteria|given\s|when\s|then\s|AC:|must\s|shall\s/gi) || []).length;
+    factors.acMentions = acHits;
+    if (acHits > 10) score += 3;
+    else if (acHits > 4) score += 2;
+    else if (acHits > 0) score += 1;
+
+    // F3: Integration surface area
+    const integTerms = ['api', 'service', 'integration', 'webhook', 'endpoint', 'external',
+      'third-party', 'sync', 'event', 'kafka', 'queue', 'database', 'storage', 'auth', 'oauth'];
+    const integCount = integTerms.filter(t => descLower.includes(t)).length;
+    factors.integrationTerms = integCount;
+    if (integCount > 5) score += 3;
+    else if (integCount > 2) score += 2;
+    else if (integCount > 0) score += 1;
+
+    // F4: User role diversity
+    const roleTerms = ['admin', 'host', 'participant', 'moderator', 'owner',
+      'viewer', 'editor', 'manager', 'guest', 'operator', 'superadmin'];
+    const roleCount = roleTerms.filter(t => descLower.includes(t)).length;
+    factors.userRoles = roleCount;
+    if (roleCount > 3) score += 2;
+    else if (roleCount > 1) score += 1;
+
+    // F5: Story points
+    const sp = parseInt(ticketData.storyPoints || ticketData.story_points || 0, 10);
+    factors.storyPoints = sp;
+    if (sp >= 8) score += 2;
+    else if (sp >= 3) score += 1;
+
+    // F6: Linked issues / docs
+    const linked = (ticketData.linkedIssues || []).length + (ticketData.linkedPages || []).length;
+    factors.linkedItems = linked;
+    if (linked > 3) score += 2;
+    else if (linked > 0) score += 1;
+
+    const level = score >= 11 ? 'complex' : score >= 6 ? 'medium' : 'simple';
+    return { level, score, factors };
+  }
+
+  /**
+   * Return chain-of-thought reasoning guidance scaled to ticket complexity.
+   * Injected into user messages so the model reasons before generating output.
+   */
+  static getCoTGuidance(complexity) {
+    const level = typeof complexity === 'string' ? complexity : (complexity?.level || 'medium');
+
+    if (level === 'simple') {
+      return `
+**REASONING CHECKLIST (complete before generating tests):**
+1. Identify the 2-3 core requirements from the story
+2. For each: define the success path and the most likely failure path
+3. Confirm every generated test maps directly to one of these requirements`;
+    }
+
+    if (level === 'complex') {
+      return `
+**REASONING PROCESS — MANDATORY FOR COMPLEX TICKETS (complete each step before generating):**
+1. **Requirement extraction:** List every explicit AND implicit testable requirement (look for "must", "shall", bullets, Given/When/Then)
+2. **User journey mapping:** Identify all user roles/personas and their distinct end-to-end journeys through this feature
+3. **Integration dependency tree:** List every external service, API, or system involved and enumerate what can independently fail for each
+4. **State machine analysis:** Enumerate all states the primary entity can be in and which state transitions are valid vs. invalid
+5. **Boundary identification:** Find all numeric limits, time constraints, permission tiers, and data size ceilings
+6. **Concurrency risks:** Identify scenarios where two actors or background processes could collide (double-submit, race conditions, stale locks)
+7. **Coverage gap check:** Before submitting, verify every finding from steps 1-6 has at least one concrete test case`;
+    }
+
+    // medium
+    return `
+**REASONING CHECKLIST (complete before generating tests):**
+1. **Requirements scan:** List every "should/must/will" statement and acceptance criterion as a testable requirement
+2. **Persona analysis:** Identify all user roles and their specific allowed vs. blocked actions
+3. **Integration check:** List all APIs, services, or external systems this feature touches and what can fail
+4. **For each requirement:** Consider happy path → failure path → boundary condition
+5. **Coverage check:** Confirm every requirement from step 1 has at least one test before submitting`;
+  }
 }
 
 // 0. Context Analysis Agent - NEW! Understands crawled app data
@@ -1041,7 +1486,15 @@ Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and cre
    - How does the user navigate through the feature?
    - What validation rules are in place?
 
-4. **SECURITY & PERFORMANCE CONSIDERATIONS** 🔒⚡
+4. **API CONTRACTS** 🔌
+   - What API endpoints does this feature call? List them with methods (GET/POST/PUT/DELETE)
+   - What are the request payloads (key fields, required vs optional)?
+   - What are the response shapes (success and error)?
+   - What HTTP status codes were observed (200, 400, 401, 404, 500)?
+   - What pagination patterns exist (cursor, offset, page-number)?
+   - What error responses were captured and what do they mean?
+
+5. **SECURITY & PERFORMANCE CONSIDERATIONS** 🔒⚡
    - What authentication/authorization is required?
    - What sensitive data is handled (PII, passwords, tokens)?
    - What are the performance-critical operations?
@@ -1050,7 +1503,7 @@ Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and cre
    - What error states and edge cases are handled?
 
 **CRITICAL**:
-- Keep it concise (300-600 words) but comprehensive
+- Keep it concise (400-800 words) but comprehensive
 - Reference ACTUAL form fields, button names, and API endpoints from the data
 - Be specific and technical - use real field names and endpoints
 - Identify security risks and performance concerns explicitly
@@ -1098,19 +1551,46 @@ Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and cre
       contextStr += '\n';
     }
 
-    // API endpoints with payload information
+    // API endpoints with payload information, schemas, and errors
     if (apiCount > 0) {
       contextStr += `🔌 **API ENDPOINTS DETECTED** (${apiCount} endpoints):\n`;
       knowledgeGraph.apis.slice(0, 15).forEach((api, i) => {
         contextStr += `\n${i + 1}. ${api.method} ${api.endpoint}\n`;
         contextStr += `   Called from: ${api.url}\n`;
+        if (api.statusCode) {
+          contextStr += `   Status: ${api.statusCode}\n`;
+        }
         if (api.payload) {
-          const payloadKeys = Object.keys(api.payload).slice(0, 5).join(', ');
-          contextStr += `   Payload fields: ${payloadKeys}\n`;
+          const payloadKeys = Object.keys(api.payload).slice(0, 8).join(', ');
+          contextStr += `   Request fields: ${payloadKeys}\n`;
         }
         if (api.response) {
-          contextStr += `   Response: ${JSON.stringify(api.response).substring(0, 100)}...\n`;
+          contextStr += `   Response shape: ${JSON.stringify(api.response).substring(0, 150)}\n`;
         }
+      });
+      contextStr += '\n';
+    }
+
+    // API schemas (inferred from captured requests)
+    if (knowledgeGraph.apiSchemas && knowledgeGraph.apiSchemas.length > 0) {
+      contextStr += `📋 **API SCHEMAS (inferred from captured traffic):**\n`;
+      knowledgeGraph.apiSchemas.slice(0, 8).forEach((schema, i) => {
+        contextStr += `\n${i + 1}. ${schema.method || 'GET'} ${schema.endpoint}\n`;
+        if (schema.requestSchema) {
+          contextStr += `   Request: ${JSON.stringify(schema.requestSchema).substring(0, 200)}\n`;
+        }
+        if (schema.responseSchema) {
+          contextStr += `   Response: ${JSON.stringify(schema.responseSchema).substring(0, 200)}\n`;
+        }
+      });
+      contextStr += '\n';
+    }
+
+    // API errors captured during crawl
+    if (knowledgeGraph.apiErrors && knowledgeGraph.apiErrors.length > 0) {
+      contextStr += `⚠️ **API ERRORS CAPTURED** (${knowledgeGraph.apiErrors.length} errors):\n`;
+      knowledgeGraph.apiErrors.slice(0, 10).forEach((err, i) => {
+        contextStr += `   ${i + 1}. ${err.method || 'GET'} ${err.endpoint} → ${err.statusCode} ${err.category || ''}\n`;
       });
       contextStr += '\n';
     }
@@ -1118,13 +1598,15 @@ Your task: Analyze the crawled knowledge graph data (forms, APIs, pages) and cre
     contextStr += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     contextStr += `**YOUR TASK:**\n\n`;
     contextStr += `Analyze the above application data in the context of the Jira ticket.\n`;
-    contextStr += `Create a feature summary with these 3 sections:\n\n`;
+    contextStr += `Create a feature summary with these sections:\n\n`;
     contextStr += `**1. MAIN PURPOSE** 🎯\n`;
     contextStr += `Explain what this feature does and why it exists.\n\n`;
     contextStr += `**2. HOW IT WORKS** ⚙️\n`;
     contextStr += `Describe the user workflow, which forms/fields are used, which APIs are called, and in what sequence.\n\n`;
     contextStr += `**3. UI COMPONENTS** 🎨\n`;
     contextStr += `List the actual forms, fields, buttons, and pages involved.\n\n`;
+    contextStr += `**4. API CONTRACTS** 🔌\n`;
+    contextStr += `Summarize the key API endpoints: methods, request/response shapes, observed status codes, and error patterns.\n\n`;
     contextStr += `**IMPORTANT:**\n`;
     contextStr += `- Reference ACTUAL field names, endpoints, and form IDs from the data above\n`;
     contextStr += `- Be specific and technical\n`;
@@ -1178,6 +1660,14 @@ Provide a well-structured analysis in markdown format with clear sections.`;
       ? `\n**APPLICATION CONTEXT (From Crawled Data):**\n${previousResults.contextSummary}\n\n**TASK: Cross-reference the requirements below with the actual implementation above.**\n\n`
       : '';
 
+    // Complexity-aware depth instructions
+    const complexityLevel = this._complexity?.level || 'medium';
+    const depthInstruction = complexityLevel === 'complex'
+      ? `\n**COMPLEXITY: HIGH** — This is a complex, multi-integration ticket. Be especially thorough:\n- Extract ALL implicit requirements (not just stated ones)\n- Map every integration dependency\n- Identify conflicting requirements\n- Surface ambiguities that testers should clarify before test execution`
+      : complexityLevel === 'simple'
+        ? `\n**COMPLEXITY: LOW** — Focus on the 2-3 core requirements and their direct success/failure criteria.`
+        : `\n**COMPLEXITY: MEDIUM** — Ensure complete AC coverage and identify integration touchpoints.`;
+
     return `Analyze this Jira ticket comprehensively:
 ${contextSection}
 **Ticket:** ${ticketData.key}
@@ -1189,6 +1679,7 @@ ${ticketData.description || 'No description provided'}
 **Comments:** ${ticketData.comments?.length || 0} comments available
 **Attachments:** ${ticketData.attachments?.length || 0} files attached
 **Linked Pages:** ${ticketData.linkedPages?.length || 0} pages linked
+${depthInstruction}
 
 Provide a comprehensive requirement analysis.`;
   }
@@ -1198,6 +1689,7 @@ Provide a comprehensive requirement analysis.`;
 class PositiveTestAgent extends BaseAgent {
   constructor() {
     super('PositiveTest', 'Generates user story-aligned functional and UI test scenarios', true);
+    this.useTwoCallCoT = true; // First call reasons; second call generates
   }
 
   getSystemMessage(previousResults) {
@@ -1331,7 +1823,36 @@ ${visualAnalysisSection}
 ✅ storyReference: "session is restored after unexpected logout" (recovery scenario)
 ✅ storyReference: "user grants permission after initially declining the prompt"
 
-Generate test cases in this EXACT JSON format:
+**FEW-SHOT EXAMPLE:**
+
+Given user story: "As a host, I want to schedule a meeting so that I can invite participants via email."
+With app context showing a form with fields: title (text, required, maxLength:100), date (date, required), email (email, required).
+
+Example output:
+{
+  "testCases": [
+    {
+      "id": "TC-POS-001",
+      "title": "Schedule meeting with valid details and send email invite",
+      "category": "Positive",
+      "priority": "P0",
+      "storyReference": "As a host, I want to schedule a meeting so that I can invite participants via email",
+      "description": "Verify that a host can create a new meeting by filling in the title, date, and participant email, and that an email invitation is sent upon submission.",
+      "preconditions": "User 'host@company.com' is logged in with 'Host' role on the Meetings page. No meetings currently scheduled.",
+      "steps": [
+        "Click the 'Schedule Meeting' button on the Meetings page",
+        "Enter 'Q4 Planning Review' in the 'Meeting Title' field",
+        "Select '2025-07-15' in the 'Date' picker",
+        "Enter 'jane.smith@company.com' in the 'Participant Email' field",
+        "Click the 'Send Invite' button"
+      ],
+      "expected_result": "Success toast 'Meeting scheduled successfully' appears. Meeting 'Q4 Planning Review' appears in the Meetings list with date '2025-07-15'. Email invitation is sent to jane.smith@company.com.",
+      "test_data": "title='Q4 Planning Review', date='2025-07-15', email='jane.smith@company.com'"
+    }
+  ]
+}
+
+Generate test cases in this EXACT JSON format (following the specificity level shown in the example above):
 {
   "testCases": [
     {
@@ -1395,7 +1916,7 @@ ${ticketData.description || 'No description provided'}
 **🎯 EXTRACTED SCENARIOS TO TEST (You MUST cover these):**
 **═══════════════════════════════════════════════════════════════**
 ${userStoryScenarios}
-
+${this.formatCotReasoning()}
 ${visualContextNote}
 ${appContextSection}
 
@@ -1428,6 +1949,8 @@ ${existingTests}
 - Performance tests (unless mentioned in story)
 - Tests that don't trace back to a specific requirement in the user story
 - Tests without a clear "storyReference"
+
+${BaseAgent.getCoTGuidance(this._complexity)}
 
 Return as JSON array.`;
   }
@@ -1576,6 +2099,7 @@ Return as JSON array.`;
 class NegativeTestAgent extends BaseAgent {
   constructor() {
     super('NegativeTest', 'Generates story-aligned error handling and failure recovery scenarios', true);
+    this.useTwoCallCoT = true; // First call reasons; second call generates
   }
 
   getSystemMessage(previousResults) {
@@ -1650,11 +2174,32 @@ ${visualSection}
   "test_data": "[Concrete invalid values with reason: email='not-an-email' (missing @)]"
 }
 
-**✅ EXAMPLES OF VALID storyReference:**
-✅ "upload fails when file exceeds the maximum size limit"
-✅ "user is denied access when permissions are insufficient"
-✅ "service returns error due to third-party API timeout"
-✅ "user initially declines the required terms of service"
+**FEW-SHOT EXAMPLE:**
+
+Given user story: "When scheduling fails due to a calendar conflict, the system should show an error and suggest the next available slot."
+
+Example output:
+{
+  "testCases": [
+    {
+      "id": "TC-NEG-001",
+      "title": "Schedule meeting on an already-booked time slot shows conflict error",
+      "category": "Negative",
+      "priority": "P0",
+      "storyReference": "When scheduling fails due to a calendar conflict, the system should show an error and suggest the next available slot",
+      "description": "Verify that when a host attempts to schedule a meeting on '2025-07-15 10:00 AM' which is already booked, the system displays a conflict error with the next available time suggestion.",
+      "preconditions": "User 'host@company.com' is logged in. Meeting 'Team Standup' already exists on 2025-07-15 at 10:00 AM.",
+      "steps": [
+        "Click 'Schedule Meeting' on the Meetings page",
+        "Enter 'Design Review' in the 'Meeting Title' field",
+        "Select '2025-07-15' in the 'Date' picker and '10:00 AM' in the 'Time' picker",
+        "Click the 'Send Invite' button"
+      ],
+      "expected_result": "Error banner 'Time slot conflict: 10:00 AM is already booked for Team Standup' appears. System suggests 'Next available: 11:00 AM' with a 'Use suggested time' button.",
+      "test_data": "date='2025-07-15', time='10:00 AM' (conflicts with existing 'Team Standup')"
+    }
+  ]
+}
 
 Generate test cases in this EXACT JSON format:
 {
@@ -1693,7 +2238,7 @@ ${ticketData.description || 'No description provided'}
 **🚨 EXTRACTED FAILURE/ERROR SCENARIOS FROM STORY:**
 **═══════════════════════════════════════════════════════════════**
 ${failureScenarios}
-
+${this.formatCotReasoning()}
 ${visualNote}
 ${appContextSection}
 
@@ -1718,6 +2263,8 @@ ${existingTests}
 - Generic empty field validation
 - Generic timeout/performance tests
 - Any test that doesn't trace to the user story
+
+${BaseAgent.getCoTGuidance(this._complexity)}
 
 Return as JSON array.`;
   }
@@ -1849,11 +2396,32 @@ ${visualSection}
   "test_data": "[Exact boundary values with reasoning: name='x'.repeat(51) because maxLength=50]"
 }
 
-**✅ EXAMPLES OF VALID EDGE CASES:**
-✅ storyReference: "bulk export from dashboard" → Edge: Export triggered with zero records selected
-✅ storyReference: "multi-user collaboration" → Edge: All collaborators disconnect simultaneously
-✅ storyReference: "file upload processing" → Edge: Upload completes just as session expires
-✅ storyReference: "user permission grant" → Edge: Permission revoked during an active operation
+**FEW-SHOT EXAMPLE:**
+
+Given user story: "Host can invite up to 10 participants to a meeting" with app context showing participants field (min:1, max:10).
+
+Example output:
+{
+  "testCases": [
+    {
+      "id": "TC-EDG-001",
+      "title": "Invite exactly 10 participants (upper boundary)",
+      "category": "Edge",
+      "priority": "P1",
+      "storyReference": "Host can invite up to 10 participants to a meeting",
+      "description": "Verify that the system correctly handles the maximum boundary of 10 participants. The host should be able to add exactly 10 email addresses and the 'Add Participant' button should become disabled after the 10th entry.",
+      "preconditions": "User 'host@company.com' is logged in on the Schedule Meeting page. No participants added yet.",
+      "steps": [
+        "Enter 'p1@test.com' through 'p10@test.com' in the 'Participant Email' field, clicking 'Add' after each",
+        "Verify the participant count shows '10/10'",
+        "Attempt to enter 'p11@test.com' in the 'Participant Email' field",
+        "Click 'Send Invite'"
+      ],
+      "expected_result": "'Add Participant' button is disabled after 10th entry. Tooltip shows 'Maximum 10 participants reached'. Meeting is created successfully with all 10 participants.",
+      "test_data": "participants=['p1@test.com'...'p10@test.com'] (exactly at max:10 boundary), p11@test.com (exceeds max)"
+    }
+  ]
+}
 
 Return ONLY valid JSON, no markdown formatting.`;
   }
@@ -1912,6 +2480,8 @@ ${existingTests}
 - Generic character limit tests
 - Generic file size tests
 - Edge cases not relevant to this specific feature
+
+${BaseAgent.getCoTGuidance(this._complexity)}
 
 Return as JSON array.`;
   }
@@ -2459,19 +3029,26 @@ Return ONLY valid JSON array, no markdown.`;
   getRefinementUserMessage(tests, ticketData, previousResults, appContext, passNumber = 1) {
     const contextSection = this.formatAppContext(appContext || previousResults?.appContext, previousResults);
 
-    const testsJson = tests.map(tc => ({
-      id: tc.id,
-      title: tc.title,
-      category: tc.category,
-      priority: tc.priority,
-      storyReference: tc.storyReference,
-      description: tc.description,
-      preconditions: tc.preconditions,
-      steps: tc.steps,
-      expected_result: tc.expected_result,
-      test_data: tc.test_data,
-      _specificityScore: tc._specificityScore || 0
-    }));
+    const testsJson = tests.map(tc => {
+      const entry = {
+        id: tc.id,
+        title: tc.title,
+        category: tc.category,
+        priority: tc.priority,
+        storyReference: tc.storyReference,
+        description: tc.description,
+        preconditions: tc.preconditions,
+        steps: tc.steps,
+        expected_result: tc.expected_result,
+        test_data: tc.test_data,
+        _specificityScore: tc._specificityScore || 0
+      };
+      // Include review feedback for targeted rewrites
+      if (tc._reviewFeedback) {
+        entry._reviewFeedback = tc._reviewFeedback;
+      }
+      return entry;
+    });
 
     const passContext = passNumber > 1
       ? `\n**⚠️ REFINEMENT PASS ${passNumber}:** These tests were refined in pass ${passNumber - 1} but still scored below the specificity threshold (70/100). The _specificityScore shows their current score. Focus on the lowest-scoring tests first.\n`
@@ -2591,9 +3168,17 @@ Return your analysis in this EXACT JSON format:
       "id": "TC-XXX-001",
       "reason": "Generic test not relevant to this story"
     }
+  ],
+  "testsToRewrite": [
+    {
+      "id": "TC-XXX-002",
+      "issues": "Steps are vague, expected result says 'works correctly', no concrete test data",
+      "improvementInstructions": "Replace step 2 with exact field name from the app context. Add concrete email and password values. Expected result should specify the exact success message text."
+    }
   ]
 }
 
+**testsToRewrite:** For tests that have a valid concept but poor specificity — provide the test ID and specific rewrite instructions.
 Be specific about story alignment. Flag generic tests that don't belong.
 Return ONLY valid JSON.`;
   }
@@ -3155,6 +3740,148 @@ Return as JSON array with "testCases" key.`;
     } catch (error) {
       console.error('Failed to parse AI feature test cases:', error);
       console.error('Response preview:', response.substring(0, 500));
+      return [];
+    }
+  }
+}
+
+// 9. Accessibility Test Agent
+class AccessibilityTestAgent extends BaseAgent {
+  constructor() {
+    super('AccessibilityTest', 'Generates WCAG-aligned accessibility test cases from extracted ARIA data', false);
+    this.hasA11yData = false;
+  }
+
+  isEnabled(settings) {
+    // Only run if explicitly enabled AND a11y data is available
+    return settings.enableAccessibilityTestAgent === true && this.hasA11yData;
+  }
+
+  getSystemMessage(previousResults) {
+    return `You are a SENIOR ACCESSIBILITY QA ENGINEER generating WCAG 2.1 AA-compliant test cases.
+
+**YOUR PRIMARY MISSION:**
+Generate accessibility test cases using the ACTUAL ARIA attributes, roles, and keyboard interactions extracted from the application.
+
+**WCAG TEST CATEGORIES:**
+
+1. **Keyboard Navigation (WCAG 2.1.1, 2.1.2):**
+   - Can every interactive element be reached via Tab key?
+   - Can every action be triggered via Enter/Space?
+   - Is there a visible focus indicator on each element?
+   - Can the user escape modal dialogs with Escape key?
+   - Are skip-navigation links present?
+
+2. **Screen Reader Labels (WCAG 1.1.1, 4.1.2):**
+   - Does every input have an associated label (via <label>, aria-label, or aria-labelledby)?
+   - Do images have meaningful alt text?
+   - Do buttons have accessible names (text content or aria-label)?
+   - Are form error messages associated via aria-describedby?
+
+3. **Focus Management (WCAG 2.4.3, 2.4.7):**
+   - Does focus move to modals when opened and return when closed?
+   - Is tabindex used correctly (avoid positive values)?
+   - Are dynamically added elements announced to screen readers (aria-live)?
+
+4. **ARIA State Correctness (WCAG 4.1.2):**
+   - Do expandable sections correctly toggle aria-expanded?
+   - Do checkboxes/toggles update aria-checked?
+   - Do disabled elements have aria-disabled="true"?
+   - Are required fields marked with aria-required="true"?
+
+5. **Color & Contrast (WCAG 1.4.3, 1.4.11):**
+   - Are error states conveyed by more than just color (icon, text, border)?
+   - Is there sufficient contrast between text and background?
+
+**REQUIRED TEST CASE FORMAT:**
+{
+  "id": "TC-A11Y-001",
+  "title": "[A11y category] - [specific element/interaction]",
+  "category": "Accessibility",
+  "priority": "P1",
+  "storyReference": "[WCAG criterion] + [element from app context]",
+  "description": "Verify that [specific element] meets [WCAG criterion] by [specific check].",
+  "preconditions": "[Screen reader active / keyboard-only navigation / specific page state]",
+  "steps": ["Tab to [exact element name]", "Verify [exact ARIA attribute/state]", "Activate with Enter/Space", "Check screen reader announcement"],
+  "expected_result": "[Exact accessible behavior: label announced, focus visible, state updated]",
+  "test_data": "Screen reader: NVDA/VoiceOver. Browser: Chrome. Keyboard only."
+}
+
+Return ONLY valid JSON, no markdown formatting.`;
+  }
+
+  getUserMessage(ticketData, previousResults, appContext = null) {
+    const appContextSection = this.formatAppContext(appContext || previousResults?.appContext, previousResults);
+
+    // Extract a11y-specific data from knowledge graph
+    let a11yContext = '';
+    const kg = appContext?.knowledgeGraph || previousResults?.appContext?.knowledgeGraph;
+    if (kg && kg.pages) {
+      const pages = Object.values(kg.pages);
+      const allFeatures = pages.flatMap(p => p.features || []);
+
+      // Collect forms with a11y data
+      const formsWithA11y = allFeatures.filter(f => f.type === 'form');
+      if (formsWithA11y.length > 0) {
+        a11yContext += '\n**FORMS WITH ACCESSIBILITY DATA:**\n';
+        formsWithA11y.slice(0, 5).forEach((form, i) => {
+          a11yContext += `${i + 1}. Form: ${form.name || form.id || 'unnamed'}\n`;
+          if (form.fields) {
+            form.fields.slice(0, 10).forEach(field => {
+              const a11y = field._accessibility || {};
+              a11yContext += `   - "${field.name}": label=${field.label || 'MISSING'}, aria-label=${a11y.ariaLabel || 'none'}, aria-required=${a11y.ariaRequired || 'not set'}, aria-describedby=${a11y.ariaDescribedby || 'none'}\n`;
+            });
+          }
+        });
+      }
+
+      // Collect buttons
+      const buttons = allFeatures.filter(f => f.type === 'button');
+      if (buttons.length > 0) {
+        a11yContext += '\n**BUTTONS:**\n';
+        buttons.slice(0, 15).forEach((btn, i) => {
+          a11yContext += `   ${i + 1}. "${btn.text || 'unnamed'}" — role=${btn.role || 'button'}, disabled=${btn.disabled || false}\n`;
+        });
+      }
+
+      // Collect modals/dialogs
+      const modals = allFeatures.filter(f => f.type === 'modal');
+      if (modals.length > 0) {
+        a11yContext += '\n**MODALS/DIALOGS:**\n';
+        modals.slice(0, 5).forEach((modal, i) => {
+          a11yContext += `   ${i + 1}. "${modal.title || 'unnamed'}" — has close button: ${modal.hasCloseButton || false}\n`;
+        });
+      }
+    }
+
+    const testCount = Math.max(5, Math.floor((this.settings?.testCount || 30) * 0.1));
+
+    return `**USER STORY:**
+Ticket: ${ticketData.key}
+Summary: ${ticketData.summary}
+Description: ${(ticketData.description || '').substring(0, 1000)}
+
+${appContextSection}
+
+**ACCESSIBILITY DATA EXTRACTED FROM APP:**
+${a11yContext || 'No specific a11y data extracted. Generate tests based on standard WCAG checks for the UI components described above.'}
+
+**YOUR TASK:** Generate ${testCount} accessibility test cases covering:
+- Keyboard navigation for all interactive elements
+- Screen reader label completeness
+- Focus management for modals and dynamic content
+- ARIA state correctness
+- Error state accessibility (not color-only)
+
+Return as JSON: { "testCases": [...] }`;
+  }
+
+  parseResponse(response) {
+    try {
+      const parsed = parseRobustJSON(response);
+      return parsed.testCases || (Array.isArray(parsed) ? parsed : []);
+    } catch (error) {
+      console.error('Failed to parse accessibility test cases:', error);
       return [];
     }
   }

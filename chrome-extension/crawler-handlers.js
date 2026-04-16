@@ -51,6 +51,12 @@ async function handleStartCrawl(data) {
       maxSamplesPerPattern: CONFIG.get('crawler.duplicateDetection.maxSamplesPerPattern')
     });
 
+    // Apply authenticated crawling setting if passed from popup
+    if (data.useCurrentSession) {
+      CONFIG.set('crawler.authentication.useCurrentSession', true);
+      console.log('🔐 Authenticated crawling enabled: using current browser session');
+    }
+
     // Get crawler settings from config.json
     const config = {
       startUrl: data.startUrl || tab.url,

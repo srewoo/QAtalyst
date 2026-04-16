@@ -493,32 +493,48 @@ class WebAppCrawler {
     // Discover new links (traditional)
     const links = await this.discoverLinks(tabId);
 
-    // SPA Route Discovery - Click-based discovery for SPAs
+    // SPA Route Discovery
     const spaEnabled = CONFIG.get('crawler.spaDiscovery.enabled', true);
+    const passiveEnabled = CONFIG.get('crawler.spaDiscovery.passiveEnabled', true);
+    const clickEnabled = CONFIG.get('crawler.spaDiscovery.clickEnabled', false);
     let spaDiscoveries = [];
     if (spaEnabled) {
-      console.log('🔍 Starting SPA route discovery...');
-
       // CRITICAL FIX: Validate tab before SPA discovery
       const tabValidBeforeSPA = await this.isTabValid(tabId);
       if (!tabValidBeforeSPA) {
         console.warn(`⚠️ Tab ${tabId} closed before SPA discovery, skipping`);
       } else {
         try {
-          spaDiscoveries = await this.spaDiscoverer.discoverRoutes(tabId);
+          // Phase 1: Passive discovery (zero overhead — intercepts History API calls)
+          if (passiveEnabled) {
+            const passiveRoutes = await this.spaDiscoverer.discoverRoutesPassive(tabId, 2000);
+            if (passiveRoutes.length > 0) {
+              spaDiscoveries.push(...passiveRoutes);
+              const newUrls = passiveRoutes.map(r => r.url).filter(Boolean);
+              links.push(...newUrls);
+              console.log(`🔍 Passive SPA: discovered ${newUrls.length} routes via History API`);
+            }
+          }
 
-          // Extract unique routes from discoveries
-          const spaRoutes = this.spaDiscoverer.extractRoutes(spaDiscoveries);
-          console.log(`✅ SPA discovery found ${spaRoutes.length} new routes`);
+          // Phase 2: Click-based discovery (optional — more thorough but uses memory)
+          if (clickEnabled) {
+            console.log('🔍 Starting click-based SPA route discovery...');
+            const clickDiscoveries = await this.spaDiscoverer.discoverRoutes(tabId);
+            spaDiscoveries.push(...clickDiscoveries);
 
-          // Add SPA routes to links for crawling
-          links.push(...spaRoutes);
+            // Extract unique routes from click discoveries
+            const spaRoutes = this.spaDiscoverer.extractRoutes(clickDiscoveries);
+            console.log(`✅ Click SPA discovery found ${spaRoutes.length} new routes`);
+            links.push(...spaRoutes);
+          }
+
+          if (spaDiscoveries.length > 0) {
+            console.log(`✅ SPA discovery total: ${spaDiscoveries.length} routes found`);
+          }
 
           // Re-verify content script after SPA discovery (clicks may have disrupted it)
-          // Remove from set to force re-injection
           this.scriptInjectedTabs.delete(tabId);
 
-          // Validate tab again before re-injection
           const tabValidAfterSPA = await this.isTabValid(tabId);
           if (tabValidAfterSPA) {
             await this.verifyContentScript(tabId);
@@ -696,8 +712,9 @@ class WebAppCrawler {
    * P1.4: Uses adaptive timeout based on detected site type
    */
   async navigate(url, tabId) {
-    // P1.5: Check for authentication redirect
-    if (this.isAuthUrl(url)) {
+    // P1.5: Check for authentication redirect (skip if using current session)
+    const useCurrentSession = CONFIG.get('crawler.authentication.useCurrentSession', false);
+    if (!useCurrentSession && this.isAuthUrl(url)) {
       console.warn(`⚠️ Skipping authentication URL: ${url}`);
       throw new Error(`Authentication required: ${url}`);
     }
@@ -2232,14 +2249,59 @@ class WebAppCrawler {
       textSample = fullText;
     }
 
+    // Structural fingerprint: summarize DOM structure from extracted features
+    // This catches pages with identical layouts but different text content
+    const structuralFingerprint = this.buildStructuralFingerprint(pageData);
+
     return {
       title: pageData.title || '',
       featureCount: pageData.features?.length || 0,
       featureTypes: (pageData.features || []).map(f => f.type).sort().join(','),
       apiCount: pageData.apis?.length || 0,
       textLength: fullText.length,
-      textSample: textSample
+      textSample: textSample,
+      structuralFingerprint: structuralFingerprint
     };
+  }
+
+  /**
+   * Build a structural fingerprint from page features.
+   * Captures the "shape" of the page: what types of UI elements exist and how many.
+   * Two pages with identical fingerprints have the same DOM structure.
+   */
+  buildStructuralFingerprint(pageData) {
+    const parts = [];
+    const features = pageData.features || [];
+
+    // Count feature types
+    const typeCounts = {};
+    features.forEach(f => {
+      const type = f.type || 'unknown';
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    });
+
+    // Sort for consistent fingerprinting
+    Object.keys(typeCounts).sort().forEach(type => {
+      parts.push(`${type}:${typeCounts[type]}`);
+    });
+
+    // Include form field structure (field names + types)
+    const forms = features.filter(f => f.type === 'form');
+    forms.forEach((form, i) => {
+      if (form.fields) {
+        const fieldSig = form.fields.map(f => `${f.type || 'text'}`).sort().join(',');
+        parts.push(`form${i}[${fieldSig}]`);
+      }
+    });
+
+    // Include button count and intents
+    const buttons = features.filter(f => f.type === 'button');
+    if (buttons.length > 0) {
+      const intents = buttons.map(b => b.intent || 'unknown').sort().join(',');
+      parts.push(`btns[${intents}]`);
+    }
+
+    return parts.join('|');
   }
 
   /**
@@ -2249,39 +2311,47 @@ class WebAppCrawler {
     let matches = 0;
     let total = 0;
 
-    // Title similarity (20% weight)
+    // Title similarity (15% weight)
     if (CONFIG.get('crawler.duplicateDetection.compareTitle', true)) {
-      total += 20;
-      if (sig1.title === sig2.title && sig1.title.length > 0) matches += 20;
+      total += 15;
+      if (sig1.title === sig2.title && sig1.title.length > 0) matches += 15;
     }
 
-    // Feature similarity (30% weight)
-    if (CONFIG.get('crawler.duplicateDetection.compareFeatures', true)) {
-      total += 30;
-      if (sig1.featureTypes === sig2.featureTypes && sig1.featureTypes.length > 0) {
-        matches += 30;
-      } else if (sig1.featureCount === sig2.featureCount) {
-        matches += 15;
+    // Structural fingerprint similarity (20% weight) — catches pages with identical layouts
+    if (sig1.structuralFingerprint && sig2.structuralFingerprint) {
+      total += 20;
+      if (sig1.structuralFingerprint === sig2.structuralFingerprint) {
+        matches += 20; // Identical DOM structure
       }
     }
 
-    // Text content similarity (50% weight) - CRITICAL for pages with same structure but different content
+    // Feature similarity (20% weight)
+    if (CONFIG.get('crawler.duplicateDetection.compareFeatures', true)) {
+      total += 20;
+      if (sig1.featureTypes === sig2.featureTypes && sig1.featureTypes.length > 0) {
+        matches += 20;
+      } else if (sig1.featureCount === sig2.featureCount) {
+        matches += 10;
+      }
+    }
+
+    // Text content similarity (45% weight) - CRITICAL for pages with same structure but different content
     if (CONFIG.get('crawler.duplicateDetection.compareText', true)) {
-      total += 50;
+      total += 45;
 
       // If both pages have meaningful text content (>100 chars)
       if (sig1.textLength > 100 && sig2.textLength > 100) {
         // Compare text samples
         if (sig1.textSample === sig2.textSample) {
-          matches += 50; // Identical text samples = very likely duplicate
+          matches += 45; // Identical text samples = very likely duplicate
         } else {
           // Text samples differ - calculate character-level similarity
           const sampleSimilarity = this.calculateTextSimilarity(sig1.textSample, sig2.textSample);
-          matches += sampleSimilarity * 50;
+          matches += sampleSimilarity * 45;
         }
       } else if (sig1.textLength === 0 && sig2.textLength === 0) {
         // Both have no text - structure comparison is sufficient
-        matches += 25;
+        matches += 22;
       } else {
         // One has text, one doesn't - definitely different
         matches += 0;

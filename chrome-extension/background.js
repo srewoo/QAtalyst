@@ -1087,7 +1087,7 @@ function isBedrockOpenAIModel(modelId) {
   return modelId && modelId.startsWith('openai.');
 }
 
-async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
+async function callBedrock(systemMessage, userContent, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
@@ -1101,16 +1101,22 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
 
     if (isOpenAI) {
       // OpenAI models on Bedrock use OpenAI-compatible chat completion format
-      const openaiMessages = [{ role: 'user', content: [] }];
-      for (const part of contentParts) {
+      const openaiUserContent = [];
+      for (const part of userContent) {
         if (typeof part === 'string') {
-          openaiMessages[0].content.push({ type: 'text', text: part });
+          openaiUserContent.push({ type: 'text', text: part });
         } else if (part.type === 'text') {
-          openaiMessages[0].content.push({ type: 'text', text: part.text });
+          openaiUserContent.push({ type: 'text', text: part.text });
         } else if (part.type === 'image_url') {
-          openaiMessages[0].content.push({ type: 'image_url', image_url: { url: part.image_url.url } });
+          openaiUserContent.push({ type: 'image_url', image_url: { url: part.image_url.url } });
         }
       }
+
+      const openaiMessages = [];
+      if (systemMessage) {
+        openaiMessages.push({ role: 'system', content: systemMessage });
+      }
+      openaiMessages.push({ role: 'user', content: openaiUserContent });
 
       requestBody = JSON.stringify({
         max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
@@ -1118,17 +1124,17 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
         temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
       });
     } else {
-      // Claude/Anthropic models on Bedrock
-      const claudeMessages = [{ role: 'user', content: [] }];
-      for (const part of contentParts) {
+      // Claude/Anthropic models on Bedrock — use system parameter
+      const claudeUserContent = [];
+      for (const part of userContent) {
         if (typeof part === 'string') {
-          claudeMessages[0].content.push({ type: 'text', text: part });
+          claudeUserContent.push({ type: 'text', text: part });
         } else if (part.type === 'text') {
-          claudeMessages[0].content.push({ type: 'text', text: part.text });
+          claudeUserContent.push({ type: 'text', text: part.text });
         } else if (part.type === 'image_url') {
           const { base64Data, mediaType } = parseDataUri(part.image_url.url);
           if (base64Data) {
-            claudeMessages[0].content.push({
+            claudeUserContent.push({
               type: 'image',
               source: { type: 'base64', media_type: mediaType, data: base64Data }
             });
@@ -1136,12 +1142,18 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
         }
       }
 
-      requestBody = JSON.stringify({
+      const bedrockBody = {
         anthropic_version: 'bedrock-2023-05-31',
         max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
-        messages: claudeMessages,
+        messages: [{ role: 'user', content: claudeUserContent }],
         temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
-      });
+      };
+
+      if (systemMessage) {
+        bedrockBody.system = [{ type: 'text', text: systemMessage }];
+      }
+
+      requestBody = JSON.stringify(bedrockBody);
     }
 
     const headers = { 'Content-Type': 'application/json' };
@@ -1171,7 +1183,7 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
       const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : RETRY_DELAY * Math.pow(2, MAX_RETRIES - retries);
       console.warn(`Bedrock rate limit hit (429), retrying after ${waitTime}ms (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(waitTime);
-      return callBedrock(contentParts, settings, retries - 1);
+      return callBedrock(systemMessage, userContent, settings, retries - 1);
     }
 
     if (!response.ok) {
@@ -1202,7 +1214,7 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Bedrock request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
-      return callBedrock(contentParts, settings, retries - 1);
+      return callBedrock(systemMessage, userContent, settings, retries - 1);
     }
 
     if (error.name === 'AbortError') {
@@ -1221,7 +1233,7 @@ async function callBedrock(contentParts, settings, retries = MAX_RETRIES) {
 }
 
 // Streaming version of Bedrock API (Claude + OpenAI models)
-async function callBedrockStream(contentParts, settings, onChunk, requestId) {
+async function callBedrockStream(systemMessage, userContent, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
 
@@ -1236,17 +1248,23 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
     let requestBody;
 
     if (isOpenAI) {
-      // OpenAI models on Bedrock use OpenAI-compatible format
-      const openaiMessages = [{ role: 'user', content: [] }];
-      for (const part of contentParts) {
+      // OpenAI models on Bedrock — proper system/user separation
+      const openaiUserContent = [];
+      for (const part of userContent) {
         if (typeof part === 'string') {
-          openaiMessages[0].content.push({ type: 'text', text: part });
+          openaiUserContent.push({ type: 'text', text: part });
         } else if (part.type === 'text') {
-          openaiMessages[0].content.push({ type: 'text', text: part.text });
+          openaiUserContent.push({ type: 'text', text: part.text });
         } else if (part.type === 'image_url') {
-          openaiMessages[0].content.push({ type: 'image_url', image_url: { url: part.image_url.url } });
+          openaiUserContent.push({ type: 'image_url', image_url: { url: part.image_url.url } });
         }
       }
+
+      const openaiMessages = [];
+      if (systemMessage) {
+        openaiMessages.push({ role: 'system', content: systemMessage });
+      }
+      openaiMessages.push({ role: 'user', content: openaiUserContent });
 
       requestBody = JSON.stringify({
         max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
@@ -1255,17 +1273,17 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
         temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
       });
     } else {
-      // Claude/Anthropic models on Bedrock
-      const claudeMessages = [{ role: 'user', content: [] }];
-      for (const part of contentParts) {
+      // Claude/Anthropic models on Bedrock — use system parameter
+      const claudeUserContent = [];
+      for (const part of userContent) {
         if (typeof part === 'string') {
-          claudeMessages[0].content.push({ type: 'text', text: part });
+          claudeUserContent.push({ type: 'text', text: part });
         } else if (part.type === 'text') {
-          claudeMessages[0].content.push({ type: 'text', text: part.text });
+          claudeUserContent.push({ type: 'text', text: part.text });
         } else if (part.type === 'image_url') {
           const { base64Data, mediaType } = parseDataUri(part.image_url.url);
           if (base64Data) {
-            claudeMessages[0].content.push({
+            claudeUserContent.push({
               type: 'image',
               source: { type: 'base64', media_type: mediaType, data: base64Data }
             });
@@ -1273,12 +1291,18 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
         }
       }
 
-      requestBody = JSON.stringify({
+      const bedrockBody = {
         anthropic_version: 'bedrock-2023-05-31',
         max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
-        messages: claudeMessages,
+        messages: [{ role: 'user', content: claudeUserContent }],
         temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE
-      });
+      };
+
+      if (systemMessage) {
+        bedrockBody.system = [{ type: 'text', text: systemMessage }];
+      }
+
+      requestBody = JSON.stringify(bedrockBody);
     }
 
     const headers = { 'Content-Type': 'application/json' };
@@ -1399,26 +1423,29 @@ async function callBedrockStream(contentParts, settings, onChunk, requestId) {
 }
 
 // Call OpenAI API directly
-async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
+async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
-    // Build OpenAI message content with proper format for text and images
-    const openaiContent = [];
-    for (const part of contentParts) {
+    // Build OpenAI user message content with proper format for text and images
+    const openaiUserContent = [];
+    for (const part of userContent) {
       if (typeof part === 'string') {
-        openaiContent.push({ type: 'text', text: part });
+        openaiUserContent.push({ type: 'text', text: part });
       } else if (part.type === 'text') {
-        openaiContent.push({ type: 'text', text: part.text });
+        openaiUserContent.push({ type: 'text', text: part.text });
       } else if (part.type === 'image_url') {
-        openaiContent.push({ type: 'image_url', image_url: { url: part.image_url.url } });
+        openaiUserContent.push({ type: 'image_url', image_url: { url: part.image_url.url } });
       }
     }
 
-    const messages = [
-      { role: 'user', content: openaiContent }
-    ];
+    // Properly separate system and user messages for better instruction following
+    const messages = [];
+    if (systemMessage) {
+      messages.push({ role: 'system', content: systemMessage });
+    }
+    messages.push({ role: 'user', content: openaiUserContent });
 
     // Check token count and warn if approaching limits
     const model = settings.llmModel || 'gpt-4.1';
@@ -1435,18 +1462,26 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
       console.warn(`⚠️ ${tokenCheck.warning}`);
     }
 
+    const requestBody = {
+      model: settings.llmModel || 'gpt-4.1',
+      messages: messages,
+      temperature: settings.temperature || 0.7,
+      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
+    };
+
+    // Enable JSON mode when all user content is text (test generation agents)
+    const hasImages = userContent.some(p => p.type === 'image_url');
+    if (!hasImages && settings._jsonMode) {
+      requestBody.response_format = { type: 'json_object' };
+    }
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${settings.apiKey}`
       },
-      body: JSON.stringify({
-        model: settings.llmModel || 'gpt-4.1',
-        messages: messages,
-        temperature: settings.temperature || 0.7,
-        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
     
@@ -1459,7 +1494,7 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
 
       console.warn(`OpenAI rate limit hit (429), retrying after ${waitTime}ms (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(waitTime);
-      return callOpenAI(contentParts, settings, retries - 1);
+      return callOpenAI(systemMessage, userContent, settings, retries - 1);
     }
 
     if (!response.ok) {
@@ -1483,7 +1518,7 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying OpenAI request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
-      return callOpenAI(contentParts, settings, retries - 1);
+      return callOpenAI(systemMessage, userContent, settings, retries - 1);
     }
 
     if (error.name === 'AbortError') {
@@ -1503,15 +1538,15 @@ async function callOpenAI(contentParts, settings, retries = MAX_RETRIES) {
 }
 
 // Call Gemini API directly
-async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
+async function callGemini(systemMessage, userContent, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-  
+
   try {
     const model = settings.llmModel || 'gemini-2.5-flash-exp';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-    const geminiContent = contentParts.map(part => {
+    const geminiContent = userContent.map(part => {
       if (typeof part === 'string') {
         return { text: part };
       } else if (part.type === 'text') {
@@ -1526,21 +1561,35 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
       return part;
     });
 
+    const requestBody = {
+      contents: [{
+        parts: geminiContent
+      }],
+      generationConfig: {
+        temperature: settings.temperature || 0.7,
+        maxOutputTokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
+      }
+    };
+
+    // Use system_instruction for system message (Gemini's equivalent)
+    if (systemMessage) {
+      requestBody.system_instruction = {
+        parts: [{ text: systemMessage }]
+      };
+    }
+
+    // Enable JSON response mode for test generation
+    if (settings._jsonMode) {
+      requestBody.generationConfig.responseMimeType = 'application/json';
+    }
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-goog-api-key': settings.apiKey
       },
-      body: JSON.stringify({
-        contents: [{
-          parts: geminiContent
-        }],
-        generationConfig: {
-          temperature: settings.temperature || 0.7,
-          maxOutputTokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
-        }
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
     
@@ -1553,7 +1602,7 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
 
       console.warn(`Gemini rate limit hit (429), retrying after ${waitTime}ms (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(waitTime);
-      return callGemini(contentParts, settings, retries - 1);
+      return callGemini(systemMessage, userContent, settings, retries - 1);
     }
 
     if (!response.ok) {
@@ -1577,7 +1626,7 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Gemini request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
-      return callGemini(contentParts, settings, retries - 1);
+      return callGemini(systemMessage, userContent, settings, retries - 1);
     }
 
     if (error.name === 'AbortError') {
@@ -1597,24 +1646,22 @@ async function callGemini(contentParts, settings, retries = MAX_RETRIES) {
 }
 
 // Call Claude (Anthropic) API directly
-async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
+async function callClaude(systemMessage, userContent, settings, retries = MAX_RETRIES) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-  
-  try {
-    const claudeMessages = [
-      { role: 'user', content: [] }
-    ];
 
-    for (const part of contentParts) {
+  try {
+    // Build user message content array
+    const claudeUserContent = [];
+    for (const part of userContent) {
       if (typeof part === 'string') {
-        claudeMessages[0].content.push({ type: 'text', text: part });
+        claudeUserContent.push({ type: 'text', text: part });
       } else if (part.type === 'text') {
-        claudeMessages[0].content.push({ type: 'text', text: part.text });
+        claudeUserContent.push({ type: 'text', text: part.text });
       } else if (part.type === 'image_url') {
         const { base64Data, mediaType } = parseDataUri(part.image_url.url);
         if (base64Data) {
-          claudeMessages[0].content.push({
+          claudeUserContent.push({
             type: 'image',
             source: { type: 'base64', media_type: mediaType, data: base64Data }
           });
@@ -1622,19 +1669,36 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
       }
     }
 
+    const claudeMessages = [{ role: 'user', content: claudeUserContent }];
+
+    // Build request body with proper system message separation + prompt caching
+    const requestBody = {
+      model: settings.llmModel || 'claude-sonnet-4-20250514',
+      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
+      messages: claudeMessages,
+      temperature: settings.temperature || 0.7
+    };
+
+    // Use system parameter for system message (enables prompt caching)
+    if (systemMessage) {
+      requestBody.system = [
+        {
+          type: 'text',
+          text: systemMessage,
+          cache_control: { type: 'ephemeral' }
+        }
+      ];
+    }
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': settings.apiKey,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31'
       },
-      body: JSON.stringify({
-        model: settings.llmModel || 'claude-sonnet-4-20250514',
-        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
-        messages: claudeMessages,
-        temperature: settings.temperature || 0.7
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
     
@@ -1647,7 +1711,7 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
 
       console.warn(`Claude rate limit hit (429), retrying after ${waitTime}ms (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(waitTime);
-      return callClaude(contentParts, settings, retries - 1);
+      return callClaude(systemMessage, userContent, settings, retries - 1);
     }
 
     if (!response.ok) {
@@ -1671,7 +1735,7 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
     if (retries > 0 && error.name === 'AbortError') {
       console.log(`Retrying Claude request... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
-      return callClaude(contentParts, settings, retries - 1);
+      return callClaude(systemMessage, userContent, settings, retries - 1);
     }
 
     if (error.name === 'AbortError') {
@@ -1691,16 +1755,18 @@ async function callClaude(contentParts, settings, retries = MAX_RETRIES) {
 }
 
 // Streaming version of OpenAI API
-async function callOpenAIStream(contentParts, settings, onChunk, requestId) {
+async function callOpenAIStream(systemMessage, userContent, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
 
   let reader = null;
 
   try {
-    const messages = [
-      { role: 'user', content: contentParts }
-    ];
+    const messages = [];
+    if (systemMessage) {
+      messages.push({ role: 'system', content: systemMessage });
+    }
+    messages.push({ role: 'user', content: userContent });
 
     const response = await fetch(APP_CONFIG.ENDPOINTS.openai, {
       method: 'POST',
@@ -1790,26 +1856,23 @@ async function callOpenAIStream(contentParts, settings, onChunk, requestId) {
 }
 
 // Streaming version of Claude API
-async function callClaudeStream(contentParts, settings, onChunk, requestId) {
+async function callClaudeStream(systemMessage, userContent, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
 
   let reader = null;
 
   try {
-    const claudeMessages = [
-      { role: 'user', content: [] }
-    ];
-
-    for (const part of contentParts) {
+    const claudeUserContent = [];
+    for (const part of userContent) {
       if (typeof part === 'string') {
-        claudeMessages[0].content.push({ type: 'text', text: part });
+        claudeUserContent.push({ type: 'text', text: part });
       } else if (part.type === 'text') {
-        claudeMessages[0].content.push({ type: 'text', text: part.text });
+        claudeUserContent.push({ type: 'text', text: part.text });
       } else if (part.type === 'image_url') {
         const { base64Data, mediaType } = parseDataUri(part.image_url.url);
         if (base64Data) {
-          claudeMessages[0].content.push({
+          claudeUserContent.push({
             type: 'image',
             source: { type: 'base64', media_type: mediaType, data: base64Data }
           });
@@ -1817,20 +1880,34 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
       }
     }
 
+    const requestBody = {
+      model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.claude,
+      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
+      messages: [{ role: 'user', content: claudeUserContent }],
+      temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
+      stream: true
+    };
+
+    // Use system parameter with prompt caching
+    if (systemMessage) {
+      requestBody.system = [
+        {
+          type: 'text',
+          text: systemMessage,
+          cache_control: { type: 'ephemeral' }
+        }
+      ];
+    }
+
     const response = await fetch(APP_CONFIG.ENDPOINTS.claude, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': settings.apiKey,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31'
       },
-      body: JSON.stringify({
-        model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.claude,
-        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
-        messages: claudeMessages,
-        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
-        stream: true
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
 
@@ -1905,7 +1982,7 @@ async function callClaudeStream(contentParts, settings, onChunk, requestId) {
 }
 
 // Streaming version of Gemini API (Note: Gemini uses SSE differently)
-async function callGeminiStream(contentParts, settings, onChunk, requestId) {
+async function callGeminiStream(systemMessage, userContent, settings, onChunk, requestId) {
   const controller = new AbortController();
   activeStreams.set(requestId, controller);
 
@@ -1915,7 +1992,7 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
     const model = settings.llmModel || APP_CONFIG.DEFAULT_MODELS.gemini;
     const url = `${APP_CONFIG.ENDPOINTS.gemini}/${model}:streamGenerateContent?alt=sse`;
 
-    const geminiContent = contentParts.map(part => {
+    const geminiContent = userContent.map(part => {
       if (typeof part === 'string') {
         return { text: part };
       } else if (part.type === 'text') {
@@ -1930,21 +2007,29 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
       return part;
     });
 
+    const requestBody = {
+      contents: [{
+        parts: geminiContent
+      }],
+      generationConfig: {
+        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
+        maxOutputTokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
+      }
+    };
+
+    if (systemMessage) {
+      requestBody.system_instruction = {
+        parts: [{ text: systemMessage }]
+      };
+    }
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-goog-api-key': settings.apiKey
       },
-      body: JSON.stringify({
-        contents: [{
-          parts: geminiContent
-        }],
-        generationConfig: {
-          temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
-          maxOutputTokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
-        }
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
 
@@ -2019,24 +2104,25 @@ async function callGeminiStream(contentParts, settings, onChunk, requestId) {
 }
 
 // Unified streaming AI call function
-async function callAIStream(contentParts, settings, onChunk, requestId) {
+async function callAIStream(systemMessage, userContent, settings, onChunk, requestId) {
   console.log('🤖 [AI Stream] Starting request...', {
     provider: settings.llmProvider,
     model: settings.llmModel,
-    contentParts: contentParts.length,
+    hasSystemMessage: !!systemMessage,
+    userContentParts: userContent.length,
     requestId
   });
 
   try {
     let result;
     if (settings.llmProvider === 'openai') {
-      result = await callOpenAIStream(contentParts, settings, onChunk, requestId);
+      result = await callOpenAIStream(systemMessage, userContent, settings, onChunk, requestId);
     } else if (settings.llmProvider === 'gemini') {
-      result = await callGeminiStream(contentParts, settings, onChunk, requestId);
+      result = await callGeminiStream(systemMessage, userContent, settings, onChunk, requestId);
     } else if (settings.llmProvider === 'claude') {
-      result = await callClaudeStream(contentParts, settings, onChunk, requestId);
+      result = await callClaudeStream(systemMessage, userContent, settings, onChunk, requestId);
     } else if (settings.llmProvider === 'bedrock') {
-      result = await callBedrockStream(contentParts, settings, onChunk, requestId);
+      result = await callBedrockStream(systemMessage, userContent, settings, onChunk, requestId);
     } else {
       throw new Error(`Unsupported AI provider: ${settings.llmProvider}`);
     }
@@ -2072,23 +2158,24 @@ function cancelStream(requestId) {
 }
 
 // Unified AI call function (non-streaming - kept for backward compatibility)
-async function callAI(contentParts, settings) {
+async function callAI(systemMessage, userContent, settings) {
   console.log('🤖 [AI Call] Starting request...', {
     provider: settings.llmProvider,
     model: settings.llmModel,
-    contentParts: contentParts.length
+    hasSystemMessage: !!systemMessage,
+    userContentParts: userContent.length
   });
 
   try {
     let result;
     if (settings.llmProvider === 'openai') {
-      result = await callOpenAI(contentParts, settings);
+      result = await callOpenAI(systemMessage, userContent, settings);
     } else if (settings.llmProvider === 'gemini') {
-      result = await callGemini(contentParts, settings);
+      result = await callGemini(systemMessage, userContent, settings);
     } else if (settings.llmProvider === 'claude') {
-      result = await callClaude(contentParts, settings);
+      result = await callClaude(systemMessage, userContent, settings);
     } else if (settings.llmProvider === 'bedrock') {
-      result = await callBedrock(contentParts, settings);
+      result = await callBedrock(systemMessage, userContent, settings);
     } else {
       throw new Error(`Unsupported AI provider: ${settings.llmProvider}`);
     }
@@ -2589,8 +2676,7 @@ ${data.crawledContext || ''}
 
 Provide comprehensive requirement analysis.`;
 
-  const contentParts = [
-    { type: 'text', text: systemMessage },
+  const userContent = [
     { type: 'text', text: userMessage }
   ];
 
@@ -2599,7 +2685,7 @@ Provide comprehensive requirement analysis.`;
     externalContent.figma.forEach(figmaFile => {
       if (figmaFile.images && figmaFile.images.length > 0) {
         figmaFile.images.forEach(base64Image => {
-          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+          userContent.push({ type: 'image_url', image_url: { url: base64Image } });
         });
       }
     });
@@ -2609,13 +2695,13 @@ Provide comprehensive requirement analysis.`;
   if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
     console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to analysis`);
     enrichedTicketData.imageAttachments.forEach(image => {
-      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+      userContent.push({ type: 'image_url', image_url: { url: image.data } });
     });
   }
 
-  const analysis = await callAI(contentParts, settings);
-  
-  return { 
+  const analysis = await callAI(systemMessage, userContent, settings);
+
+  return {
     analysis,
     externalSources: enrichedTicketData.externalSources
   };
@@ -2680,8 +2766,7 @@ ${data.crawledContext || ''}
 
 Provide detailed test scope covering all aspects.`;
 
-    const contentParts = [
-      { type: 'text', text: systemMessage },
+    const userContent = [
       { type: 'text', text: userMessage }
     ];
 
@@ -2690,7 +2775,7 @@ Provide detailed test scope covering all aspects.`;
       externalContent.figma.forEach(figmaFile => {
         if (figmaFile.images && figmaFile.images.length > 0) {
           figmaFile.images.forEach(base64Image => {
-            contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+            userContent.push({ type: 'image_url', image_url: { url: base64Image } });
           });
         }
       });
@@ -2700,12 +2785,12 @@ Provide detailed test scope covering all aspects.`;
     if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
       console.log(`📷 [Test Scope] Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments`);
       enrichedTicketData.imageAttachments.forEach(image => {
-        contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+        userContent.push({ type: 'image_url', image_url: { url: image.data } });
       });
     }
 
-    console.log('🤖 [Test Scope] Calling AI provider with', contentParts.length, 'content parts...');
-    const scope = await callAI(contentParts, settings);
+    console.log('🤖 [Test Scope] Calling AI provider with', userContent.length, 'user content parts...');
+    const scope = await callAI(systemMessage, userContent, settings);
 
     // Validate response
     if (!scope || scope.trim() === '') {
@@ -2776,8 +2861,7 @@ ${crawledContext}
 
 Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"Positive","priority":"P0","steps":["step1","step2"],"expectedResult":"...","preconditions":"...","testData":"..."}]`;
 
-  const contentParts = [
-    { type: 'text', text: systemMessage },
+  const userContent = [
     { type: 'text', text: userMessage }
   ];
 
@@ -2786,7 +2870,7 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
     externalContent.figma.forEach(figmaFile => {
       if (figmaFile.images && figmaFile.images.length > 0) {
         figmaFile.images.forEach(base64Image => {
-          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+          userContent.push({ type: 'image_url', image_url: { url: base64Image } });
         });
       }
     });
@@ -2796,11 +2880,11 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
   if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
     console.log(`📷 [Test Cases] Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments`);
     enrichedTicketData.imageAttachments.forEach(image => {
-      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+      userContent.push({ type: 'image_url', image_url: { url: image.data } });
     });
   }
 
-  const response = await callAI(contentParts, settings);
+  const response = await callAI(systemMessage, userContent, settings);
   
   // Parse JSON from response
   try {
@@ -2988,8 +3072,7 @@ ${data.crawledContext || ''}
 
 Provide comprehensive requirement analysis.`;
 
-  const contentParts = [
-    { type: 'text', text: systemMessage },
+  const userContent = [
     { type: 'text', text: userMessage }
   ];
 
@@ -2998,7 +3081,7 @@ Provide comprehensive requirement analysis.`;
     externalContent.figma.forEach(figmaFile => {
       if (figmaFile.images && figmaFile.images.length > 0) {
         figmaFile.images.forEach(base64Image => {
-          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+          userContent.push({ type: 'image_url', image_url: { url: base64Image } });
         });
       }
     });
@@ -3008,7 +3091,7 @@ Provide comprehensive requirement analysis.`;
   if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
     console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to streaming analysis`);
     enrichedTicketData.imageAttachments.forEach(image => {
-      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+      userContent.push({ type: 'image_url', image_url: { url: image.data } });
     });
   }
 
@@ -3022,7 +3105,7 @@ Provide comprehensive requirement analysis.`;
       const docContext = textDocs.map(doc =>
         `\n\n--- Attached document: ${doc.fileName} ---\n${doc.text}`
       ).join('\n');
-      contentParts.push({ type: 'text', text: `\n\n## Attachment Content\n${docContext}` });
+      userContent.push({ type: 'text', text: `\n\n## Attachment Content\n${docContext}` });
     }
 
     // For scanned/image-based PDFs, send as vision input if the model supports it
@@ -3034,18 +3117,18 @@ Provide comprehensive requirement analysis.`;
       if (isVisionModel) {
         console.log(`📄 Sending ${scannedDocs.length} scanned PDF(s) as vision input`);
         scannedDocs.forEach(doc => {
-          contentParts.push({
+          userContent.push({
             type: 'image_url',
             image_url: { url: `data:${doc.mimeType};base64,${doc.base64}` }
           });
         });
-        contentParts.push({
+        userContent.push({
           type: 'text',
           text: `\n\nThe above attachment(s) are scanned PDF documents (${scannedDocs.map(d => d.fileName).join(', ')}). Please read and incorporate their content in your analysis.`
         });
       } else {
         console.warn(`⚠️ Scanned PDF(s) skipped — current model is not vision-capable: ${settings.llmModel}`);
-        contentParts.push({
+        userContent.push({
           type: 'text',
           text: `\n\nNote: The following attachment(s) are scanned PDFs and could not be read automatically: ${scannedDocs.map(d => d.fileName).join(', ')}. Switch to a vision-capable model (Claude Sonnet/Opus, gpt-4.1) to extract their content.`
         });
@@ -3054,9 +3137,9 @@ Provide comprehensive requirement analysis.`;
   }
 
   // Ensure content fits within model limits (with graceful truncation)
-  const fittedContentParts = ensureContentFitsLimits(contentParts, settings);
+  const fittedUserContent = ensureContentFitsLimits(userContent, settings);
 
-  const analysis = await callAIStream(fittedContentParts, settings, (chunk) => {
+  const analysis = await callAIStream(systemMessage, fittedUserContent, settings, (chunk) => {
     // Send each chunk to content script
     safeSendMessageToTab(tabId, {
       action: 'streamChunk',
@@ -3138,8 +3221,7 @@ ${data.crawledContext || ''}
 
 Provide detailed test scope covering all aspects.`;
 
-    const contentParts = [
-      { type: 'text', text: systemMessage },
+    const userContent = [
       { type: 'text', text: userMessage }
     ];
 
@@ -3148,7 +3230,7 @@ Provide detailed test scope covering all aspects.`;
       externalContent.figma.forEach(figmaFile => {
         if (figmaFile.images && figmaFile.images.length > 0) {
           figmaFile.images.forEach(base64Image => {
-            contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+            userContent.push({ type: 'image_url', image_url: { url: base64Image } });
           });
         }
       });
@@ -3158,15 +3240,15 @@ Provide detailed test scope covering all aspects.`;
     if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
       console.log(`📷 [Test Scope Stream] Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments`);
       enrichedTicketData.imageAttachments.forEach(image => {
-        contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+        userContent.push({ type: 'image_url', image_url: { url: image.data } });
       });
     }
 
     // Ensure content fits within model limits (with graceful truncation)
-    const fittedContentParts = ensureContentFitsLimits(contentParts, settings);
+    const fittedUserContent = ensureContentFitsLimits(userContent, settings);
 
-    console.log('🤖 [Test Scope Stream] Calling AI provider with', fittedContentParts.length, 'content parts...');
-    const testScope = await callAIStream(fittedContentParts, settings, (chunk) => {
+    console.log('🤖 [Test Scope Stream] Calling AI provider with', fittedUserContent.length, 'content parts...');
+    const testScope = await callAIStream(systemMessage, fittedUserContent, settings, (chunk) => {
       safeSendMessageToTab(tabId, {
         action: 'streamChunk',
         requestId: requestId,
@@ -3306,8 +3388,7 @@ Generate ${settings.testCount || 30} test cases total.`;
 ${currentExternalSources ? `**External Sources:** ${currentExternalSources.confluence} Confluence, ${currentExternalSources.figma} Figma, ${currentExternalSources.googleDocs} Google Docs` : ''}
 ${crawledContext}`;
 
-  const contentParts = [
-    { type: 'text', text: systemMessage },
+  const userContent = [
     { type: 'text', text: userMessage }
   ];
 
@@ -3316,7 +3397,7 @@ ${crawledContext}`;
     externalContent.figma.forEach(figmaFile => {
       if (figmaFile.images && figmaFile.images.length > 0) {
         figmaFile.images.forEach(base64Image => {
-          contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+          userContent.push({ type: 'image_url', image_url: { url: base64Image } });
         });
       }
     });
@@ -3326,17 +3407,17 @@ ${crawledContext}`;
   if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
     console.log(`📷 [Test Cases Stream] Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments`);
     enrichedTicketData.imageAttachments.forEach(image => {
-      contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+      userContent.push({ type: 'image_url', image_url: { url: image.data } });
     });
   }
 
   // Ensure content fits within model limits (with graceful truncation)
-  const fittedContentParts = ensureContentFitsLimits(contentParts, settings);
+  const fittedUserContent = ensureContentFitsLimits(userContent, settings);
 
-  console.log('🤖 [Test Cases Stream] Calling AI provider with', fittedContentParts.length, 'content parts...');
+  console.log('🤖 [Test Cases Stream] Calling AI provider with', fittedUserContent.length, 'content parts...');
   let accumulatedText = '';
 
-  const testCasesResponse = await callAIStream(fittedContentParts, settings, (chunk) => {
+  const testCasesResponse = await callAIStream(systemMessage, fittedUserContent, settings, (chunk) => {
     accumulatedText += chunk;
     safeSendMessageToTab(tabId, {
       action: 'streamChunk',
@@ -3419,10 +3500,9 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
   // Bind callAI to all agents
   const bindCallAI = (agent) => {
     // Agents call with (systemMessage, userMessage, settings)
-    // but callAI expects (contentParts, settings)
+    // callAI now accepts (systemMessage, userContent, settings) with proper separation
     agent.callAI = async (systemMessage, userMessage, agentSettings) => {
-      const contentParts = [
-        { type: 'text', text: systemMessage },
+      const userContent = [
         { type: 'text', text: userMessage }
       ];
 
@@ -3438,7 +3518,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
           externalContent.figma.forEach(figmaFile => {
             if (figmaFile.images && figmaFile.images.length > 0) {
               figmaFile.images.forEach(base64Image => {
-                contentParts.push({ type: 'image_url', image_url: { url: base64Image } });
+                userContent.push({ type: 'image_url', image_url: { url: base64Image } });
                 imageCount++;
               });
             }
@@ -3452,12 +3532,18 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
         if (enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
           console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira image attachments to ${agent.name} agent API call`);
           enrichedTicketData.imageAttachments.forEach(image => {
-            contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+            userContent.push({ type: 'image_url', image_url: { url: image.data } });
           });
         }
       }
 
-      return await callAI(contentParts, currentSettings);
+      // Enable JSON mode for test generation agents (agents that return JSON)
+      const jsonAgents = ['PositiveTest', 'NegativeTest', 'EdgeCase', 'RegressionTest', 'IntegrationTest', 'AIFeatureTest', 'Refinement', 'Review'];
+      if (jsonAgents.includes(agent.name)) {
+        currentSettings._jsonMode = true;
+      }
+
+      return await callAI(systemMessage, userContent, currentSettings);
     };
     agent.settings = settings;
 
@@ -3522,8 +3608,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
 
       // Create wrapper for EnhancementEngine that converts 3-param to 2-param callAI
       const enhancerCallAI = async (systemMessage, userMessage, enhancerSettings) => {
-        const contentParts = [
-          { type: 'text', text: systemMessage },
+        const userContent = [
           { type: 'text', text: userMessage }
         ];
 
@@ -3533,11 +3618,11 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
         if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
           console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira images to EnhancementEngine API call`);
           enrichedTicketData.imageAttachments.forEach(image => {
-            contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+            userContent.push({ type: 'image_url', image_url: { url: image.data } });
           });
         }
 
-        return await callAI(contentParts, currentSettings);
+        return await callAI(systemMessage, userContent, currentSettings);
       };
       const enhancer = new EnhancementEngine(settings, enhancerCallAI);
       enhancementResults = await enhancer.enhance(results.testCases, enrichedTicketData, results.analysis);
@@ -3565,8 +3650,7 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
 
       // Create wrapper for HistoricalMiningEngine that converts 3-param to 2-param callAI
       const historicalCallAI = async (systemMessage, userMessage, historicalSettings) => {
-        const contentParts = [
-          { type: 'text', text: systemMessage },
+        const userContent = [
           { type: 'text', text: userMessage }
         ];
 
@@ -3576,11 +3660,11 @@ async function handleGenerateTestCasesMultiAgent(data, tabId) {
         if (isVisionModel && enrichedTicketData.imageAttachments && enrichedTicketData.imageAttachments.length > 0) {
           console.log(`📷 Adding ${enrichedTicketData.imageAttachments.length} Jira images to HistoricalMiningEngine API call`);
           enrichedTicketData.imageAttachments.forEach(image => {
-            contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+            userContent.push({ type: 'image_url', image_url: { url: image.data } });
           });
         }
 
-        return await callAI(contentParts, currentSettings);
+        return await callAI(systemMessage, userContent, currentSettings);
       };
       const historicalMiner = new HistoricalMiningEngine(settings, historicalCallAI, data.baseUrl);
       historicalResults = await historicalMiner.mineAndEnhance(enrichedTicketData, results.testCases);
@@ -3742,8 +3826,7 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
     // Create wrapper for EvolutionaryOptimizer that converts 3-param to 2-param callAI
     const visionModels = APP_CONFIG.VISION_MODELS;
     const evolutionCallAI = async (systemMessage, userMessage, evolutionSettings) => {
-      const contentParts = [
-        { type: 'text', text: systemMessage },
+      const userContent = [
         { type: 'text', text: userMessage }
       ];
 
@@ -3753,11 +3836,11 @@ async function runEvolutionInBackground(baseTests, ticketData, settings, tabId, 
       if (isVisionModel && ticketData.imageAttachments && ticketData.imageAttachments.length > 0) {
         console.log(`📷 Adding ${ticketData.imageAttachments.length} Jira images to EvolutionaryOptimizer API call`);
         ticketData.imageAttachments.forEach(image => {
-          contentParts.push({ type: 'image_url', image_url: { url: image.data } });
+          userContent.push({ type: 'image_url', image_url: { url: image.data } });
         });
       }
 
-      return await callAI(contentParts, currentSettings);
+      return await callAI(systemMessage, userContent, currentSettings);
     };
     // Overall safety timeout (6 minutes) — evolution.evolve has its own 5-minute timeout,
     // this catches edge cases like the evolve() method itself hanging before entering the loop
@@ -3883,12 +3966,11 @@ Please regenerate the test cases incorporating the user's feedback. Return the r
     throw new Error(`Unknown regeneration type: ${type}`);
   }
 
-  // Call AI with the combined prompt
-  const contentParts = [
-    { type: 'text', text: systemMessage },
+  // Call AI with properly separated system/user messages
+  const userContent = [
     { type: 'text', text: userMessage }
   ];
-  const improvedResponse = await callAI(contentParts, settings);
+  const improvedResponse = await callAI(systemMessage, userContent, settings);
 
   // Handle test cases specially (need JSON parsing)
   if (type === 'testCases') {

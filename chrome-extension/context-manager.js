@@ -19,8 +19,9 @@ if (typeof ContextManager === 'undefined') {
     'gpt-4': { maxInput: 8192, maxOutput: 4096, safeInput: 6000 },
 
     // Claude
-    'claude-sonnet-4-20250514': { maxInput: 200000, maxOutput: 8192, safeInput: 180000 },
-    'claude-sonnet-4-20250111': { maxInput: 200000, maxOutput: 8192, safeInput: 180000 },
+    'claude-opus-4-20250514': { maxInput: 200000, maxOutput: 32000, safeInput: 180000 },
+    'claude-sonnet-4-5-20250514': { maxInput: 200000, maxOutput: 16384, safeInput: 180000 },
+    'claude-sonnet-4-20250514': { maxInput: 200000, maxOutput: 16384, safeInput: 180000 },
     'claude-3-5-sonnet-20241022': { maxInput: 200000, maxOutput: 8192, safeInput: 180000 },
     'claude-3-opus-20240229': { maxInput: 200000, maxOutput: 4096, safeInput: 180000 },
 
@@ -250,23 +251,73 @@ if (typeof ContextManager === 'undefined') {
     }
 
     /**
-     * Truncate text intelligently (keep beginning and end, remove middle)
+     * Truncate text intelligently at paragraph/section boundaries.
+     * Splits into blocks at double-newlines or heading markers, then keeps
+     * the highest-priority blocks (first and last blocks preferred) until
+     * the token budget is met.
      */
     _truncateText(text, targetTokens) {
       const currentTokens = this.estimateTokens(text);
       if (currentTokens <= targetTokens) return text;
 
-      const ratio = targetTokens / currentTokens;
-      const targetChars = Math.floor(text.length * ratio);
+      // Split into blocks at paragraph boundaries (double newline, headings, horizontal rules)
+      const blocks = text.split(/\n{2,}|(?=^#{1,4}\s)|(?=^[━═─]{3,})/m).filter(b => b.trim());
 
-      // Keep first 60% and last 20%, remove middle
-      const keepStart = Math.floor(targetChars * 0.6);
-      const keepEnd = Math.floor(targetChars * 0.2);
+      if (blocks.length <= 2) {
+        // Too few blocks to split smartly — fall back to character-level truncation
+        const ratio = targetTokens / currentTokens;
+        const targetChars = Math.floor(text.length * ratio);
+        const keepStart = Math.floor(targetChars * 0.65);
+        const keepEnd = Math.floor(targetChars * 0.25);
+        return text.substring(0, keepStart) + '\n\n[... content truncated ...]\n\n' + text.substring(text.length - keepEnd);
+      }
 
-      const start = text.substring(0, keepStart);
-      const end = text.substring(text.length - keepEnd);
+      // Score blocks: first blocks and last blocks get higher priority
+      const scored = blocks.map((block, i) => {
+        let priority = 50; // base
+        if (i === 0) priority = 100; // always keep first block
+        else if (i === blocks.length - 1) priority = 90; // keep last block
+        else if (i === 1) priority = 85; // second block often has key info
+        else if (block.match(/^#{1,4}\s/)) priority = 75; // headings are important
+        else if (block.match(/acceptance|criteria|requirement|must|should/i)) priority = 80; // AC-like content
+        else priority = Math.max(20, 60 - i * 3); // deprioritize middle blocks
 
-      return start + '\n\n[... content truncated to fit context limit ...]\n\n' + end;
+        return { block, tokens: this.estimateTokens(block), priority, index: i };
+      });
+
+      // Sort by priority (highest first), then greedily select blocks until budget is met
+      scored.sort((a, b) => b.priority - a.priority);
+
+      let usedTokens = 0;
+      const selectedIndices = new Set();
+      const truncationMarkerTokens = 20; // reserve for "[... truncated ...]" marker
+
+      for (const item of scored) {
+        if (usedTokens + item.tokens + truncationMarkerTokens <= targetTokens) {
+          selectedIndices.add(item.index);
+          usedTokens += item.tokens;
+        }
+      }
+
+      // Reconstruct in original order, inserting truncation marker where blocks were removed
+      const result = [];
+      let wasRemoved = false;
+      for (let i = 0; i < blocks.length; i++) {
+        if (selectedIndices.has(i)) {
+          if (wasRemoved) {
+            result.push('[... content truncated ...]');
+            wasRemoved = false;
+          }
+          result.push(blocks[i]);
+        } else {
+          wasRemoved = true;
+        }
+      }
+      if (wasRemoved) {
+        result.push('[... content truncated ...]');
+      }
+
+      return result.join('\n\n');
     }
 
     /**

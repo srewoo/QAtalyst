@@ -302,12 +302,16 @@ document.getElementById('crawlAppBtn').addEventListener('click', async () => {
 
     console.log('🕷️ Starting crawler - knowledge graph only');
 
+    // Check if user wants to use current session for authenticated crawling
+    const useCurrentSession = document.getElementById('useCurrentSession')?.checked || false;
+
     // Start crawl (non-blocking)
     chrome.runtime.sendMessage({
       action: 'startCrawl',
       data: {
         startUrl: tab.url,
-        progressWindowId: progressWindow.id
+        progressWindowId: progressWindow.id,
+        useCurrentSession: useCurrentSession
       }
     });
 
