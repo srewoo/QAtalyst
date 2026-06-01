@@ -31,18 +31,17 @@ if (typeof APP_CONFIG === 'undefined') {
 
   // Model Defaults
   DEFAULT_MODELS: {
-    openai: 'gpt-4.1',
-    claude: 'claude-3-5-sonnet-20241022',
-    gemini: 'gemini-2.0-flash-exp',
+    openai: 'gpt-5.2',
+    claude: 'claude-sonnet-4-6',
+    gemini: 'gemini-2.5-flash',
     bedrock: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
   },
 
   // Vision models that support image inputs (single source of truth)
   VISION_MODELS: [
-    'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'o1',
-    'claude-sonnet-4-20250514', 'claude-sonnet-4-20250111', 'claude-3-5-sonnet-20241022',
-    'claude-3-opus', 'claude-3-sonnet',
-    'gemini-pro-vision', 'gemini-1.5-pro', 'gemini-2.5-pro-exp-03', 'gemini-2.5-flash-exp',
+    'gpt-5.2', 'gpt-5.2-mini', 'gpt-5', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'o3', 'o4-mini', 'o1',
+    'claude-opus-4', 'claude-sonnet-4', 'claude-haiku-4', 'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-opus', 'claude-3-sonnet',
+    'gemini-pro-vision', 'gemini-1.5-pro', 'gemini-2.5-pro', 'gemini-2.5-flash',
     'anthropic.claude', 'global.anthropic.claude', 'us.anthropic.claude', 'eu.anthropic.claude',
     'openai.gpt-oss'
   ],

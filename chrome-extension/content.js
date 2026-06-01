@@ -455,11 +455,11 @@
   }
   
   function formatStreamingContent(content) {
-    // Simple markdown-like formatting for streaming display
-    return content
+    // Escape first (XSS-safe), then apply lightweight markdown for the live stream.
+    return escapeHtml(content == null ? '' : String(content))
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\n/g, '<br>')
-      .replace(/^- /gm, '• ');
+      .replace(/^- /gm, '• ')
+      .replace(/\n/g, '<br>');
   }
   
   function stopStreaming() {
@@ -490,32 +490,42 @@
     }
   }
   
+  // Once the final results are rendered, ignore any in-flight progress messages so a
+  // late "done"/observation event can't overwrite the test-case list (race fix).
+  let suppressAgentProgress = false;
+
   function handleAgentProgress(progress) {
+    if (suppressAgentProgress) return;
     const resultsContainer = document.getElementById('results-container');
     if (!resultsContainer) return;
-    
+
     const { agent, step, total, status, description, count, error } = progress;
     
+    // Progress is only meaningful when both step and total are numbers.
+    const hasProgress = Number.isFinite(step) && Number.isFinite(total) && total > 0;
+    const pct = hasProgress ? Math.min(100, Math.round((step / total) * 100)) : (status === 'completed' ? 100 : 8);
+    const stepLabel = hasProgress ? `Step ${step}/${total}` : (status === 'completed' ? 'Complete' : 'Working…');
+
     // Update agent progress display
     const agentProgressHTML = `
       <div class="agent-progress-container">
         <div class="agent-progress-header">
           <h3>🧬 Multi-Agent Test Generation</h3>
-          <div class="agent-progress-stats">Agent ${step}/${total}</div>
+          <div class="agent-progress-stats">${escapeHtml(stepLabel)}</div>
         </div>
         <div class="agent-progress-bar">
-          <div class="agent-progress-fill" style="width: ${(step / total) * 100}%"></div>
+          <div class="agent-progress-fill" style="width: ${pct}%"></div>
         </div>
         <div class="agent-current">
           ${status === 'running' ? '⚡' : status === 'completed' ? '✅' : '❌'}
-          <strong>${escapeHtml(agent)}</strong>
-          ${status === 'running' ? `<span class="agent-desc">${escapeHtml(description)}</span>` : ''}
-          ${status === 'completed' && count ? `<span class="agent-count">Generated ${escapeHtml(String(count))} tests</span>` : ''}
-          ${status === 'error' ? `<span class="agent-error">${escapeHtml(error)}</span>` : ''}
+          <strong>${escapeHtml(agent || 'Planner')}</strong>
+          ${description ? `<span class="agent-desc">${escapeHtml(description)}</span>` : ''}
+          ${Number.isFinite(count) ? `<span class="agent-count">${count} tests so far</span>` : ''}
+          ${status === 'error' && error ? `<span class="agent-error">${escapeHtml(error)}</span>` : ''}
         </div>
       </div>
     `;
-    
+
     resultsContainer.innerHTML = agentProgressHTML;
   }
   
@@ -1921,6 +1931,7 @@
     try {
       const settings = await loadAndDecryptSettings([
         'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'enableStreaming', 'enableMultiAgent',
+        'useAgenticMode', 'coverageTarget', 'dedupThreshold', 'relevanceThreshold', 'enabledCategories',
         'enableEvolution', 'evolutionIntensity', 'testCount',
         'positivePercent', 'negativePercent', 'edgePercent', 'integrationPercent',
         'enablePositiveAgent', 'enableNegativeAgent', 'enableEdgeAgent',
@@ -2015,13 +2026,19 @@
       }
 
       if (settings.enableMultiAgent) {
-        console.log('🚀 Starting multi-agent test case generation...');
-        resultsContainer.innerHTML = '<div class="qatalyst-loading">🧬 Initializing multi-agent system...</div>';
+        // Agentic mode = planner-driven, grounded, coverage-feedback loop with a
+        // hard no-duplicate / no-irrelevant acceptance gate. Falls back to the
+        // classic multi-agent pipeline when the toggle is off.
+        const useAgentic = settings.useAgenticMode !== false; // default ON
+        const genAction = useAgentic ? 'generateTestCasesAgentic' : 'generateTestCasesMultiAgent';
+        suppressAgentProgress = false; // allow progress updates for this run
+        console.log(`🚀 Starting ${useAgentic ? 'agentic planner' : 'multi-agent'} test case generation...`);
+        resultsContainer.innerHTML = `<div class="qatalyst-loading">${useAgentic ? '🧭 Planning grounded test coverage...' : '🧬 Initializing multi-agent system...'}</div>`;
 
         console.log('📤 Sending message to background script...');
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
-            action: 'generateTestCasesMultiAgent',
+            action: genAction,
             data: {
               ticketKey,
               ticketData,
@@ -2050,6 +2067,9 @@
           });
         });
 
+        // Render final results and stop accepting progress updates so a late
+        // "done" message cannot overwrite the test-case list.
+        suppressAgentProgress = true;
         displayTestCasesResults(response);
       }
       // Use streaming or regular based on settings
@@ -2746,15 +2766,141 @@
   }
   
   // Format functions
+
+  /**
+   * Render a markdown string to safe HTML.
+   * Security: the entire input is HTML-escaped FIRST (via escapeHtml), then only our
+   * own tags are added — so any HTML/script in the model output is neutralised. Links
+   * are restricted to http(s)/relative hrefs. Supports GFM pipe tables, headings,
+   * ordered/unordered lists, fenced code, bold/italic/inline-code, links and rules.
+   */
+  function renderMarkdown(md) {
+    if (md == null) return '';
+    const src = String(md).replace(/\r\n?/g, '\n');
+    const lines = src.split('\n');
+    const out = [];
+    let i = 0;
+
+    const esc = (t) => escapeHtml(t == null ? '' : String(t));
+    const inline = (text) => text
+      .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+      .replace(/(^|[^_\w])_([^_\n]+)_/g, '$1<em>$2</em>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+    const isTableSep = (line) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line || '');
+    const splitRow = (line) => {
+      let s = line.trim();
+      if (s.startsWith('|')) s = s.slice(1);
+      if (s.endsWith('|')) s = s.slice(0, -1);
+      return s.split('|').map(c => c.trim());
+    };
+    const isSpecial = (line, idx) =>
+      /^(#{1,6})\s+/.test(line) ||
+      /^\s*([-*_])\1{2,}\s*$/.test(line) ||
+      /^\s*[-*+]\s+/.test(line) ||
+      /^\s*\d+\.\s+/.test(line) ||
+      /^```/.test(line.trim()) ||
+      (line.includes('|') && isTableSep(lines[idx + 1]));
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // fenced code block
+      if (/^```/.test(line.trim())) {
+        const buf = []; i++;
+        while (i < lines.length && !/^```/.test(lines[i].trim())) { buf.push(lines[i]); i++; }
+        i++;
+        out.push(`<pre class="qa-md-code"><code>${esc(buf.join('\n'))}</code></pre>`);
+        continue;
+      }
+
+      // GFM pipe table (header row followed by a |---|---| separator)
+      if (line.includes('|') && isTableSep(lines[i + 1])) {
+        const header = splitRow(line); i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') { rows.push(splitRow(lines[i])); i++; }
+        let t = '<table class="qa-md-table"><thead><tr>';
+        header.forEach(h => { t += `<th>${inline(esc(h))}</th>`; });
+        t += '</tr></thead><tbody>';
+        rows.forEach(r => {
+          t += '<tr>';
+          header.forEach((_, ci) => { t += `<td>${inline(esc(r[ci] || ''))}</td>`; });
+          t += '</tr>';
+        });
+        out.push(t + '</tbody></table>');
+        continue;
+      }
+
+      // headings
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) { const lvl = h[1].length; out.push(`<h${lvl} class="qa-md-h">${inline(esc(h[2].trim()))}</h${lvl}>`); i++; continue; }
+
+      // horizontal rule
+      if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { out.push('<hr class="qa-md-hr">'); i++; continue; }
+
+      // unordered list
+      if (/^\s*[-*+]\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, '')); i++; }
+        out.push('<ul class="qa-md-list">' + items.map(it => `<li>${inline(esc(it))}</li>`).join('') + '</ul>');
+        continue;
+      }
+
+      // ordered list
+      if (/^\s*\d+\.\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, '')); i++; }
+        out.push('<ol class="qa-md-list">' + items.map(it => `<li>${inline(esc(it))}</li>`).join('') + '</ol>');
+        continue;
+      }
+
+      // blank line
+      if (line.trim() === '') { i++; continue; }
+
+      // paragraph (gather until a blank or special line)
+      const para = [];
+      while (i < lines.length && lines[i].trim() !== '' && !isSpecial(lines[i], i)) { para.push(lines[i]); i++; }
+      if (para.length) out.push(`<p>${inline(esc(para.join(' ')))}</p>`);
+    }
+
+    return `<div class="qa-md">${out.join('\n')}</div>`;
+  }
+
+  /**
+   * Inline-only markdown for short fields (titles, descriptions, steps, results).
+   * Escapes first (XSS-safe), then renders bold/italic/inline-code/links and turns
+   * newlines into <br>. No block-level parsing — keeps card layouts intact.
+   */
+  function inlineMarkdown(text) {
+    if (text == null) return '';
+    return escapeHtml(String(text))
+      .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+      .replace(/\n/g, '<br>');
+  }
+
   function formatAnalysis(analysis) {
-    return `<pre>${analysis}</pre>`;
+    if (analysis && typeof analysis === 'object') {
+      // Structured analysis object — pretty-print as fenced JSON so it still renders.
+      try { return renderMarkdown('```json\n' + JSON.stringify(analysis, null, 2) + '\n```'); }
+      catch (_) { return `<pre>${escapeHtml(String(analysis))}</pre>`; }
+    }
+    return renderMarkdown(analysis);
   }
   
   function formatTestScope(scope) {
     if (!scope || scope === 'undefined' || scope === 'null') {
       return '<p class="qatalyst-warning">⚠️ No test scope was generated. Please try again.</p>';
     }
-    return `<pre>${scope}</pre>`;
+    return renderMarkdown(scope);
   }
   
   function formatTestCases(testCases) {
@@ -2762,32 +2908,48 @@
       // Handle both camelCase and snake_case property names
       const expectedResult = tc.expected_result || tc.expectedResult || 'Not specified';
       const description = tc.description || 'Not specified';
+      const preconditions = tc.preconditions || '';
+      const testData = tc.test_data || tc.testData || '';
+
+      // Steps may be an array of strings or objects; normalise to strings.
+      const steps = Array.isArray(tc.steps) ? tc.steps : (tc.steps ? [tc.steps] : []);
+      const stepText = (s) => typeof s === 'string' ? s : (s && (s.action || s.step || s.text) ) || (s != null ? JSON.stringify(s) : '');
 
       // Add historical badge
       const sourceBadge = tc.source === 'historical'
         ? `<span class="source-badge historical">🛡️ Bug Prevention</span>`
         : '';
 
+      const ref = escapeHtml(tc.historicalReference || '');
       const historicalInfo = tc.historicalReference
-        ? `<div class="historical-ref">📚 Based on: <a href="${window.location.origin}/browse/${tc.historicalReference}" target="_blank">${tc.historicalReference}</a></div>`
+        ? `<div class="historical-ref">📚 Based on: <a href="${escapeHtml(window.location.origin)}/browse/${ref}" target="_blank" rel="noopener noreferrer">${ref}</a></div>`
+        : '';
+
+      const stepsHtml = steps.length
+        ? `<div class="tc-steps"><strong>Steps:</strong>
+             <ol class="tc-steps-list">${steps.map(s => `<li>${inlineMarkdown(stepText(s))}</li>`).join('')}</ol>
+           </div>`
         : '';
 
       return `
       <div class="test-case ${tc.source === 'historical' ? 'historical-test' : ''}" data-testid="test-case-${idx}">
         <div class="tc-header">
-          <span class="tc-id">${tc.id}</span>
-          <span class="tc-priority ${tc.priority}">${tc.priority}</span>
-          <span class="tc-category">${tc.category}</span>
+          <span class="tc-id">${escapeHtml(tc.id || '')}</span>
+          <span class="tc-priority ${escapeHtml(tc.priority || '')}">${escapeHtml(tc.priority || '')}</span>
+          <span class="tc-category">${escapeHtml(tc.category || '')}</span>
           ${sourceBadge}
         </div>
-        <div class="tc-title">${tc.title}</div>
-        ${tc.preventionReason ? `<div class="prevention-reason">🛡️ ${tc.preventionReason}</div>` : ''}
+        <div class="tc-title">${inlineMarkdown(tc.title)}</div>
+        ${tc.preventionReason ? `<div class="prevention-reason">🛡️ ${inlineMarkdown(tc.preventionReason)}</div>` : ''}
         ${historicalInfo}
         <div class="tc-description">
-          <strong>Description:</strong> ${description}
+          <strong>Description:</strong> ${inlineMarkdown(description)}
         </div>
+        ${preconditions ? `<div class="tc-preconditions"><strong>Preconditions:</strong> ${inlineMarkdown(preconditions)}</div>` : ''}
+        ${stepsHtml}
+        ${testData ? `<div class="tc-data"><strong>Test Data:</strong> ${inlineMarkdown(testData)}</div>` : ''}
         <div class="tc-expected">
-          <strong>Expected Result:</strong> ${expectedResult}
+          <strong>Expected Result:</strong> ${inlineMarkdown(expectedResult)}
         </div>
       </div>
     `;

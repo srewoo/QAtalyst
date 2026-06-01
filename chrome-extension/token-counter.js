@@ -7,6 +7,12 @@
  * Token limits for different models (exact match lookup)
  */
 const TOKEN_LIMITS = {
+  // OpenAI GPT-5.x family
+  'gpt-5.2':      { max: 400000, safe: 380000 },
+  'gpt-5.2-mini': { max: 400000, safe: 380000 },
+  // OpenAI reasoning models
+  'o3':           { max: 200000, safe: 190000 },
+  'o4-mini':      { max: 200000, safe: 190000 },
   // OpenAI GPT-4.1 family — 1M context window, 32K max output (released April 2025)
   'gpt-4.1':      { max: 1047576, safe: 1000000 },
   'gpt-4.1-mini': { max: 1047576, safe: 1000000 },
@@ -47,6 +53,9 @@ const MODEL_FAMILY_LIMITS = [
   { prefix: 'openai.gpt-oss',       limits: { max: 128000,  safe: 120000  } },
   { prefix: 'us.openai.gpt',        limits: { max: 128000,  safe: 120000  } },
   { prefix: 'claude-',              limits: { max: 200000,  safe: 190000  } },
+  { prefix: 'gpt-5',               limits: { max: 400000,  safe: 380000  } },
+  { prefix: 'o3',                  limits: { max: 200000,  safe: 190000  } },
+  { prefix: 'o4',                  limits: { max: 200000,  safe: 190000  } },
   // gpt-4.1 family has 1M context; keep gpt-4 (legacy) separate below
   { prefix: 'gpt-4.1',             limits: { max: 1047576, safe: 1000000 } },
   { prefix: 'gpt-4',               limits: { max: 128000,  safe: 120000  } },

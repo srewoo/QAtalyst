@@ -3,18 +3,22 @@
 // Model options - keep in sync with options.js
 const modelOptions = {
   openai: [
-    { value: 'gpt-4.1', label: 'GPT-4.1 (Recommended)' },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast & Cheap)' },
-    { value: 'o1', label: 'O1 (Reasoning)' }
+    { value: 'gpt-5.2', label: 'GPT-5.2 (Recommended)' },
+    { value: 'gpt-5.2-mini', label: 'GPT-5.2 Mini (Fast & Cheap)' },
+    { value: 'gpt-4.1', label: 'GPT-4.1' },
+    { value: 'o3', label: 'o3 (Reasoning)' },
+    { value: 'o4-mini', label: 'o4-mini (Fast reasoning)' }
   ],
   claude: [
-    { value: 'claude-sonnet-4-20250514', label: 'Claude 4.5 Sonnet (Latest)' },
-    { value: 'claude-sonnet-4-20250111', label: 'Claude 4.1 Sonnet' },
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.7 Sonnet' }
+    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Most capable)' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Recommended)' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (Fast & Cheap)' },
+    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet v2 (legacy)' }
   ],
   gemini: [
-    { value: 'gemini-2.5-pro-exp-03', label: 'Gemini 2.5 Pro (Recommended)' },
-    { value: 'gemini-2.5-flash-exp', label: 'Gemini 2.5 Flash (Fast & Cheap)' }
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Recommended)' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Fast & Cheap)' },
+    { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (Cheapest)' }
   ],
   bedrock: [
     { value: 'anthropic.claude-sonnet-4-5-20250514-v1:0', label: 'Claude 4.5 Sonnet (Recommended)' },

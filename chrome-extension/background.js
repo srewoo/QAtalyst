@@ -27,6 +27,15 @@ importScripts('context-checker.js');
 importScripts('semantic-duplicate-detector.js');
 importScripts('coverage-mapper.js');
 
+// Agentic test-generation core (planner loop + grounded verification + acceptance gate)
+// Load order matters: verifier/distribution have no deps; acceptance-gate needs
+// GroundedVerifier + SemanticDuplicateDetector; agent-loop uses DynamicDistribution.
+importScripts('grounded-verifier.js');
+importScripts('dynamic-distribution.js');
+importScripts('acceptance-gate.js');
+importScripts('agent-tools.js');
+importScripts('agent-loop.js');
+
 // Import web crawler modules
 importScripts('crawler.js');
 importScripts('dom-extractor.js');
@@ -73,6 +82,9 @@ let activeIntegration = null;
 
 // Active multi-agent orchestrator (for cancellation)
 let activeOrchestrator = null;
+
+// Active agentic planner abort handle (for cancellation of the planner loop)
+let activeAgenticAbort = null;
 
 // Web Crawler state management - initialize AFTER config loads
 let activeCrawler = null;
@@ -201,7 +213,8 @@ async function runDiagnostics() {
     console.log('⚙️ Settings Check:');
     console.log('  Provider:', settings.llmProvider || '❌ NOT SET');
     console.log('  Model:', settings.llmModel || '❌ NOT SET');
-    console.log('  API Key:', settings.apiKey ? '✅ SET (' + settings.apiKey.substring(0, 10) + '...)' : '❌ NOT SET');
+    // Never log any portion of the secret — presence only.
+    console.log('  API Key:', settings.apiKey ? '✅ SET' : '❌ NOT SET');
     console.log('  Streaming:', settings.enableStreaming !== false ? '✅ Enabled' : '⚠️ Disabled');
     
     console.log('\n🔗 Integrations Check:');
@@ -510,12 +523,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'stopMultiAgentGeneration') {
-    if (activeOrchestrator) {
-      activeOrchestrator.cancel();
-      sendResponse({ success: true });
-    } else {
-      sendResponse({ success: false, message: 'No active multi-agent generation' });
-    }
+    let stopped = false;
+    if (activeOrchestrator) { activeOrchestrator.cancel(); stopped = true; }
+    if (activeAgenticAbort) { activeAgenticAbort.cancelled = true; stopped = true; }
+    sendResponse(stopped ? { success: true } : { success: false, message: 'No active generation' });
     return true;
   }
 
@@ -552,7 +563,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(error => sendResponse({ error: error.message }));
     return true;
   }
-  
+
+  // Agentic planner-driven generation (grounded, coverage-feedback, no duplicates)
+  if (request.action === 'generateTestCasesAgentic') {
+    handleGenerateTestCasesAgentic(request.data, sender.tab.id)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
   // Open options page
   if (request.action === 'openOptions') {
     chrome.runtime.openOptionsPage();
@@ -3459,6 +3478,205 @@ ${crawledContext}`;
 }
 
 // Multi-agent test generation handler
+/**
+ * Agentic test-case generation.
+ *
+ * A planner LLM drives an observe→decide→act loop over a tool registry (BM25
+ * search, element inspection, coverage check, grounded test proposal, …). Every
+ * proposed test passes the AcceptanceGate (grounding + relevance + dedup) before
+ * it counts, and coverage is re-measured each round and fed back into the next
+ * decision. The result is a grounded, non-duplicate, relevant suite whose size
+ * is driven by coverage of the real app rather than a fixed count.
+ *
+ * Falls back transparently: with no crawl data, grounding is "not applicable" and
+ * the gate enforces relevance + dedup against the ticket alone.
+ */
+async function handleGenerateTestCasesAgentic(data, tabId) {
+  validateSettings(data.settings);
+  const { ticketData, settings } = data;
+  const knowledgeGraph = data.appContext || null;
+
+  // Enrich with external content (Confluence/Figma/Docs) when not pre-supplied.
+  let enrichedTicketData = ticketData;
+  if (!data.externalSources) {
+    try {
+      const enrichResult = await enrichTicketWithExternalContent(ticketData, settings);
+      enrichedTicketData = enrichResult.enrichedTicketData || ticketData;
+    } catch (e) {
+      console.warn('[Agentic] external enrichment skipped:', e.message);
+    }
+  }
+
+  const progress = (event) => safeSendMessageToTab(tabId, { action: 'agentProgress', progress: agenticProgressView(event) });
+
+  // ── Build the grounding + relevance + dedup gate ──
+  const verifier = new GroundedVerifier(knowledgeGraph);
+  const coverageMapper = knowledgeGraph ? new CoverageMapper(knowledgeGraph) : null;
+  const gate = new AcceptanceGate({
+    knowledgeGraph,
+    ticketData: enrichedTicketData,
+    deps: { GroundedVerifier, SemanticDuplicateDetector },
+    dedupThreshold: settings.dedupThreshold,
+    relevanceThreshold: settings.relevanceThreshold
+  });
+
+  // ── BM25 index over the knowledge graph (best-effort) ──
+  let bm25 = null;
+  try {
+    if (knowledgeGraph && knowledgeGraph.appUrl) {
+      const saved = await storageManager.loadBm25Index(knowledgeGraph.appUrl);
+      if (saved) bm25 = BM25Index.deserialize(saved);
+    }
+    if (!bm25 && knowledgeGraph && knowledgeGraph.pages) bm25 = BM25Index.build(knowledgeGraph.pages);
+  } catch (e) { console.warn('[Agentic] BM25 unavailable:', e.message); }
+
+  // ── Dynamic distribution from ticket shape ──
+  const enabledCategories = Array.isArray(settings.enabledCategories) ? settings.enabledCategories : undefined;
+  const distribution = deriveDistribution(enrichedTicketData, { enabledCategories });
+  console.log(`[Agentic] ticket shape: ${distribution.primary}; distribution:`, distribution.weights);
+
+  // ── Tool registry wiring existing capabilities ──
+  // NOTE: inspect_element grounds against the crawled knowledge graph, NOT the
+  // active Jira tab (the tab is the ticket page, not the app under test).
+  const tools = new AgentToolRegistry({
+    callAI,
+    settings,
+    ticketData: enrichedTicketData,
+    knowledgeGraph,
+    bm25,
+    coverageMapper,
+    verifierIndex: verifier.index,
+    getAcceptedTests: () => gate.getAccepted(),
+    jiraSearch: makeAgenticJiraSearch(settings),
+    confluenceFetch: makeAgenticConfluenceFetch(settings)
+  });
+
+  // ── Budget: derive from the test-count slider ──
+  const maxTests = clampInt(settings.testCount || settings.maxTestCases || 30, 8, 100);
+  const abort = { cancelled: false };
+  activeAgenticAbort = abort;
+
+  const planner = new PlannerAgent({
+    callAI, settings, tools, gate,
+    ticketData: enrichedTicketData,
+    distribution,
+    allocateCounts: (self.DynamicDistribution && self.DynamicDistribution.allocateCounts) || undefined,
+    onProgress: progress,
+    isCancelled: () => abort.cancelled,
+    budget: {
+      maxTests,
+      maxSteps: Math.min(40, Math.ceil(maxTests * 0.9) + 6),
+      coverageTarget: clampInt(settings.coverageTarget || 80, 40, 100),
+      maxNoProgress: 4
+    }
+  });
+
+  const keepAlive = setInterval(() => safeSendMessageToTab(tabId, { action: 'keepAlive', timestamp: Date.now() }), 5000);
+  try {
+    const result = await planner.run();
+
+    // Surface a real reason when nothing was produced, instead of a silent "0 tests".
+    if (!result.testCases || result.testCases.length === 0) {
+      const aiErr = result.stats?.aiError?.error;
+      const rb = rejectionBreakdown(result.rejected);
+      const rejectedCount = (result.rejected || []).length;
+      let reason;
+      if (aiErr) {
+        reason = `Test generation failed: the AI provider returned an error (${aiErr}). Check that your selected model ("${settings.llmModel}") is valid for your ${settings.llmProvider} API key.`;
+      } else if (rejectedCount > 0) {
+        reason = `Generated ${rejectedCount} candidate test(s), but all were filtered out by the quality gate (${JSON.stringify(rb)}). Try crawling the app first, lowering the relevance/dedup thresholds, or adding more detail to the ticket.`;
+      } else {
+        reason = 'No test cases were generated. The AI returned no parseable test cases — check the service-worker console (chrome://extensions → QAtalyst → service worker) for details.';
+      }
+      console.error('[Agentic] 0 tests produced:', reason, result.stats);
+      return { error: reason };
+    }
+
+    return {
+      success: true,
+      mode: 'agentic',
+      testCases: result.testCases,
+      coverage: result.coverage,
+      distribution: result.distribution,
+      statistics: {
+        total: result.testCases.length,
+        ...result.stats,
+        rejectedCount: (result.rejected || []).length,
+        rejectionBreakdown: rejectionBreakdown(result.rejected)
+      },
+      rejected: (result.rejected || []).slice(0, 50).map(r => ({ title: r.test?.title, stage: r.stage, reason: r.reason }))
+    };
+  } finally {
+    clearInterval(keepAlive);
+    if (activeAgenticAbort === abort) activeAgenticAbort = null;
+  }
+}
+
+/** Map a planner event to the progress shape the content UI expects (agent/step/total/status/count). */
+function agenticProgressView(event) {
+  if (!event) return { agent: 'Planner', step: 0, total: 1, status: 'running' };
+  const total = Number.isFinite(event.maxSteps) ? event.maxSteps : undefined;
+  const step = Number.isFinite(event.step) ? event.step : undefined;
+  const count = Number.isFinite(event.acceptedSoFar) ? event.acceptedSoFar
+    : (Number.isFinite(event.accepted) ? event.accepted : undefined);
+  const base = { agent: 'Planner', step, total, count };
+
+  switch (event.phase) {
+    case 'start':
+      return { ...base, step: 0, status: 'running', description: 'Planning grounded test coverage…' };
+    case 'step':
+      return { ...base, status: 'running', description: `${event.tool}${event.thought ? ' — ' + event.thought : ''}` };
+    case 'observation':
+      return { ...base, status: 'running', description: `${event.tool}: ${event.summary || ''}` };
+    case 'rescue':
+      return { ...base, status: 'running', description: 'Generating targeted tests…' };
+    case 'stop':
+    case 'finish':
+    case 'done':
+      return { ...base, step: total || step, status: 'completed', count: count, description: event.reason || 'Generation complete' };
+    case 'cancelled':
+      return { ...base, status: 'error', error: 'Generation cancelled' };
+    default:
+      return { ...base, status: 'running', description: event.phase };
+  }
+}
+
+function rejectionBreakdown(rejected) {
+  const out = {};
+  for (const r of rejected || []) out[r.stage] = (out[r.stage] || 0) + 1;
+  return out;
+}
+
+/** Jira search adapter for the query_jira tool. Returns undefined if not available. */
+function makeAgenticJiraSearch(settings) {
+  if (typeof HistoricalMiningEngine === 'undefined') return undefined;
+  return async (jql) => {
+    try {
+      const engine = new HistoricalMiningEngine(settings);
+      if (typeof engine.searchJiraIssues === 'function') {
+        const res = await engine.searchJiraIssues(jql);
+        return Array.isArray(res) ? res : (res?.issues || []);
+      }
+    } catch (e) { console.warn('[Agentic] jira search failed:', e.message); }
+    return [];
+  };
+}
+
+/** Confluence fetch adapter for the fetch_confluence tool. Returns undefined if not configured. */
+function makeAgenticConfluenceFetch(settings) {
+  if (!settings || !settings.confluenceUrl || !settings.confluenceToken) return undefined;
+  if (typeof IntegrationManager === 'undefined') return undefined;
+  return async (url) => {
+    try {
+      const mgr = new IntegrationManager(settings);
+      const content = await mgr.confluence.fetchPage(url);
+      return typeof content === 'string' ? content : (content?.content || content?.text || '');
+    } catch (e) { console.warn('[Agentic] confluence fetch failed:', e.message); return ''; }
+  };
+}
+
+function clampInt(n, lo, hi) { n = parseInt(n, 10); if (!Number.isFinite(n)) n = lo; return Math.max(lo, Math.min(hi, n)); }
+
 async function handleGenerateTestCasesMultiAgent(data, tabId) {
   console.log('🎯 Background: handleGenerateTestCasesMultiAgent called');
   console.log('🎯 Background: data received:', { ticketKey: data.ticketKey, hasSettings: !!data.settings });

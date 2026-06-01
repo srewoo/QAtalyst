@@ -3,19 +3,25 @@
 // Model options - keep in sync with popup.js
 const modelOptions = {
   openai: [
-    { value: 'gpt-4.1',      label: 'GPT-4.1 (Recommended) — 1M ctx, 32K output' },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast & Cheap) — 1M ctx' },
-    { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano (Cheapest) — 1M ctx' },
-    { value: 'o1',           label: 'O1 (Reasoning)' }
+    { value: 'gpt-5.2',      label: 'GPT-5.2 (Recommended)' },
+    { value: 'gpt-5.2-mini', label: 'GPT-5.2 Mini (Fast & Cheap)' },
+    { value: 'gpt-4.1',      label: 'GPT-4.1 — 1M ctx, 32K output' },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini — 1M ctx' },
+    { value: 'o3',           label: 'o3 (Reasoning)' },
+    { value: 'o4-mini',      label: 'o4-mini (Fast reasoning)' }
   ],
   claude: [
-    { value: 'claude-sonnet-4-20250514', label: 'Claude 4.5 Sonnet (Latest)' },
-    { value: 'claude-sonnet-4-20250111', label: 'Claude 4.1 Sonnet' },
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.7 Sonnet' }
+    { value: 'claude-opus-4-8',              label: 'Claude Opus 4.8 (Most capable)' },
+    { value: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6 (Recommended)' },
+    { value: 'claude-haiku-4-5-20251001',    label: 'Claude Haiku 4.5 (Fast & Cheap)' },
+    { value: 'claude-sonnet-4-5-20250929',   label: 'Claude Sonnet 4.5' },
+    { value: 'claude-3-7-sonnet-20250219',   label: 'Claude 3.7 Sonnet' },
+    { value: 'claude-3-5-sonnet-20241022',   label: 'Claude 3.5 Sonnet v2 (legacy)' }
   ],
   gemini: [
-    { value: 'gemini-2.5-pro-exp-03', label: 'Gemini 2.5 Pro (Recommended)' },
-    { value: 'gemini-2.5-flash-exp', label: 'Gemini 2.5 Flash (Fast & Cheap)' }
+    { value: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro (Recommended)' },
+    { value: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash (Fast & Cheap)' },
+    { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (Cheapest)' }
   ],
   bedrock: [
     // ── Global Inference Profiles — callable from any AWS region incl. ap-southeast-1 ──
@@ -179,6 +185,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'maxTokens',
     'enableStreaming',
     'enableMultiAgent',
+    'useAgenticMode',
+    'coverageTarget',
     'testCount',
     'enableContextAnalysisAgent',
     'enableRequirementAnalysisAgent',
@@ -312,6 +320,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('maxTokens').value = settings.maxTokens || 32768;
   document.getElementById('enableStreaming').checked = settings.enableStreaming !== false;
   document.getElementById('enableMultiAgent').checked = settings.enableMultiAgent || false;
+  if (document.getElementById('useAgenticMode')) {
+    document.getElementById('useAgenticMode').checked = settings.useAgenticMode !== false; // default ON
+  }
+  if (document.getElementById('coverageTarget')) {
+    document.getElementById('coverageTarget').value = settings.coverageTarget || 80;
+  }
 
   // Debug logging
   console.log('📖 Loaded Multi-Agent Settings:', {
@@ -616,6 +630,8 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     maxTokens: parseInt(document.getElementById('maxTokens').value),
     enableStreaming: document.getElementById('enableStreaming').checked,
     enableMultiAgent: document.getElementById('enableMultiAgent').checked,
+    useAgenticMode: document.getElementById('useAgenticMode') ? document.getElementById('useAgenticMode').checked : true,
+    coverageTarget: document.getElementById('coverageTarget') ? parseInt(document.getElementById('coverageTarget').value) || 80 : 80,
     testCount: parseInt(document.getElementById('testCount').value),
 
     // Agent Configuration
@@ -960,9 +976,8 @@ document.getElementById('testJiraAuth').addEventListener('click', async () => {
 
       console.log('🔍 Testing Jira auth to:', apiUrl);
       console.log('📧 Email:', cleanEmail);
+      // Log length only — never any portion of the token itself.
       console.log('🔑 Token length:', cleanToken.length);
-      console.log('🔑 Token starts with:', cleanToken.substring(0, 10) + '...');
-      console.log('🔑 Token ends with:', '...' + cleanToken.substring(cleanToken.length - 10));
     } catch (encodingError) {
       statusDiv.innerHTML = '<div style="color: #dc2626; font-size: 13px;">❌ Token encoding error: Please copy the token again without any extra characters</div>';
       return;
