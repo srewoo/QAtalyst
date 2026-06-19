@@ -145,12 +145,14 @@ class AgentToolRegistry {
     count = Math.max(1, Math.min(12, count | 0 || 5));
     const ground = this.groundingContext();
     const ticket = this.ctx.ticketData || {};
+    const alreadyCovered = this.acceptedSummaries();
     const system = [
       'You are a meticulous QA engineer generating GROUNDED, executable test cases.',
       'RULES:',
       '- Reference ONLY UI elements, fields, buttons, routes and APIs that appear in the "REAL APP ENTITIES" list. Never invent selectors or fields.',
       '- Each test must be specific and independently executable. No vague verbs ("verify it works").',
       '- Steps must be concrete actions; expected_result must be observable.',
+      '- DO NOT duplicate or re-state any scenario already listed under "ALREADY COVERED". Each new test must exercise a DISTINCT behaviour, field, or path. Rewording an existing test is NOT a new test.',
       `- Generate exactly ${count} ${category} test cases focused on: ${focus || 'the ticket as a whole'}.`,
       'Return ONLY a JSON array of objects: {title, category, priority(P0-P3), preconditions, steps[], expected_result, test_data}.'
     ].join('\n');
@@ -162,8 +164,9 @@ class AgentToolRegistry {
       '',
       'REAL APP ENTITIES (use these — do not invent others):',
       ground,
+      alreadyCovered ? `\nALREADY COVERED (do NOT repeat these — generate genuinely new scenarios):\n${alreadyCovered}` : '',
       '',
-      `Now produce ${count} ${category} tests focused on: ${focus || 'core behaviour'}.`
+      `Now produce ${count} NEW ${category} tests focused on: ${focus || 'core behaviour'}.`
     ].filter(Boolean).join('\n');
 
     const resp = await this.ctx.callAI(system, [{ type: 'text', text: user }], this.ctx.settings);
@@ -205,6 +208,22 @@ class AgentToolRegistry {
   }
 
   // ───────────────────────── helpers ─────────────────────────
+
+  /**
+   * Compact list of already-accepted test titles so the LLM doesn't regenerate
+   * them. Bounded to the most recent ~25 to keep the prompt small; the stateful
+   * AcceptanceGate is still the hard guarantee — this just stops the model from
+   * wasting the budget proposing dupes the gate would reject anyway.
+   */
+  acceptedSummaries() {
+    const accepted = this.ctx.getAcceptedTests ? (this.ctx.getAcceptedTests() || []) : [];
+    if (!accepted.length) return '';
+    return accepted
+      .slice(-25)
+      .map(t => `- ${(t.title || t.description || '').toString().slice(0, 100)}`)
+      .filter(s => s.length > 2)
+      .join('\n');
+  }
 
   /** Compact, token-bounded list of real app entities for grounding generation. */
   groundingContext() {

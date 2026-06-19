@@ -1,69 +1,9 @@
 /**
- * Tests for parseRobustJSON and extractCompleteObjectsFromArray.
- * These functions are the last line of defence against malformed LLM JSON output.
- * We isolate them from the browser extension environment via inline re-implementation
- * so tests run in Node without chrome/importScripts globals.
+ * Tests for parseRobustJSON and extractCompleteObjectsFromArray — the last line
+ * of defence against malformed LLM JSON output. These import the REAL shipped
+ * module (json-parser.js) so the tests can never drift from production behaviour.
  */
-
-// ---------------------------------------------------------------------------
-// Inline the pure functions under test (no browser globals needed)
-// ---------------------------------------------------------------------------
-function extractCompleteObjectsFromArray(jsonString) {
-  const objects = [];
-  let depth = 0;
-  let inString = false;
-  let escapeNext = false;
-  let objectStart = -1;
-
-  for (let i = 0; i < jsonString.length; i++) {
-    const char = jsonString[i];
-    if (escapeNext) { escapeNext = false; continue; }
-    if (char === '\\' && inString) { escapeNext = true; continue; }
-    if (char === '"' && !escapeNext) { inString = !inString; continue; }
-    if (inString) continue;
-    if (char === '{') {
-      if (depth === 0) objectStart = i;
-      depth++;
-    } else if (char === '}') {
-      depth--;
-      if (depth === 0 && objectStart !== -1) {
-        const objectStr = jsonString.substring(objectStart, i + 1);
-        try { objects.push(JSON.parse(objectStr)); } catch (_) { /* skip */ }
-        objectStart = -1;
-      }
-    }
-  }
-  return objects;
-}
-
-function parseRobustJSON(jsonString) {
-  try { return JSON.parse(jsonString); } catch (_) { /* fall through */ }
-
-  let fixed = jsonString;
-  fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
-  fixed = fixed.replace(/"\s*\n\s*"/g, '",\n"');
-  fixed = fixed.replace(/(\]|\})\s*\n\s*"/g, '$1,\n"');
-  fixed = fixed.replace(/\/\/.*/g, '');
-  fixed = fixed.replace(/\/\*[\s\S]*?\*\//g, '');
-
-  try { return JSON.parse(fixed); } catch (_) { /* fall through */ }
-
-  if (fixed.trim().startsWith('[')) {
-    const complete = extractCompleteObjectsFromArray(fixed);
-    if (complete.length > 0) return complete;
-  }
-
-  const innerArrayMatch = fixed.match(/"testCases"\s*:\s*(\[[\s\S]*)/);
-  if (innerArrayMatch) {
-    const complete = extractCompleteObjectsFromArray(innerArrayMatch[1]);
-    if (complete.length > 0) return { testCases: complete };
-  }
-
-  const match = fixed.match(/\{[\s\S]*\}/);
-  if (match) { try { return JSON.parse(match[0]); } catch (_) { /* fall through */ } }
-
-  throw new Error('JSON parsing failed');
-}
+const { parseRobustJSON, extractCompleteObjectsFromArray } = require('../json-parser.js');
 
 // ---------------------------------------------------------------------------
 // Tests

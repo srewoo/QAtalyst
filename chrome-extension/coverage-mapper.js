@@ -72,8 +72,9 @@ class CoverageMapper {
         coveredFeatures: mappedFeatures
       });
 
-      // Mark features as covered
+      // Mark features as covered (LOW confidence = mentioned only, not exercised)
       mappedFeatures.forEach(feature => {
+        if (feature.confidence === 'LOW') return;
         if (feature.type === 'form') {
           const formDetail = coverage.forms.details.find(f => f.id === feature.id);
           if (formDetail) formDetail.covered = true;
@@ -117,9 +118,12 @@ class CoverageMapper {
       covered: false
     }));
 
-    // Re-mark covered features (since we just reinitialized)
+    // Re-mark covered features (since we just reinitialized).
+    // v13.2: only HIGH/MEDIUM confidence counts as "covered" — LOW means the
+    // entity was merely name-dropped, not exercised, and must NOT inflate the %.
     coverage.testMapping.forEach(mapping => {
       mapping.coveredFeatures.forEach(feature => {
+        if (feature.confidence === 'LOW') return;
         if (feature.type === 'form') {
           const formDetail = coverage.forms.details.find(f => f.id === feature.id);
           if (formDetail) formDetail.covered = true;
@@ -256,91 +260,86 @@ class CoverageMapper {
   mapTestToFeatures(testCase, inventory) {
     const coveredFeatures = [];
 
-    // Combine all test text
-    const allText = [
-      testCase.title || '',
-      testCase.description || '',
-      testCase.preconditions || '',
+    // v13.2 — STRUCTURAL coverage: an entity counts as "covered" only if the
+    // test ACTUALLY EXERCISES it, not merely mentions it in prose. We therefore
+    // score against the actionable part of the test (steps + expected_result),
+    // and require an action verb near the entity. Title/description/preconditions
+    // are excluded — a test titled "verify login form" that never touches the
+    // form in its steps no longer inflates coverage.
+    const actionText = [
       testCase.expected_result || '',
-      ...(testCase.steps || [])
+      ...(Array.isArray(testCase.steps) ? testCase.steps : [])
     ].join(' ').toLowerCase();
 
-    // Check forms
+    // Cheap reference set used only as a weak fallback signal.
+    const mentionText = [
+      testCase.title || '', testCase.description || ''
+    ].join(' ').toLowerCase();
+
+    const hasAction = (re) => re.test(actionText);
+    const FORM_ACTION = /\b(submit|fill|enter|type|input|complete|save|create|update|sign\s?up|register|log\s?in)\b/;
+    const BTN_ACTION = /\b(click|tap|press|select|choose|toggle|hit)\b/;
+    const API_ACTION = /\b(get|post|put|patch|delete|call|request|response|status\s?code|returns?|api|endpoint)\b/;
+    const NAV_ACTION = /\b(navigate|go to|open|visit|load|redirect|land on)\b/;
+
+    // Check forms — require a form action AND a reference to the form/its fields in steps.
     inventory.forms.forEach(form => {
       const formId = (form.id || '').toLowerCase();
-      if (formId && allText.includes(formId)) {
-        coveredFeatures.push({
-          type: 'form',
-          id: form.id,
-          confidence: 'HIGH'
-        });
-      } else {
-        // Check if any form fields are mentioned
-        const mentionedFields = form.fields.filter(field =>
-          allText.includes(field.toLowerCase())
-        );
-        if (mentionedFields.length > 0) {
-          coveredFeatures.push({
-            type: 'form',
-            id: form.id,
-            confidence: mentionedFields.length >= form.fields.length / 2 ? 'HIGH' : 'MEDIUM'
-          });
-        }
+      const fieldsInSteps = (form.fields || []).filter(f => f && actionText.includes(String(f).toLowerCase()));
+      const formIdInSteps = formId && actionText.includes(formId);
+
+      if ((formIdInSteps || fieldsInSteps.length > 0) && hasAction(FORM_ACTION)) {
+        const strong = formIdInSteps || fieldsInSteps.length >= Math.max(1, (form.fields || []).length / 2);
+        coveredFeatures.push({ type: 'form', id: form.id, confidence: strong ? 'HIGH' : 'MEDIUM' });
+      } else if ((formId && mentionText.includes(formId)) || fieldsInSteps.length > 0) {
+        // Mentioned/partially touched but not clearly exercised.
+        coveredFeatures.push({ type: 'form', id: form.id, confidence: 'LOW' });
       }
     });
 
-    // Check APIs
+    // Check APIs — require the endpoint/method to appear in the actionable text.
     inventory.apis.forEach(api => {
       const endpoint = (api.endpoint || '').toLowerCase();
-      if (endpoint && allText.includes(endpoint)) {
-        coveredFeatures.push({
-          type: 'api',
-          id: api.endpoint,
-          confidence: 'HIGH'
-        });
-      } else if (api.method && allText.includes(api.method.toLowerCase())) {
-        // Check if method + partial endpoint match
-        const endpointParts = endpoint.split('/').filter(Boolean);
-        const matchedParts = endpointParts.filter(part => allText.includes(part));
-        if (matchedParts.length >= endpointParts.length / 2) {
-          coveredFeatures.push({
-            type: 'api',
-            id: api.endpoint,
-            confidence: 'MEDIUM'
-          });
+      const method = (api.method || '').toLowerCase();
+      const endpointInSteps = endpoint && actionText.includes(endpoint);
+      const methodInSteps = method && actionText.includes(method);
+
+      if (endpointInSteps && (methodInSteps || hasAction(API_ACTION))) {
+        coveredFeatures.push({ type: 'api', id: api.endpoint, confidence: 'HIGH' });
+      } else if (endpointInSteps) {
+        coveredFeatures.push({ type: 'api', id: api.endpoint, confidence: 'MEDIUM' });
+      } else if (methodInSteps) {
+        // method + at least half the endpoint path segments present in steps
+        const parts = endpoint.split('/').filter(Boolean);
+        const matched = parts.filter(p => actionText.includes(p));
+        if (parts.length && matched.length >= parts.length / 2) {
+          coveredFeatures.push({ type: 'api', id: api.endpoint, confidence: 'MEDIUM' });
         }
       }
     });
 
-    // Check buttons
+    // Check buttons — require a click-style action on the button in steps.
     inventory.buttons.forEach(button => {
       const buttonText = (button.text || '').toLowerCase();
-      if (buttonText && allText.includes(buttonText)) {
-        coveredFeatures.push({
-          type: 'button',
-          id: button.text,
-          confidence: 'HIGH'
-        });
+      if (!buttonText) return;
+      if (actionText.includes(buttonText) && hasAction(BTN_ACTION)) {
+        coveredFeatures.push({ type: 'button', id: button.text, confidence: 'HIGH' });
+      } else if (actionText.includes(buttonText) || mentionText.includes(buttonText)) {
+        coveredFeatures.push({ type: 'button', id: button.text, confidence: 'LOW' });
       }
     });
 
-    // Check pages
+    // Check pages — require a navigation action or the URL/title in actionable text.
     inventory.pages.forEach(page => {
       const pageUrl = (page.url || '').toLowerCase();
       const pageTitle = (page.title || '').toLowerCase();
 
-      if (pageUrl && allText.includes(pageUrl)) {
-        coveredFeatures.push({
-          type: 'page',
-          id: page.url,
-          confidence: 'HIGH'
-        });
-      } else if (pageTitle && allText.includes(pageTitle)) {
-        coveredFeatures.push({
-          type: 'page',
-          id: page.url,
-          confidence: 'MEDIUM'
-        });
+      if (pageUrl && actionText.includes(pageUrl) && hasAction(NAV_ACTION)) {
+        coveredFeatures.push({ type: 'page', id: page.url, confidence: 'HIGH' });
+      } else if (pageUrl && actionText.includes(pageUrl)) {
+        coveredFeatures.push({ type: 'page', id: page.url, confidence: 'MEDIUM' });
+      } else if (pageTitle && (actionText.includes(pageTitle) || mentionText.includes(pageTitle))) {
+        coveredFeatures.push({ type: 'page', id: page.url, confidence: 'LOW' });
       }
     });
 

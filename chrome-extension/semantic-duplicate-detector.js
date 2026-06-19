@@ -9,7 +9,7 @@
  */
 
 class SemanticDuplicateDetector {
-  constructor(threshold = 0.65) {
+  constructor(threshold = 0.62) {
     this.threshold = threshold;
     this.cache = new Map();
 
@@ -682,30 +682,62 @@ class SemanticDuplicateDetector {
     };
   }
 
+  /**
+   * Quality score used to pick the survivor among near-duplicates.
+   *
+   * v13.2: rebalanced to reward STRUCTURE and SPECIFICITY, not raw length.
+   * The previous version summed character counts (description.length/10, etc.),
+   * which systematically kept the most verbose duplicate and discarded the
+   * concise, clearer one. Length now contributes only a small, capped "is it
+   * fleshed out at all" signal; the real weight is on concrete, executable
+   * structure (distinct steps, observable result, test data) and specificity
+   * (presence of identifiers/values rather than vague prose).
+   */
   getTestQualityScore(test) {
     let score = 0;
 
-    if (test.description) {
-      score += test.description.length / 10;
+    // Structure: number of distinct, non-trivial steps (capped so a test
+    // padded with extra steps can't beat a tight one on volume alone).
+    if (Array.isArray(test.steps)) {
+      const meaningfulSteps = test.steps
+        .map(s => String(s || '').trim())
+        .filter(s => s.length > 3);
+      score += Math.min(meaningfulSteps.length, 8) * 4; // up to 32
     }
 
-    if (test.steps && Array.isArray(test.steps)) {
-      score += test.steps.length * 5;
-      score += test.steps.join('').length / 20;
-    }
+    // Has the essentials of an executable test.
+    if (test.expected_result && String(test.expected_result).trim().length > 5) score += 12;
+    if (test.test_data && String(test.test_data).trim()) score += 8;
+    if (test.preconditions && String(test.preconditions).trim()) score += 4;
+    if (test.description && String(test.description).trim().length > 10) score += 4;
 
-    if (test.expected_result) {
-      score += test.expected_result.length / 10;
-    }
+    // Specificity: concrete signals (identifiers, numbers, quoted values,
+    // selectors, endpoints) beat vague prose. This is what we actually want
+    // to preserve when two tests say the same thing.
+    score += Math.min(this.specificitySignals(test), 6) * 3; // up to 18
 
-    if (test.test_data) score += 10;
-    if (test.preconditions) score += 5;
-
+    // Priority of the scenario itself.
     if (test.priority === 'P0') score += 15;
     else if (test.priority === 'P1') score += 10;
     else if (test.priority === 'P2') score += 5;
 
     return score;
+  }
+
+  /** Count concrete-specificity signals across the test's actionable text. */
+  specificitySignals(test) {
+    const text = [
+      test.title, test.expected_result, test.test_data,
+      ...(Array.isArray(test.steps) ? test.steps : [])
+    ].filter(Boolean).join(' ');
+    let n = 0;
+    if (/["'][^"']+["']/.test(text)) n++;                 // quoted literal values
+    if (/\b\d+\b/.test(text)) n++;                        // numbers / boundaries
+    if (/[#.][a-z][\w-]+|\[[^\]]+\]|data-[\w-]+/i.test(text)) n++; // selectors/attrs
+    if (/\/[a-z0-9][\w\/-]+/i.test(text)) n++;            // routes / endpoints
+    if (/\b(GET|POST|PUT|PATCH|DELETE)\b/.test(text)) n++; // HTTP methods
+    if (/\b[\w.+-]+@[\w-]+\.[a-z]{2,}\b/i.test(text)) n++; // emails / sample data
+    return n;
   }
 
   // ========== DEPRECATED METHODS (kept for reference) ==========

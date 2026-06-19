@@ -12,9 +12,11 @@
       "maxDepth": 5,
       "maxQueueSize": 1000,
       "queueWarningThreshold": 500,
+      "maxParamVariantsPerPath": 25,
+      "maxValuesPerParamKey": 50,
       "timeout": 600000,
       "pageTimeout": 40000,
-      "description": "Reduced limits to prevent queue overflow on large e-commerce sites. Increase maxPages for thorough crawls."
+      "description": "Reduced limits to prevent queue overflow on large e-commerce sites. Increase maxPages for thorough crawls. maxParamVariantsPerPath / maxValuesPerParamKey cap faceted-filter URL explosion (?color=red&size=M&sort=...)."
     },
 
     "delays": {
@@ -336,6 +338,7 @@
   "domExtraction": {
     "description": "DOM Feature Extraction Configuration",
     "enabled": true,
+    "recordExternalEmbeds": true,
 
     "textContent": {
       "enabled": true,

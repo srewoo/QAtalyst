@@ -23,14 +23,28 @@ const STOPWORDS = new Set(('a an the and or but if then else for to of in on at 
   'this that these those it its they them user users system page click clicks enter verify check ' +
   'test tests case cases valid invalid should when given and ensure displayed shown correct').split(/\s+/));
 
+// Shared concept-normalisation primitives (synonym + stem canonicalisation).
+// Resolved from the global (service worker importScripts) or via require (tests).
+const TS = (typeof TextSimilarity !== 'undefined' && TextSimilarity)
+  || (typeof self !== 'undefined' && self.TextSimilarity)
+  || (typeof require !== 'undefined' ? require('./text-similarity.js') : null);
+
+// Free, offline embedding (feature-hashed concept + char-gram vectors). When
+// present, relevance is the cosine between a test's embedding and a reference
+// embedding built once from the ticket+app vocabulary — this captures semantic
+// (not merely lexical) relevance. Falls back to concept-overlap when absent.
+const EMB = (typeof Embeddings !== 'undefined' && Embeddings)
+  || (typeof self !== 'undefined' && self.Embeddings)
+  || (typeof require !== 'undefined' ? require('./embeddings.js') : null);
+
 class AcceptanceGate {
   /**
    * @param {object} cfg
    * @param {object} cfg.knowledgeGraph
    * @param {object} cfg.ticketData
    * @param {object} [cfg.deps] { GroundedVerifier, SemanticDuplicateDetector } (defaults from self)
-   * @param {number} [cfg.dedupThreshold=0.78] similarity at/above which a test is a duplicate
-   * @param {number} [cfg.relevanceThreshold=0.12] min relevance score to be considered on-topic
+   * @param {number} [cfg.dedupThreshold=0.68] similarity at/above which a test is a duplicate
+   * @param {number} [cfg.relevanceThreshold=0.25] min relevance score to be considered on-topic
    * @param {number} [cfg.minGroundingScore=0.5]
    */
   constructor(cfg = {}) {
@@ -38,14 +52,26 @@ class AcceptanceGate {
     const GV = deps.GroundedVerifier || (typeof GroundedVerifier !== 'undefined' ? GroundedVerifier : null);
     const SDD = deps.SemanticDuplicateDetector || (typeof SemanticDuplicateDetector !== 'undefined' ? SemanticDuplicateDetector : null);
 
-    this.dedupThreshold = cfg.dedupThreshold ?? 0.78;
-    this.relevanceThreshold = cfg.relevanceThreshold ?? 0.12;
+    // Defaults tightened (v13.2): dedup 0.78→0.68 catches near-duplicates that
+    // differ only in wording; relevance 0.12→0.25 rejects tests that merely share
+    // an incidental token ("user", "page") with the ticket. Both still overridable
+    // per-call via settings / adaptive thresholds.
+    this.dedupThreshold = cfg.dedupThreshold ?? 0.68;
+    this.relevanceThreshold = cfg.relevanceThreshold ?? 0.25;
 
     this.verifier = GV ? new GV(cfg.knowledgeGraph, { minGroundingScore: cfg.minGroundingScore }) : null;
     this.dedup = SDD ? new SDD(this.dedupThreshold) : null;
 
     this.referenceVocab = this.buildReferenceVocab(cfg.ticketData, cfg.knowledgeGraph);
     this.relevanceApplicable = this.referenceVocab.size > 0;
+
+    // Build the reference EMBEDDING once: an L2-normalized vector over the same
+    // concept vocabulary used for the overlap path. Used when Embeddings is
+    // available; otherwise we fall back to the concept-overlap score below.
+    this.embeddings = EMB && typeof EMB.embed === 'function' ? EMB : null;
+    this.referenceVector = (this.embeddings && this.relevanceApplicable)
+      ? this.embeddings.embed(Array.from(this.referenceVocab.keys()).join(' '))
+      : null;
 
     this.accepted = [];        // tests admitted so far
     this.rejected = [];        // { test, stage, reason }
@@ -74,6 +100,17 @@ class AcceptanceGate {
           this.stats.repaired++;
         }
         test._groundingScore = g.score;
+        // v13.2: make the no-KG hole visible. When grounding can't run (no crawl
+        // data) the test is admitted but explicitly flagged 'unverified' rather
+        // than treated as grounded, so the UI/consumer can mark it for manual
+        // verification. With a KG present, it's a real 'verified' result.
+        test._grounding = (g.verdict === 'not_applicable' || g.unverified) ? 'unverified' : 'verified';
+        // Surface hallucinated-behaviour warnings (auto-sync/email/polling with no
+        // supporting API) so reviewers see them even when the test is admitted.
+        if (g.behaviorWarnings && g.behaviorWarnings.length) {
+          test._behaviorWarnings = g.behaviorWarnings;
+          this.stats.behaviorWarnings = (this.stats.behaviorWarnings || 0) + 1;
+        }
       }
 
       // ── 2. RELEVANCE ──
@@ -111,33 +148,53 @@ class AcceptanceGate {
   // ───────────────────────── relevance ─────────────────────────
 
   /**
-   * Relevance = weighted overlap between the test's content tokens and the
-   * reference vocabulary (ticket terms weighted higher than app terms),
-   * normalized by the test's own content-token count so short and long tests
-   * are scored comparably.
+   * Relevance = CONCEPT-level overlap between the test and the reference
+   * vocabulary. Both the test and the vocabulary are canonicalised to concepts
+   * (sign-in/authenticate/log-in → `login`, btn/cta → `button`, creating →
+   * `create`), so a test is judged relevant when it talks about the same THINGS
+   * as the ticket/app — even with entirely different wording — rather than when
+   * it happens to share surface tokens. Score is the mean reference weight over
+   * the test's distinct concepts, in ~[0,1].
    */
   relevanceScore(test) {
-    const tokens = tokenize([
+    const text = [
       test.title, test.description, test.expected_result,
       ...(Array.isArray(test.steps) ? test.steps : [])
-    ].filter(Boolean).join(' '));
-    if (tokens.length === 0) return 0;
+    ].filter(Boolean).join(' ');
+
+    // Preferred path: embedding-vector cosine. Captures semantically related
+    // tests (e.g. "authenticate the account" vs a login ticket) that share few
+    // surface tokens with the ticket but mean the same thing.
+    if (this.embeddings && this.referenceVector) {
+      return this.embeddings.cosine(this.embeddings.embed(text), this.referenceVector);
+    }
+
+    // Fallback: concept-overlap mean weight (when Embeddings is unavailable).
+    const concepts = this.conceptTokens(text);
+    if (concepts.length === 0) return 0;
     let matchedWeight = 0;
     const seen = new Set();
-    for (const tok of tokens) {
-      if (seen.has(tok)) continue;
-      seen.add(tok);
-      const w = this.referenceVocab.get(tok);
+    for (const c of concepts) {
+      if (seen.has(c)) continue;
+      seen.add(c);
+      const w = this.referenceVocab.get(c);
       if (w) matchedWeight += w;
     }
-    // normalize by sqrt of distinct token count (dampens long-test inflation)
+    // Mean weight over distinct concepts → a concept that is squarely on-topic
+    // scores ~1.0; off-topic tests trend to ~0. Mild sqrt damping keeps long,
+    // partially-relevant tests from being unfairly penalised.
     return matchedWeight / Math.sqrt(seen.size);
+  }
+
+  /** Canonicalise text to concept tokens (delegates to TextSimilarity; falls back to plain tokens). */
+  conceptTokens(text) {
+    return TS ? TS.canonicalTokens(text) : tokenize(text);
   }
 
   buildReferenceVocab(ticketData, knowledgeGraph) {
     const vocab = new Map();
     const add = (text, weight) => {
-      for (const tok of tokenize(text)) {
+      for (const tok of this.conceptTokens(text)) {
         vocab.set(tok, Math.max(vocab.get(tok) || 0, weight));
       }
     };

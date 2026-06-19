@@ -28,6 +28,10 @@ if (typeof DOMExtractor === 'undefined') {
       this.pageHints = {};
       this.pierceShadowDom = getConfig('domExtraction.pierceShadowDom', true);
       this.extractIframes = getConfig('domExtraction.extractIframes', true);
+      // Record cross-origin (unreadable) iframes so the knowledge graph still
+      // knows an embed exists, even though its internals can't be read.
+      this.recordExternalEmbeds = getConfig('domExtraction.recordExternalEmbeds', true);
+      this.externalEmbeds = [];
     }
 
     /**
@@ -109,7 +113,13 @@ if (typeof DOMExtractor === 'undefined') {
       // NEW: Detect page-level hints (lazy load, dynamic content)
       this.pageHints = this.detectPageHints();
 
-      console.log(`📊 DOM Extraction: Found ${this.features.length} features, ${this.errorPatterns.length} error patterns`);
+      // NEW: Record cross-origin iframes (embedded widgets we can't read into)
+      this.extractExternalEmbeds();
+      if (this.externalEmbeds.length > 0) {
+        this.pageHints.externalEmbeds = this.externalEmbeds;
+      }
+
+      console.log(`📊 DOM Extraction: Found ${this.features.length} features, ${this.errorPatterns.length} error patterns, ${this.externalEmbeds.length} external embeds`);
     } catch (error) {
       console.error('❌ DOM extraction error:', error);
     }
@@ -129,6 +139,93 @@ if (typeof DOMExtractor === 'undefined') {
    */
   getPageHints() {
     return this.pageHints;
+  }
+
+  /**
+   * Get recorded external (cross-origin) embeds.
+   */
+  getExternalEmbeds() {
+    return this.externalEmbeds;
+  }
+
+  /**
+   * Resolve the origin of an iframe src against the current document.
+   * @returns {string|null}
+   */
+  getEmbedOrigin(src) {
+    if (!src) return null;
+    try {
+      const base = (typeof document !== 'undefined' && document.baseURI) || undefined;
+      return new URL(src, base).origin;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Record iframes on the page, distinguishing readable same-origin frames from
+   * cross-origin embeds whose internals the browser forbids us from reading.
+   *
+   * Same-origin iframe contents are already pierced by querySelectorDeep; this
+   * surfaces the EXISTENCE of cross-origin embeds (their src + that they are
+   * unreadable) so the knowledge graph knows an embedded widget is present.
+   *
+   * @returns {Array<{type:string, src:string, origin:(string|null), crossOrigin:boolean, readable:boolean, title:(string|undefined)}>}
+   */
+  extractExternalEmbeds() {
+    this.externalEmbeds = [];
+    if (!this.recordExternalEmbeds) return this.externalEmbeds;
+    if (typeof document === 'undefined') return this.externalEmbeds;
+
+    let pageOrigin = null;
+    try {
+      pageOrigin = (typeof location !== 'undefined' && location.origin)
+        ? location.origin
+        : new URL(document.baseURI).origin;
+    } catch (e) { /* pageOrigin stays null */ }
+
+    let iframes = [];
+    try {
+      iframes = document.querySelectorAll('iframe');
+    } catch (e) {
+      return this.externalEmbeds;
+    }
+
+    for (let i = 0; i < iframes.length; i++) {
+      const iframe = iframes[i];
+      const src = iframe.getAttribute('src') || iframe.src || '';
+      const origin = this.getEmbedOrigin(src);
+
+      // Determine readability: cross-origin frames throw or return null on
+      // contentDocument access. Treat any access failure as cross-origin.
+      let readable = false;
+      try {
+        readable = !!iframe.contentDocument;
+      } catch (e) {
+        readable = false;
+      }
+
+      // An iframe is cross-origin if its src resolves to a different origin than
+      // the page, OR the browser denied access to its document.
+      const crossOrigin = (origin !== null && pageOrigin !== null && origin !== pageOrigin) || !readable;
+
+      // Only record the cross-origin / unreadable embeds — same-origin frames are
+      // already crawled in-place via querySelectorDeep.
+      if (crossOrigin) {
+        const embed = {
+          type: 'externalEmbed',
+          src: src,
+          origin: origin,
+          crossOrigin: true,
+          readable: false
+        };
+        const title = iframe.getAttribute('title');
+        if (title) embed.title = title;
+        this.externalEmbeds.push(embed);
+      }
+    }
+
+    return this.externalEmbeds;
   }
 
   /**

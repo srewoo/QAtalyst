@@ -307,3 +307,7 @@ const rateLimiters = {
 function getRateLimiter(service) {
   return rateLimiters[service] || new RateLimiter();
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { RateLimiter, getRateLimiter, rateLimiters };
+}

@@ -1,16 +1,16 @@
 # Agentic Test Generation (v13+)
 
-QAtalyst's test generation has a second engine: a **planner-driven, grounded,
-coverage-feedback loop** that replaces the old fixed `Phase1→2→3` pipeline and the
-"genetic algorithm". It is enabled by default whenever the Multi-Agent System is on
-(toggle **Agentic Mode** in Options → API Settings to fall back to the classic
-pipeline).
+QAtalyst's test generation engine is a **planner-driven, grounded,
+coverage-feedback loop**. As of **v13.2 it is the only engine** — the old fixed
+`Phase1→2→3` multi-agent pipeline and the "genetic algorithm" were removed, along
+with `agents.js`, `evolution.js`, `duplicate-detector.js`, `test-validator.js` and
+`enhancements.js`. It runs whenever the Multi-Agent System is on.
 
 ## Why
 
-The classic pipeline ran a fixed sequence of agents with a hardcoded 40/25/20/10/5
-test distribution and a fake GA, and had no defense against duplicate or
-hallucinated ("irrelevant") tests. The agentic engine fixes all of that.
+The retired classic pipeline ran a fixed sequence of agents with a hardcoded
+40/25/20/10/5 test distribution and a fake GA, and had no defense against duplicate
+or hallucinated ("irrelevant") tests. The agentic engine fixes all of that.
 
 ## How it works
 
@@ -91,10 +91,21 @@ Tests: `tests/groundedVerifier.test.js`, `tests/acceptanceGate.test.js`,
 
 ## Settings
 
-- `useAgenticMode` (default `true`) — use the agentic engine (requires `enableMultiAgent`).
+- `enableMultiAgent` — turns the engine on (the agentic engine is the only engine).
 - `coverageTarget` (default `80`) — stop generating once this % of real app features is covered.
-- `dedupThreshold` (default `0.78`), `relevanceThreshold` (default `0.12`) — gate tuning.
+- `dedupThreshold` (default `0.68`), `relevanceThreshold` (default `0.25`) — gate tuning.
+  When unset, both are derived per-run by `deriveAdaptiveThresholds` (background.js)
+  from KG richness + ticket length.
 - `testCount` — upper bound on the test budget.
+
+## Behaviour validation (v13.2)
+
+`grounded-verifier.js` also flags hallucinated **behaviours** — a test asserting
+`auto-sync`, `email notification`, `real-time/polling`, `webhook`, `scheduled job`,
+`retry`, etc. with no supporting API in the crawl. Conservative by default (only
+when the crawl has ≥3 APIs, so a thin crawl can't false-reject); warnings are
+attached as `_behaviorWarnings` and apply a grounding-score penalty. Set
+`strictBehaviors` to hard-reject instead of warn.
 
 ## Not yet wired (graceful no-ops)
 

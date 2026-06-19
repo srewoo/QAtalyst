@@ -12,99 +12,7 @@
   // Used to bridge the gap between the immediate ACK and the final streamComplete message.
   const pendingStreamCompletions = new Map();
 
-  /**
-   * Escape HTML special characters to prevent XSS
-   * @param {string} text - Text to escape
-   * @returns {string} - Escaped text
-   */
-  function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-  }
-
-  /**
-   * Create safe error message element
-   * @param {string} message - Error message to display
-   * @returns {HTMLElement} - Safe error element
-   */
-  function createSafeErrorMessage(message) {
-    const errorDiv = document.createElement('div');
-    errorDiv.className = 'qatalyst-error';
-
-    const icon = document.createTextNode('❌ ');
-    errorDiv.appendChild(icon);
-
-    // Split by newlines and create separate lines
-    const lines = message.split('\n');
-    lines.forEach((line, index) => {
-      if (index > 0) {
-        errorDiv.appendChild(document.createElement('br'));
-      }
-      errorDiv.appendChild(document.createTextNode(line));
-    });
-
-    return errorDiv;
-  }
-
-  /**
-   * Safely format and sanitize content for display
-   * Prevents XSS by using textContent and controlled DOM creation
-   * @param {string} content - Content to format
-   * @returns {HTMLElement} - Safe DOM element
-   */
-  function createSafeFormattedContent(content) {
-    const container = document.createElement('div');
-
-    // Split content by lines
-    const lines = content.split('\n');
-
-    for (let i = 0; i < lines.length; i++) {
-      let line = lines[i];
-      const lineDiv = document.createElement('div');
-
-      // Process bold text **text**
-      const boldRegex = /\*\*(.*?)\*\*/g;
-      let lastIndex = 0;
-      let match;
-
-      while ((match = boldRegex.exec(line)) !== null) {
-        // Add text before match
-        if (match.index > lastIndex) {
-          const textNode = document.createTextNode(line.substring(lastIndex, match.index));
-          lineDiv.appendChild(textNode);
-        }
-
-        // Add bold text
-        const strongElem = document.createElement('strong');
-        strongElem.textContent = match[1];
-        lineDiv.appendChild(strongElem);
-
-        lastIndex = match.index + match[0].length;
-      }
-
-      // Add remaining text
-      if (lastIndex < line.length) {
-        const textNode = document.createTextNode(line.substring(lastIndex));
-        lineDiv.appendChild(textNode);
-      }
-
-      // Handle bullet points
-      if (line.trim().startsWith('- ')) {
-        lineDiv.style.paddingLeft = '20px';
-        lineDiv.textContent = '• ' + line.substring(2);
-      }
-
-      // If line is empty, add space
-      if (line.trim() === '') {
-        lineDiv.innerHTML = '&nbsp;';
-      }
-
-      container.appendChild(lineDiv);
-    }
-
-    return container;
-  }
+  // escapeHtml, createSafeErrorMessage, createSafeFormattedContent → content-format.js
 
   // Listen for streaming chunks, agent progress, evolution progress, enhancement progress, and historical mining progress
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -340,68 +248,7 @@
     return text.trim();
   }
 
-  // Extract plain text with URLs from Jira's ADF (Atlassian Document Format)
-  function extractTextFromADF(adfContent) {
-    if (!adfContent) return '';
-    if (typeof adfContent === 'string') return adfContent;
-
-    let text = '';
-
-    function traverse(node) {
-      if (!node) return;
-
-      // Extract text content
-      if (node.type === 'text') {
-        text += node.text || '';
-      }
-
-      // Extract URLs from links
-      if (node.type === 'text' && node.marks) {
-        const linkMark = node.marks.find(m => m.type === 'link');
-        if (linkMark && linkMark.attrs && linkMark.attrs.href) {
-          // If text doesn't match URL, append URL in parentheses
-          if (node.text !== linkMark.attrs.href) {
-            text += ` (${linkMark.attrs.href})`;
-          }
-        }
-      }
-
-      // Handle media/images
-      if (node.type === 'media' || node.type === 'mediaInline') {
-        if (node.attrs && node.attrs.url) {
-          text += node.attrs.url + ' ';
-        }
-      }
-
-      // Handle code blocks
-      if (node.type === 'codeBlock' && node.content) {
-        text += '\n```\n';
-        node.content.forEach(traverse);
-        text += '\n```\n';
-        return;
-      }
-
-      // Add line breaks for paragraphs and headings
-      if (['paragraph', 'heading'].includes(node.type)) {
-        if (text && !text.endsWith('\n')) {
-          text += '\n';
-        }
-      }
-
-      // Recursively process child nodes
-      if (node.content && Array.isArray(node.content)) {
-        node.content.forEach(traverse);
-      }
-
-      // Add line break after paragraphs
-      if (['paragraph', 'heading'].includes(node.type)) {
-        text += '\n';
-      }
-    }
-
-    traverse(adfContent);
-    return text.trim();
-  }
+  // extractTextFromADF → content-utils.js
 
   function handleStreamChunk(requestId, chunk) {
     if (requestId !== currentStreamingRequestId) return;
@@ -454,14 +301,8 @@
     resultsContainer.scrollTop = resultsContainer.scrollHeight;
   }
   
-  function formatStreamingContent(content) {
-    // Escape first (XSS-safe), then apply lightweight markdown for the live stream.
-    return escapeHtml(content == null ? '' : String(content))
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/^- /gm, '• ')
-      .replace(/\n/g, '<br>');
-  }
-  
+  // formatStreamingContent → content-format.js
+
   function stopStreaming() {
     if (currentStreamingRequestId) {
       chrome.runtime.sendMessage({
@@ -1300,17 +1141,8 @@
     });
   }
   
-  // Extract file type from filename
-  function extractFileType(filename) {
-    const extension = filename.split('.').pop().toLowerCase();
-    const imageTypes = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
-    const docTypes = ['pdf', 'doc', 'docx', 'txt', 'md'];
-    
-    if (imageTypes.includes(extension)) return 'image';
-    if (docTypes.includes(extension)) return 'document';
-    return extension || 'unknown';
-  }
-  
+  // extractFileType → content-utils.js
+
   // Extract linked pages (Confluence, external URLs)
   function extractLinkedPages() {
     const linkedPages = [];
@@ -1480,68 +1312,12 @@
     return linkedPages;
   }
   
-  // Determine the type of linked page
-  function determinePageType(url) {
-    // Convert to lowercase for case-insensitive matching
-    const lowerUrl = url.toLowerCase();
+  // determinePageType → content-utils.js
 
-    // Confluence detection - more patterns
-    if (lowerUrl.includes('confluence') ||
-        lowerUrl.includes('atlassian.net/wiki') ||
-        lowerUrl.includes('/wiki/spaces/') ||
-        lowerUrl.includes('/wiki/display/') ||
-        lowerUrl.includes('/wiki/x/')) {
-      return 'confluence';
-    }
-    // Figma detection - handle various Figma URL patterns
-    else if (lowerUrl.includes('figma.com') ||
-             lowerUrl.includes('fig.ma')) {  // Figma's short URL service
-      return 'figma';
-    }
-    // Google Docs detection
-    else if (lowerUrl.includes('docs.google.com')) {
-      return 'google_docs';
-    }
-    // Google Drive detection
-    else if (lowerUrl.includes('drive.google.com')) {
-      return 'google_drive';
-    }
-    // GitHub detection
-    else if (lowerUrl.includes('github.com')) {
-      return 'github';
-    }
-
-    // Log unrecognized URLs for debugging
-    console.log('🔗 URL type not recognized:', url);
-    return 'external';
-  }
-
-  /**
-   * Extract important keywords from Jira ticket for intelligent crawl data filtering
-   * @param {Object} ticketData - Jira ticket data
-   * @returns {Array} - Array of keywords
-   */
-  function extractTicketKeywords(ticketData) {
-    const keywords = new Set();
-    const text = `${ticketData.summary || ''} ${ticketData.description || ''}`.toLowerCase();
-
-    // Common words to ignore
-    const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can']);
-
-    // Extract words (3+ characters, not stop words)
-    const words = text.match(/\b[a-z]{3,}\b/g) || [];
-    words.forEach(word => {
-      if (!stopWords.has(word)) {
-        keywords.add(word);
-      }
-    });
-
-    // Extract camelCase and kebab-case terms
-    const compoundWords = text.match(/[a-z]+(?:[A-Z][a-z]+)+|[a-z]+-[a-z-]+/g) || [];
-    compoundWords.forEach(word => keywords.add(word.toLowerCase()));
-
-    return Array.from(keywords);
-  }
+  // NOTE: an earlier extractTicketKeywords() declaration lived here, but a SECOND
+  // declaration later in this file (also moved) overwrote it via hoisting, so the
+  // later version was the one actually used at every call site. Both are now in
+  // content-utils.js as the single effective extractTicketKeywords.
 
   /**
    * Get intelligently filtered crawl context based on Jira ticket keywords
@@ -1638,40 +1414,8 @@
     });
   }
   
-  // Validate settings before operations
-  function validateSettingsUI(settings) {
-    const errors = [];
+  // validateSettingsUI → content-utils.js
 
-    // Check API credentials based on provider
-    if (settings.llmProvider === 'bedrock') {
-      // For AWS Bedrock, check for Access Key ID and Secret Key
-      if (!settings.bedrockAccessKeyId || settings.bedrockAccessKeyId.trim() === '') {
-        errors.push('⚠️ AWS Access Key ID is missing');
-      }
-      if (!settings.bedrockSecretKey || settings.bedrockSecretKey.trim() === '') {
-        errors.push('⚠️ AWS Secret Access Key is missing');
-      }
-      if (!settings.bedrockRegion || settings.bedrockRegion.trim() === '') {
-        errors.push('⚠️ AWS Region is missing');
-      }
-    } else {
-      // For other providers (OpenAI, Claude, Gemini), check for API key
-      if (!settings.apiKey || settings.apiKey.trim() === '') {
-        errors.push('⚠️ API Key is missing');
-      }
-    }
-
-    if (!settings.llmProvider) {
-      errors.push('⚠️ LLM Provider not selected');
-    }
-
-    if (!settings.llmModel) {
-      errors.push('⚠️ LLM Model not selected');
-    }
-
-    return errors;
-  }
-  
   /**
    * Set activity indicator on panel (shows green dot when minimized)
    */
@@ -1931,11 +1675,7 @@
     try {
       const settings = await loadAndDecryptSettings([
         'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'enableStreaming', 'enableMultiAgent',
-        'useAgenticMode', 'coverageTarget', 'dedupThreshold', 'relevanceThreshold', 'enabledCategories',
-        'enableEvolution', 'evolutionIntensity', 'testCount',
-        'positivePercent', 'negativePercent', 'edgePercent', 'integrationPercent',
-        'enablePositiveAgent', 'enableNegativeAgent', 'enableEdgeAgent',
-        'enableRegressionAgent', 'enableIntegrationAgent', 'enableReviewAgent',
+        'coverageTarget', 'dedupThreshold', 'relevanceThreshold', 'enabledCategories', 'testCount',
         'enableHistoricalMining', 'historicalMaxResults', 'historicalJqlFilters',
         'jiraEmail', 'jiraApiToken',
         'confluenceUrl', 'confluenceEmail', 'confluenceToken',
@@ -1991,11 +1731,7 @@
       // Debug logging for settings
       console.log('🔍 QAtalyst Settings Loaded:', {
         enableMultiAgent: settings.enableMultiAgent,
-        enableEvolution: settings.enableEvolution,
-        enableRegressionAgent: settings.enableRegressionAgent,
-        enablePositiveAgent: settings.enablePositiveAgent,
-        enableNegativeAgent: settings.enableNegativeAgent,
-        enableEdgeAgent: settings.enableEdgeAgent,
+        coverageTarget: settings.coverageTarget,
         testCount: settings.testCount,
         llmProvider: settings.llmProvider,
         llmModel: settings.llmModel
@@ -2026,14 +1762,14 @@
       }
 
       if (settings.enableMultiAgent) {
-        // Agentic mode = planner-driven, grounded, coverage-feedback loop with a
-        // hard no-duplicate / no-irrelevant acceptance gate. Falls back to the
-        // classic multi-agent pipeline when the toggle is off.
-        const useAgentic = settings.useAgenticMode !== false; // default ON
-        const genAction = useAgentic ? 'generateTestCasesAgentic' : 'generateTestCasesMultiAgent';
+        // The planner-driven agentic engine is the only generation engine: a
+        // grounded, coverage-feedback loop with a hard no-duplicate /
+        // no-irrelevant acceptance gate. (The classic multi-agent pipeline + GA
+        // were retired in v13.2.)
+        const genAction = 'generateTestCasesAgentic';
         suppressAgentProgress = false; // allow progress updates for this run
-        console.log(`🚀 Starting ${useAgentic ? 'agentic planner' : 'multi-agent'} test case generation...`);
-        resultsContainer.innerHTML = `<div class="qatalyst-loading">${useAgentic ? '🧭 Planning grounded test coverage...' : '🧬 Initializing multi-agent system...'}</div>`;
+        console.log('🚀 Starting agentic planner test case generation...');
+        resultsContainer.innerHTML = '<div class="qatalyst-loading">🧭 Planning grounded test coverage...</div>';
 
         console.log('📤 Sending message to background script...');
         const response = await new Promise((resolve, reject) => {
@@ -2161,7 +1897,7 @@
       <div class="qatalyst-result">
         <h4>📊 Requirements Analysis</h4>
         ${contextSummaryHtml}
-        <div class="result-content">
+        <div class="result-content" data-testid="analysis-output">
           ${formatAnalysis(data.analysis)}
         </div>
         <button class="qatalyst-btn small" onclick="this.parentElement.querySelector('.result-content').classList.toggle('expanded')">View Full Analysis</button>
@@ -2238,7 +1974,7 @@
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>📋 Test Scope</h4>
-        <div class="result-content">
+        <div class="result-content" data-testid="test-scope-output">
           ${formatTestScope(scopeContent)}
         </div>
 
@@ -2396,23 +2132,23 @@
         ${evolutionBadge}
         ${enhancementBadges}
         ${historicalBadge}
-        <div class="test-stats">
-          <button class="stat-filter active" data-filter="all">Total: ${stats.total}</button>
-          <button class="stat-filter" data-filter="Positive">Positive: ${stats.positive}</button>
-          <button class="stat-filter" data-filter="Negative">Negative: ${stats.negative}</button>
-          <button class="stat-filter" data-filter="Edge">Edge: ${stats.edge}</button>
-          <button class="stat-filter" data-filter="Regression">Regression: ${stats.regression}</button>
-          <button class="stat-filter" data-filter="Integration">Integration: ${stats.integration}</button>
+        <div class="test-stats" data-testid="test-stats">
+          <button class="stat-filter active" data-filter="all" data-testid="filter-all">Total: ${stats.total}</button>
+          <button class="stat-filter" data-filter="Positive" data-testid="filter-Positive">Positive: ${stats.positive}</button>
+          <button class="stat-filter" data-filter="Negative" data-testid="filter-Negative">Negative: ${stats.negative}</button>
+          <button class="stat-filter" data-filter="Edge" data-testid="filter-Edge">Edge: ${stats.edge}</button>
+          <button class="stat-filter" data-filter="Regression" data-testid="filter-Regression">Regression: ${stats.regression}</button>
+          <button class="stat-filter" data-filter="Integration" data-testid="filter-Integration">Integration: ${stats.integration}</button>
         </div>
 
         <!-- Enhanced Filter Controls -->
         <div class="filter-controls">
           <div class="search-box">
-            <input type="text" id="test-search" placeholder="🔍 Search test cases..." class="qatalyst-search-input" value="" />
+            <input type="text" id="test-search" data-testid="test-search" placeholder="🔍 Search test cases..." class="qatalyst-search-input" value="" />
           </div>
           <div class="priority-filter">
             <label>Priority:</label>
-            <select id="priority-filter" class="qatalyst-select">
+            <select id="priority-filter" data-testid="priority-filter" class="qatalyst-select">
               <option value="all" selected>All</option>
               <option value="P0">P0 - Critical</option>
               <option value="P1">P1 - High</option>
@@ -2423,10 +2159,10 @@
           <button class="qatalyst-btn secondary" id="clear-filters-btn" style="display: none;">
             <span>Clear Filters</span>
           </button>
-          <div id="filter-status" class="filter-status"></div>
+          <div id="filter-status" data-testid="filter-status" class="filter-status"></div>
         </div>
 
-        <div class="result-content test-cases" id="test-cases-container">
+        <div class="result-content test-cases" id="test-cases-container" data-testid="test-cases-container">
           ${formatTestCases(data.testCases)}
         </div>
 
@@ -2449,15 +2185,15 @@
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
-          <button class="qatalyst-btn primary" id="add-to-jira-btn">
+          <button class="qatalyst-btn primary" id="add-to-jira-btn" data-testid="add-to-jira-btn">
             <span class="btn-icon">📝</span>
             <span>Add to Jira</span>
           </button>
-          <button class="qatalyst-btn secondary" id="export-csv-btn">
+          <button class="qatalyst-btn secondary" id="export-csv-btn" data-testid="export-csv-btn">
             <span class="btn-icon">📥</span>
             <span>Export to CSV</span>
           </button>
-          <button class="qatalyst-btn secondary" id="copy-clipboard-btn" style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);">
+          <button class="qatalyst-btn secondary" id="copy-clipboard-btn" data-testid="copy-clipboard-btn" style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);">
             <span class="btn-icon">📋</span>
             <span>Copy to Clipboard</span>
           </button>
@@ -2588,28 +2324,10 @@
   }
 
   // Get currently filtered test cases
+  // Pure filter predicates moved to content-filters.js (filterTestCases); this
+  // wrapper supplies the current module-level filter state.
   function getFilteredTestCases(testCases) {
-    let filteredTests = [...testCases];
-
-    // Apply category filter
-    if (activeFilter !== 'all') {
-      filteredTests = filteredTests.filter(tc => tc.category === activeFilter);
-    }
-
-    // Apply search filter
-    if (searchQuery) {
-      filteredTests = filteredTests.filter(tc => {
-        const searchableText = `${tc.title} ${tc.description} ${tc.steps?.join(' ')} ${tc.expected_result || tc.expectedResult || ''}`.toLowerCase();
-        return searchableText.includes(searchQuery);
-      });
-    }
-
-    // Apply priority filter
-    if (priorityFilter !== 'all') {
-      filteredTests = filteredTests.filter(tc => tc.priority === priorityFilter);
-    }
-
-    return filteredTests;
+    return filterTestCases(testCases, { activeFilter, searchQuery, priorityFilter });
   }
 
   // Apply all active filters to test cases
@@ -2617,7 +2335,8 @@
     const filteredTests = getFilteredTestCases(testCases);
 
     // Check if any filters are active
-    const hasFilters = activeFilter !== 'all' || searchQuery || priorityFilter !== 'all';
+    // hasActiveFilters moved to content-filters.js.
+    const hasFilters = hasActiveFilters({ activeFilter, searchQuery, priorityFilter });
 
     // Show/hide clear filters button
     const clearBtn = document.getElementById('clear-filters-btn');
@@ -2659,48 +2378,11 @@
 
   // Copy test cases to clipboard
   function copyTestCasesToClipboard(testCases) {
-    // Format test cases for clipboard
-    let clipboardText = 'QAtalyst Test Cases\n';
-    clipboardText += '===================\n\n';
-
-    // Add filter information if filters are active
-    const hasFilters = activeFilter !== 'all' || searchQuery || priorityFilter !== 'all';
-    if (hasFilters) {
-      clipboardText += 'Active Filters:\n';
-      if (activeFilter !== 'all') clipboardText += `- Category: ${activeFilter}\n`;
-      if (searchQuery) clipboardText += `- Search: "${searchQuery}"\n`;
-      if (priorityFilter !== 'all') clipboardText += `- Priority: ${priorityFilter}\n`;
-      clipboardText += `\nShowing ${testCases.length} test case(s)\n`;
-      clipboardText += '-------------------\n\n';
-    }
-
-    testCases.forEach((tc, idx) => {
-      clipboardText += `Test Case #${idx + 1}\n`;
-      clipboardText += `-----------\n`;
-      clipboardText += `ID: ${tc.id}\n`;
-      clipboardText += `Title: ${tc.title}\n`;
-      clipboardText += `Category: ${tc.category}\n`;
-      clipboardText += `Priority: ${tc.priority}\n`;
-      clipboardText += `Description: ${tc.description || 'N/A'}\n`;
-
-      if (tc.preconditions) {
-        clipboardText += `Preconditions: ${tc.preconditions}\n`;
-      }
-
-      if (tc.steps && tc.steps.length > 0) {
-        clipboardText += `Steps:\n`;
-        tc.steps.forEach((step, stepIdx) => {
-          clipboardText += `  ${stepIdx + 1}. ${step}\n`;
-        });
-      }
-
-      clipboardText += `Expected Result: ${tc.expected_result || tc.expectedResult || 'N/A'}\n`;
-
-      if (tc.test_data) {
-        clipboardText += `Test Data: ${tc.test_data}\n`;
-      }
-
-      clipboardText += '\n';
+    // Clipboard text building moved to content-export.js
+    // (buildTestCasesClipboardText); this wrapper supplies filter state and
+    // performs the navigator.clipboard I/O + button feedback.
+    const clipboardText = buildTestCasesClipboardText(testCases, {
+      activeFilter, searchQuery, priorityFilter
     });
 
     // Copy to clipboard
@@ -2767,142 +2449,8 @@
   
   // Format functions
 
-  /**
-   * Render a markdown string to safe HTML.
-   * Security: the entire input is HTML-escaped FIRST (via escapeHtml), then only our
-   * own tags are added — so any HTML/script in the model output is neutralised. Links
-   * are restricted to http(s)/relative hrefs. Supports GFM pipe tables, headings,
-   * ordered/unordered lists, fenced code, bold/italic/inline-code, links and rules.
-   */
-  function renderMarkdown(md) {
-    if (md == null) return '';
-    const src = String(md).replace(/\r\n?/g, '\n');
-    const lines = src.split('\n');
-    const out = [];
-    let i = 0;
+  // renderMarkdown, inlineMarkdown, formatAnalysis, formatTestScope → content-format.js
 
-    const esc = (t) => escapeHtml(t == null ? '' : String(t));
-    const inline = (text) => text
-      .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-      .replace(/(^|[^_\w])_([^_\n]+)_/g, '$1<em>$2</em>')
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g,
-        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-
-    const isTableSep = (line) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line || '');
-    const splitRow = (line) => {
-      let s = line.trim();
-      if (s.startsWith('|')) s = s.slice(1);
-      if (s.endsWith('|')) s = s.slice(0, -1);
-      return s.split('|').map(c => c.trim());
-    };
-    const isSpecial = (line, idx) =>
-      /^(#{1,6})\s+/.test(line) ||
-      /^\s*([-*_])\1{2,}\s*$/.test(line) ||
-      /^\s*[-*+]\s+/.test(line) ||
-      /^\s*\d+\.\s+/.test(line) ||
-      /^```/.test(line.trim()) ||
-      (line.includes('|') && isTableSep(lines[idx + 1]));
-
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // fenced code block
-      if (/^```/.test(line.trim())) {
-        const buf = []; i++;
-        while (i < lines.length && !/^```/.test(lines[i].trim())) { buf.push(lines[i]); i++; }
-        i++;
-        out.push(`<pre class="qa-md-code"><code>${esc(buf.join('\n'))}</code></pre>`);
-        continue;
-      }
-
-      // GFM pipe table (header row followed by a |---|---| separator)
-      if (line.includes('|') && isTableSep(lines[i + 1])) {
-        const header = splitRow(line); i += 2;
-        const rows = [];
-        while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') { rows.push(splitRow(lines[i])); i++; }
-        let t = '<table class="qa-md-table"><thead><tr>';
-        header.forEach(h => { t += `<th>${inline(esc(h))}</th>`; });
-        t += '</tr></thead><tbody>';
-        rows.forEach(r => {
-          t += '<tr>';
-          header.forEach((_, ci) => { t += `<td>${inline(esc(r[ci] || ''))}</td>`; });
-          t += '</tr>';
-        });
-        out.push(t + '</tbody></table>');
-        continue;
-      }
-
-      // headings
-      const h = line.match(/^(#{1,6})\s+(.*)$/);
-      if (h) { const lvl = h[1].length; out.push(`<h${lvl} class="qa-md-h">${inline(esc(h[2].trim()))}</h${lvl}>`); i++; continue; }
-
-      // horizontal rule
-      if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { out.push('<hr class="qa-md-hr">'); i++; continue; }
-
-      // unordered list
-      if (/^\s*[-*+]\s+/.test(line)) {
-        const items = [];
-        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, '')); i++; }
-        out.push('<ul class="qa-md-list">' + items.map(it => `<li>${inline(esc(it))}</li>`).join('') + '</ul>');
-        continue;
-      }
-
-      // ordered list
-      if (/^\s*\d+\.\s+/.test(line)) {
-        const items = [];
-        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, '')); i++; }
-        out.push('<ol class="qa-md-list">' + items.map(it => `<li>${inline(esc(it))}</li>`).join('') + '</ol>');
-        continue;
-      }
-
-      // blank line
-      if (line.trim() === '') { i++; continue; }
-
-      // paragraph (gather until a blank or special line)
-      const para = [];
-      while (i < lines.length && lines[i].trim() !== '' && !isSpecial(lines[i], i)) { para.push(lines[i]); i++; }
-      if (para.length) out.push(`<p>${inline(esc(para.join(' ')))}</p>`);
-    }
-
-    return `<div class="qa-md">${out.join('\n')}</div>`;
-  }
-
-  /**
-   * Inline-only markdown for short fields (titles, descriptions, steps, results).
-   * Escapes first (XSS-safe), then renders bold/italic/inline-code/links and turns
-   * newlines into <br>. No block-level parsing — keeps card layouts intact.
-   */
-  function inlineMarkdown(text) {
-    if (text == null) return '';
-    return escapeHtml(String(text))
-      .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g,
-        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-      .replace(/\n/g, '<br>');
-  }
-
-  function formatAnalysis(analysis) {
-    if (analysis && typeof analysis === 'object') {
-      // Structured analysis object — pretty-print as fenced JSON so it still renders.
-      try { return renderMarkdown('```json\n' + JSON.stringify(analysis, null, 2) + '\n```'); }
-      catch (_) { return `<pre>${escapeHtml(String(analysis))}</pre>`; }
-    }
-    return renderMarkdown(analysis);
-  }
-  
-  function formatTestScope(scope) {
-    if (!scope || scope === 'undefined' || scope === 'null') {
-      return '<p class="qatalyst-warning">⚠️ No test scope was generated. Please try again.</p>';
-    }
-    return renderMarkdown(scope);
-  }
-  
   function formatTestCases(testCases) {
     return testCases.map((tc, idx) => {
       // Handle both camelCase and snake_case property names
@@ -2958,32 +2506,10 @@
   
   function exportTestCasesToCSV(testCases) {
     try {
-      // Define CSV headers
-      const headers = ['ID', 'Title', 'Category', 'Priority', 'Description', 'Expected Result'];
-      
-      // Convert test cases to CSV rows
-      const rows = testCases.map(tc => {
-        const id = tc.id || '';
-        const title = (tc.title || '').replace(/"/g, '""'); // Escape quotes
-        const category = tc.category || '';
-        const priority = tc.priority || '';
-        const description = (tc.description || '').replace(/"/g, '""'); // Escape quotes
-        const expectedResult = (tc.expected_result || tc.expectedResult || '').replace(/"/g, '""'); // Escape quotes
-        
-        // Wrap fields in quotes to handle commas and newlines
-        return [
-          `"${id}"`,
-          `"${title}"`,
-          `"${category}"`,
-          `"${priority}"`,
-          `"${description}"`,
-          `"${expectedResult}"`
-        ].join(',');
-      });
-      
-      // Combine headers and rows
-      const csvContent = [headers.join(','), ...rows].join('\n');
-      
+      // CSV document building moved to content-export.js (buildTestCasesCSV);
+      // this function performs the Blob creation + download I/O.
+      const csvContent = buildTestCasesCSV(testCases);
+
       // Create blob and download
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
@@ -3337,115 +2863,9 @@
     }
   }
 
-  function formatAnalysisForJiraComment(analysis) {
-    const header = `h2. 📊 QAtalyst Requirements Analysis
-_Generated on ${new Date().toLocaleString()}_
-
-----
-
-`;
-
-    // Convert markdown-style formatting to Jira wiki markup
-    let jiraFormatted = analysis
-      .replace(/^### (.*$)/gm, 'h3. $1') // h3 headers
-      .replace(/^## (.*$)/gm, 'h2. $1')  // h2 headers
-      .replace(/^# (.*$)/gm, 'h1. $1')   // h1 headers
-      .replace(/\*\*(.*?)\*\*/g, '*$1*') // bold
-      .replace(/^\* /gm, '* ')           // bullet lists
-      .replace(/^- /gm, '* ');           // convert - to *
-
-    return header + jiraFormatted;
-  }
-
-  function formatTestScopeForJiraComment(testScope) {
-    const header = `h2. 📋 QAtalyst Test Scope Document
-_Generated on ${new Date().toLocaleString()}_
-
-----
-
-`;
-
-    // Convert markdown-style formatting to Jira wiki markup
-    let jiraFormatted = testScope
-      .replace(/^### (.*$)/gm, 'h3. $1') // h3 headers
-      .replace(/^## (.*$)/gm, 'h2. $1')  // h2 headers
-      .replace(/^# (.*$)/gm, 'h1. $1')   // h1 headers
-      .replace(/\*\*(.*?)\*\*/g, '*$1*') // bold
-      .replace(/^\* /gm, '* ')           // bullet lists
-      .replace(/^- /gm, '* ');           // convert - to *
-
-    return header + jiraFormatted;
-  }
-
-  function formatTestCasesForJiraComment(testCases) {
-    const header = `h2. 🤖 QAtalyst Generated Test Cases (${testCases.length} tests)
-_Generated on ${new Date().toLocaleString()}_
-
-----
-
-`;
-
-    const testCaseBlocks = testCases.map((tc, idx) => {
-      const expectedResult = tc.expected_result || tc.expectedResult || 'Not specified';
-      const steps = tc.steps || [];
-      const preconditions = tc.preconditions || tc.precondition || 'None';
-      const testData = tc.testData || tc.test_data || 'Not specified';
-
-      const stepsFormatted = steps.length > 0
-        ? steps.map((step, i) => `# ${step}`).join('\n')
-        : 'Not specified';
-
-      return `h3. ${tc.id}: ${tc.title}
-*Priority:* {color:${getPriorityColor(tc.priority)}}${tc.priority}{color} | *Category:* {color:${getCategoryColor(tc.category)}}${tc.category}{color}
-
-*Preconditions:*
-${preconditions}
-
-*Test Steps:*
-${stepsFormatted}
-
-*Expected Result:*
-${expectedResult}
-
-*Test Data:*
-${testData}
-
-----
-`;
-    }).join('\n');
-
-    return header + testCaseBlocks;
-  }
-
-  function formatTestCasesForClipboard(testCases) {
-    return testCases.map(tc => {
-      const expectedResult = tc.expected_result || tc.expectedResult || 'Not specified';
-      return `**${tc.id}: ${tc.title}**
-Priority: ${tc.priority} | Type: ${tc.category}
-Expected Result: ${expectedResult}`;
-    }).join('\n---\n');
-  }
-
-  function getPriorityColor(priority) {
-    const colors = {
-      'P0': '#d32f2f',
-      'P1': '#f57c00',
-      'P2': '#fbc02d',
-      'P3': '#1976d2'
-    };
-    return colors[priority] || '#666';
-  }
-
-  function getCategoryColor(category) {
-    const colors = {
-      'Positive': '#388e3c',
-      'Negative': '#d32f2f',
-      'Edge': '#f57c00',
-      'Regression': '#7b1fa2',
-      'Integration': '#1976d2'
-    };
-    return colors[category] || '#666';
-  }
+  // formatAnalysisForJiraComment, formatTestScopeForJiraComment,
+  // formatTestCasesForJiraComment, formatTestCasesForClipboard,
+  // getPriorityColor, getCategoryColor → content-utils.js
 
   /**
    * Show warning modal when no crawled data is available
@@ -4412,401 +3832,9 @@ Expected Result: ${expectedResult}`;
     }
   }
 
-  /**
-   * Find matching crawled app based on ticket content
-   */
-  function findMatchingApp(apps, ticketData) {
-    // Strategy 1: Look for URLs in ticket description
-    const ticketText = `${ticketData.summary} ${ticketData.description}`.toLowerCase();
-
-    for (const app of apps) {
-      try {
-        // Skip merged graphs for URL matching (they don't have real URLs)
-        if (app.url.startsWith('merged_')) {
-          continue;
-        }
-
-        const appDomain = new URL(app.url).hostname.toLowerCase();
-
-        // Check if exact domain is mentioned in ticket
-        if (ticketText.includes(appDomain)) {
-          console.log(`✅ Matched app by exact domain: ${appDomain}`);
-          return app;
-        }
-
-        // Extract base domain (e.g., "mindtickle.com" from "jellyvission.integration.mindtickle.com")
-        const domainParts = appDomain.split('.');
-        let baseDomain = appDomain;
-
-        // Handle cases like: subdomain.staging.example.com → example.com
-        if (domainParts.length >= 2) {
-          // Get last 2 parts (example.com)
-          baseDomain = domainParts.slice(-2).join('.');
-
-          // Check if base domain is mentioned (environment-agnostic)
-          if (ticketText.includes(baseDomain)) {
-            console.log(`✅ Matched app by base domain: ${baseDomain} (from ${appDomain})`);
-            return app;
-          }
-        }
-
-        // Extract product name from base domain (e.g., "mindtickle" from "mindtickle.com")
-        const productName = domainParts[domainParts.length - 2];
-        if (productName && productName.length > 3 && ticketText.includes(productName)) {
-          console.log(`✅ Matched app by product name: ${productName}`);
-          return app;
-        }
-
-        // Check first subdomain only if it's meaningful (not env names)
-        const firstPart = domainParts[0];
-        const envKeywords = ['staging', 'prod', 'dev', 'test', 'qa', 'integration', 'uat', 'demo', 'sandbox'];
-        if (firstPart.length > 3 && !envKeywords.includes(firstPart) && ticketText.includes(firstPart)) {
-          console.log(`✅ Matched app by subdomain: ${firstPart}`);
-          return app;
-        }
-      } catch (e) {
-        continue;
-      }
-    }
-
-    // Strategy 2: ALWAYS use crawled data when feature is enabled
-    // Prioritize based on data quality, not URL matching
-
-    // If only one app exists, use it
-    if (apps.length === 1) {
-      console.log(`📌 Auto-using crawled app: ${apps[0].url} (${apps[0].pages} pages, ${apps[0].features} features)`);
-      return apps[0];
-    }
-
-    // Strategy 3: Prefer merged graphs (most comprehensive across environments)
-    const mergedApps = apps.filter(app => app.url.startsWith('merged_'));
-    if (mergedApps.length === 1) {
-      console.log(`📌 Auto-using merged graph: ${mergedApps[0].url} (${mergedApps[0].pages} pages, ${mergedApps[0].features} features)`);
-      return mergedApps[0];
-    }
-
-    // Strategy 4: Use the largest merged app (most comprehensive)
-    if (mergedApps.length > 1) {
-      const largestMerged = mergedApps.reduce((prev, current) =>
-        (current.pages > prev.pages) ? current : prev
-      );
-      console.log(`📌 Auto-using largest merged graph: ${largestMerged.url} (${largestMerged.pages} pages, ${largestMerged.features} features)`);
-      return largestMerged;
-    }
-
-    // Strategy 5: Use the largest app by page count (most data = best context)
-    const largestApp = apps.reduce((prev, current) =>
-      (current.pages > prev.pages) ? current : prev
-    );
-    console.log(`📌 Auto-using largest crawled app: ${largestApp.url} (${largestApp.pages} pages, ${largestApp.features} features)`);
-    return largestApp;
-  }
-
-  /**
-   * Extract keywords from ticket for intelligent filtering
-   */
-  function extractTicketKeywords(ticketData) {
-    const text = `${ticketData.summary || ''} ${ticketData.description || ''}`.toLowerCase();
-
-    // Remove common words
-    const stopWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'error', 'issue', 'bug', 'problem', 'fix', 'update', 'add', 'remove', 'while', 'after', 'before'];
-
-    // Extract words (3+ chars, not stop words)
-    const words = text.match(/\b[a-z]{3,}\b/g) || [];
-    const keywords = [...new Set(words.filter(w => !stopWords.includes(w)))];
-
-    // Also extract quoted phrases and brackets
-    const phrases = text.match(/\[([^\]]+)\]/g) || [];
-    const quotedPhrases = text.match(/"([^"]+)"/g) || [];
-
-    const allKeywords = [
-      ...keywords,
-      ...phrases.map(p => p.replace(/[\[\]]/g, '').toLowerCase()),
-      ...quotedPhrases.map(p => p.replace(/"/g, '').toLowerCase())
-    ];
-
-    return [...new Set(allKeywords)];
-  }
-
-  /**
-   * Calculate relevance score for a page/URL based on keywords
-   */
-  function calculateRelevanceScore(url, title, description, keywords) {
-    let score = 0;
-    const searchText = `${url} ${title || ''} ${description || ''}`.toLowerCase();
-
-    keywords.forEach(keyword => {
-      if (searchText.includes(keyword)) {
-        // URL matches are most important
-        if (url.toLowerCase().includes(keyword)) {
-          score += 10;
-        }
-        // Title matches are very important
-        if (title && title.toLowerCase().includes(keyword)) {
-          score += 5;
-        }
-        // Description matches are somewhat important
-        if (description && description.toLowerCase().includes(keyword)) {
-          score += 2;
-        }
-      }
-    });
-
-    return score;
-  }
-
-  /**
-   * Extract relevant context from knowledge graph (SMART FILTERING)
-   */
-  function extractRelevantContext(kgData, ticketData) {
-    console.log('[EXTRACT] Starting smart context extraction...');
-    console.log('[EXTRACT] kgData keys:', Object.keys(kgData));
-
-    // Handle different response formats
-    let knowledgeGraph;
-
-    if (kgData.result && kgData.result.knowledgeGraph) {
-      knowledgeGraph = kgData.result.knowledgeGraph;
-      console.log('[EXTRACT] Using kgData.result.knowledgeGraph');
-    } else if (kgData.knowledgeGraph) {
-      knowledgeGraph = kgData.knowledgeGraph;
-      console.log('[EXTRACT] Using kgData.knowledgeGraph');
-    } else if (kgData.result) {
-      knowledgeGraph = kgData.result;
-      console.log('[EXTRACT] Using kgData.result as knowledgeGraph');
-    } else {
-      console.error('[EXTRACT] ERROR: Cannot find knowledge graph in response!');
-      console.log('[EXTRACT] Available keys:', Object.keys(kgData));
-      return null;
-    }
-
-    console.log('[EXTRACT] knowledgeGraph keys:', Object.keys(knowledgeGraph));
-
-    if (!knowledgeGraph.pages) {
-      console.error('[EXTRACT] ERROR: knowledgeGraph.pages is missing!');
-      console.log('[EXTRACT] knowledgeGraph structure:', knowledgeGraph);
-      return null;
-    }
-
-    const totalPages = Object.keys(knowledgeGraph.pages).length;
-    console.log('[EXTRACT] ✅ Found pages object with', totalPages, 'pages');
-
-    // Extract keywords from ticket for smart filtering
-    const keywords = extractTicketKeywords(ticketData);
-    console.log('[EXTRACT] 🔍 Extracted keywords from ticket:', keywords.slice(0, 10));
-
-    const context = {
-      appUrl: knowledgeGraph.appUrl || kgData.appUrl,
-      totalPages: knowledgeGraph.totalPages || 0,
-      forms: [],
-      apis: [],
-      pages: [],
-      features: []
-    };
-
-    // Score and filter pages by relevance
-    const pages = Object.entries(knowledgeGraph.pages || {});
-    const scoredPages = pages.map(([url, page]) => {
-      const score = calculateRelevanceScore(
-        url,
-        page.metadata?.title,
-        page.metadata?.description,
-        keywords
-      );
-      return { url, page, score };
-    });
-
-    // Sort by relevance (highest score first)
-    scoredPages.sort((a, b) => b.score - a.score);
-
-    // Log relevance distribution
-    const relevantPages = scoredPages.filter(p => p.score > 0);
-    console.log(`[EXTRACT] 📊 Relevance Analysis:`);
-    console.log(`   Total pages: ${totalPages}`);
-    console.log(`   Relevant pages (score > 0): ${relevantPages.length}`);
-    console.log(`   Irrelevant pages: ${totalPages - relevantPages.length}`);
-
-    if (relevantPages.length > 0) {
-      console.log(`[EXTRACT] 🎯 Top 5 most relevant pages:`);
-      relevantPages.slice(0, 5).forEach((p, i) => {
-        console.log(`   ${i + 1}. ${p.url} (score: ${p.score})`);
-      });
-    }
-
-    // Prioritize: Process relevant pages first, then fill with others if needed
-    const pagesToProcess = [
-      ...relevantPages,
-      ...scoredPages.filter(p => p.score === 0)
-    ];
-
-    for (const { url, page, score } of pagesToProcess) {
-      // Collect forms (with relevance score)
-      if (page.features) {
-        const forms = page.features.filter(f => f.type === 'form');
-        forms.forEach(form => {
-          context.forms.push({
-            url: url,
-            id: form.id,
-            action: form.action,
-            method: form.method || 'POST',
-            inputs: form.inputs || [],
-            _relevanceScore: score // Track relevance
-          });
-        });
-
-        // Collect other features
-        const otherFeatures = page.features.filter(f => f.type !== 'form');
-        otherFeatures.forEach(feature => {
-          context.features.push({
-            url: url,
-            type: feature.type,
-            ...feature,
-            _relevanceScore: score // Track relevance
-          });
-        });
-      }
-
-      // Collect APIs (with relevance score)
-      if (page.apis && page.apis.length > 0) {
-        page.apis.forEach(api => {
-          context.apis.push({
-            url: url,
-            method: api.method,
-            endpoint: api.endpoint,
-            payload: api.payload,
-            _relevanceScore: score // Track relevance
-          });
-        });
-      }
-
-      // Collect page metadata
-      if (page.metadata) {
-        context.pages.push({
-          url: url,
-          title: page.metadata.title,
-          description: page.metadata.description,
-          _relevanceScore: score // Track relevance
-        });
-      }
-    }
-
-    // Sort all collected data by relevance score (highest first)
-    context.forms.sort((a, b) => b._relevanceScore - a._relevanceScore);
-    context.apis.sort((a, b) => b._relevanceScore - a._relevanceScore);
-    context.features.sort((a, b) => b._relevanceScore - a._relevanceScore);
-    context.pages.sort((a, b) => b._relevanceScore - a._relevanceScore);
-
-    console.log('[EXTRACT] ✅ Context extraction complete:');
-    console.log(`   Forms: ${context.forms.length} (top score: ${context.forms[0]?._relevanceScore || 0})`);
-    console.log(`   APIs: ${context.apis.length} (top score: ${context.apis[0]?._relevanceScore || 0})`);
-    console.log(`   Features: ${context.features.length} (top score: ${context.features[0]?._relevanceScore || 0})`);
-    console.log(`   Pages: ${context.pages.length} (top score: ${context.pages[0]?._relevanceScore || 0})`);
-
-    return context;
-  }
-
-  /**
-   * Format app context for LLM prompt (with relevance indicators)
-   */
-  function formatAppContextForPrompt(appContext) {
-    if (!appContext) {
-      return '';
-    }
-
-    let formatted = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
-    formatted += '📱 APPLICATION CONTEXT (From Crawled Knowledge Graph)\n';
-    formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
-
-    formatted += `🌐 Application: ${appContext.appUrl}\n`;
-    formatted += `📄 Total Pages Crawled: ${appContext.totalPages}\n`;
-
-    // Add relevance summary
-    const relevantForms = appContext.forms?.filter(f => f._relevanceScore > 0).length || 0;
-    const relevantAPIs = appContext.apis?.filter(a => a._relevanceScore > 0).length || 0;
-    if (relevantForms + relevantAPIs > 0) {
-      formatted += `\n🎯 SMART FILTERING: Showing most relevant data first based on ticket keywords\n`;
-      formatted += `   Relevant Forms: ${relevantForms}/${appContext.forms?.length || 0}\n`;
-      formatted += `   Relevant APIs: ${relevantAPIs}/${appContext.apis?.length || 0}\n`;
-    }
-    formatted += '\n';
-
-    // Add forms (with relevance indicators)
-    if (appContext.forms && appContext.forms.length > 0) {
-      formatted += '📝 FORMS FOUND (sorted by relevance):\n';
-      appContext.forms.slice(0, 5).forEach((form, index) => {
-        const relevanceIndicator = form._relevanceScore > 0 ? '⭐ ' : '';
-        formatted += `\n${index + 1}. ${relevanceIndicator}Form on ${form.url}\n`;
-        formatted += `   • ID: ${form.id || 'N/A'}\n`;
-        formatted += `   • Action: ${form.action || 'N/A'}\n`;
-        formatted += `   • Method: ${form.method}\n`;
-        if (form.inputs && form.inputs.length > 0) {
-          formatted += `   • Fields:\n`;
-          form.inputs.slice(0, 10).forEach(input => {
-            const required = input.required ? ' (required)' : '';
-            formatted += `     - ${input.name || input.id}: ${input.type}${required}\n`;
-          });
-        }
-      });
-      if (appContext.forms.length > 5) {
-        formatted += `\n   ... and ${appContext.forms.length - 5} more forms\n`;
-      }
-      formatted += '\n';
-    }
-
-    // Add APIs (with relevance indicators)
-    if (appContext.apis && appContext.apis.length > 0) {
-      formatted += '🔌 API ENDPOINTS DETECTED (sorted by relevance):\n';
-      appContext.apis.slice(0, 10).forEach((api, index) => {
-        const relevanceIndicator = api._relevanceScore > 0 ? '⭐ ' : '';
-        formatted += `\n${index + 1}. ${relevanceIndicator}${api.method} ${api.endpoint}\n`;
-        formatted += `   • Page: ${api.url}\n`;
-        if (api.payload) {
-          formatted += `   • Payload: ${JSON.stringify(api.payload)}\n`;
-        }
-      });
-      if (appContext.apis.length > 10) {
-        formatted += `\n   ... and ${appContext.apis.length - 10} more API endpoints\n`;
-      }
-      formatted += '\n';
-    }
-
-    // Add buttons and other features
-    if (appContext.features && appContext.features.length > 0) {
-      const buttons = appContext.features.filter(f => f.type === 'button');
-      if (buttons.length > 0) {
-        formatted += '🔘 BUTTONS FOUND:\n';
-        buttons.slice(0, 10).forEach((btn, index) => {
-          formatted += `   ${index + 1}. "${btn.text || btn.id}" on ${btn.url}\n`;
-        });
-        if (buttons.length > 10) {
-          formatted += `   ... and ${buttons.length - 10} more buttons\n`;
-        }
-        formatted += '\n';
-      }
-    }
-
-    // Add page titles
-    if (appContext.pages && appContext.pages.length > 0) {
-      formatted += '📄 KEY PAGES:\n';
-      appContext.pages.slice(0, 5).forEach((page, index) => {
-        formatted += `   ${index + 1}. ${page.title || 'Untitled'}\n`;
-        formatted += `      URL: ${page.url}\n`;
-        if (page.description) {
-          formatted += `      ${page.description.substring(0, 100)}...\n`;
-        }
-      });
-      if (appContext.pages.length > 5) {
-        formatted += `   ... and ${appContext.pages.length - 5} more pages\n`;
-      }
-    }
-
-    formatted += '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
-    formatted += '💡 Use the above ACTUAL implementation details when generating test cases.\n';
-    formatted += 'Include real field names, API endpoints, and button labels in your tests.\n';
-    formatted += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
-
-    return formatted;
-  }
+  // findMatchingApp, extractTicketKeywords, calculateRelevanceScore,
+  // extractRelevantContext, formatAppContextForPrompt → content-utils.js
+  // (the second extractTicketKeywords declaration; it was the effective one)
 
   /**
    * P2.8: Detect SPA framework (React, Vue, Angular)

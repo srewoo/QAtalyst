@@ -370,3 +370,10 @@ if (typeof securityManager === 'undefined') {
     globalThis.securityManager = securityManager;
   }
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    SecurityManager: (typeof globalThis !== 'undefined' ? globalThis.SecurityManager : undefined),
+    securityManager: (typeof globalThis !== 'undefined' ? globalThis.securityManager : undefined),
+  };
+}

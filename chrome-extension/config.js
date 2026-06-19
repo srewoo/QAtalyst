@@ -54,23 +54,6 @@ if (typeof APP_CONFIG === 'undefined') {
     bedrock: 'https://bedrock-runtime.{region}.amazonaws.com'
   },
 
-  // Evolution Settings
-  EVOLUTION_INTENSITY: {
-    light: { generations: 3, populationSize: 3, mutationRate: 0.3 },
-    balanced: { generations: 5, populationSize: 5, mutationRate: 0.4 },
-    intensive: { generations: 8, populationSize: 7, mutationRate: 0.5 },
-    exhaustive: { generations: 10, populationSize: 10, mutationRate: 0.6 }
-  },
-
-  // Test Distribution
-  TEST_DISTRIBUTION: {
-    positive: 0.40,    // 40%
-    negative: 0.30,    // 30%
-    edge: 0.20,        // 20%
-    regression: 0.05,  // 5%
-    integration: 0.05  // 5%
-  },
-
   // UI Configuration
   UI: {
     PANEL_WIDTH: '400px',
@@ -89,9 +72,6 @@ if (typeof APP_CONFIG === 'undefined') {
     TEST_COUNT: 'testCount',
     ENABLE_STREAMING: 'enableStreaming',
     ENABLE_MULTI_AGENT: 'enableMultiAgent',
-    ENABLE_EVOLUTION: 'enableEvolution',
-    ENABLE_ENHANCED: 'enableEnhanced',
-    EVOLUTION_INTENSITY: 'evolutionIntensity',
     CONFLUENCE_URL: 'confluenceUrl',
     CONFLUENCE_TOKEN: 'confluenceToken',
     FIGMA_TOKEN: 'figmaToken',
@@ -150,8 +130,6 @@ if (typeof APP_CONFIG === 'undefined') {
 
   // Freeze the config to prevent modifications
   Object.freeze(APP_CONFIG);
-  Object.freeze(APP_CONFIG.EVOLUTION_INTENSITY);
-  Object.freeze(APP_CONFIG.TEST_DISTRIBUTION);
   Object.freeze(APP_CONFIG.UI);
   Object.freeze(APP_CONFIG.STORAGE_KEYS);
   Object.freeze(APP_CONFIG.ERRORS);
