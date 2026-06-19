@@ -11,7 +11,6 @@
  *
  * No I/O, no chrome.*, no DOM.
  */
-(function () {
   'use strict';
 
   /**
@@ -111,14 +110,10 @@
     return clipboardText;
   }
 
-  const api = {
+  const __qaContentExport = {
     buildTestCasesCSV,
     buildTestCasesClipboardText,
   };
 
-  if (typeof self !== 'undefined') Object.assign(self, api);
-  else if (typeof window !== 'undefined') Object.assign(window, api);
-  else if (typeof globalThis !== 'undefined') Object.assign(globalThis, api);
 
-  if (typeof module !== 'undefined' && module.exports) module.exports = api;
-})();
+  if (typeof module !== 'undefined' && module.exports) module.exports = __qaContentExport;
