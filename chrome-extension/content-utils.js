@@ -11,7 +11,6 @@
  *
  * No I/O, no chrome.* — only string/object transforms plus console logging.
  */
-(function () {
   'use strict';
 
   // Extract plain text with URLs from Jira's ADF (Atlassian Document Format)
@@ -45,6 +44,16 @@
         if (node.attrs && node.attrs.url) {
           text += node.attrs.url + ' ';
         }
+      }
+
+      // Handle smart links (inlineCard/blockCard/embedCard). When a Confluence/
+      // Figma/Docs URL is pasted into a Jira description it auto-converts to one
+      // of these card nodes — the URL lives in attrs.url (or attrs.data.url) with
+      // no text node or link mark, so without this it would be dropped and the
+      // external-source integrations would never see the link.
+      if (node.type === 'inlineCard' || node.type === 'blockCard' || node.type === 'embedCard') {
+        const cardUrl = node.attrs && (node.attrs.url || (node.attrs.data && node.attrs.data.url));
+        if (cardUrl) text += ' ' + cardUrl + ' ';
       }
 
       // Handle code blocks
@@ -669,7 +678,7 @@ Expected Result: ${expectedResult}`;
     }).join('\n---\n');
   }
 
-  const api = {
+  const __qaContentUtils = {
     extractTextFromADF,
     extractFileType,
     determinePageType,
@@ -687,12 +696,6 @@ Expected Result: ${expectedResult}`;
     formatTestCasesForClipboard,
   };
 
-  // Expose on the page/global scope so content.js (loaded AFTER this file) can
   // call these exactly as it did when they were defined inline.
-  if (typeof self !== 'undefined') Object.assign(self, api);
-  else if (typeof window !== 'undefined') Object.assign(window, api);
-  else if (typeof globalThis !== 'undefined') Object.assign(globalThis, api);
 
-  // CommonJS export for unit tests.
-  if (typeof module !== 'undefined' && module.exports) module.exports = api;
-})();
+  if (typeof module !== 'undefined' && module.exports) module.exports = __qaContentUtils;

@@ -8,7 +8,6 @@
  * calling them unchanged. Also exported via module.exports for unit tests; the
  * builder/escape helpers require a DOM (use `@vitest-environment happy-dom`).
  */
-(function () {
   'use strict';
 
   /**
@@ -249,7 +248,7 @@
     return renderMarkdown(scope);
   }
 
-  const api = {
+  const __qaContentFormat = {
     escapeHtml,
     createSafeErrorMessage,
     createSafeFormattedContent,
@@ -260,12 +259,6 @@
     formatTestScope,
   };
 
-  // Expose on the page/global scope so content.js (loaded AFTER this file) can
   // call these exactly as it did when they were defined inline.
-  if (typeof self !== 'undefined') Object.assign(self, api);
-  else if (typeof window !== 'undefined') Object.assign(window, api);
-  else if (typeof globalThis !== 'undefined') Object.assign(globalThis, api);
 
-  // CommonJS export for unit tests.
-  if (typeof module !== 'undefined' && module.exports) module.exports = api;
-})();
+  if (typeof module !== 'undefined' && module.exports) module.exports = __qaContentFormat;

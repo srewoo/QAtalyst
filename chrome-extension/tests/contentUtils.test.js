@@ -71,6 +71,18 @@ describe('extractTextFromADF', () => {
     expect(extractTextFromADF(adf)).toContain('```');
     expect(extractTextFromADF(adf)).toContain('a=1');
   });
+  test('extracts URL from a smart-link inlineCard (pasted Confluence link)', () => {
+    const url = 'https://mindtickle.atlassian.net/wiki/spaces/C/pages/3924492679/Persisting+Meeting+Status+Timestamps';
+    const adf = { type: 'doc', content: [
+      { type: 'paragraph', content: [{ type: 'inlineCard', attrs: { url } }] },
+    ]};
+    expect(extractTextFromADF(adf)).toContain(url);
+  });
+  test('extracts URL from blockCard/embedCard attrs.data.url', () => {
+    const url = 'https://company.atlassian.net/wiki/spaces/AB/pages/123/Spec';
+    expect(extractTextFromADF({ type: 'blockCard', attrs: { url } })).toContain(url);
+    expect(extractTextFromADF({ type: 'embedCard', attrs: { data: { url } } })).toContain(url);
+  });
 });
 
 describe('extractFileType', () => {
