@@ -185,24 +185,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'maxTokens',
     'enableStreaming',
     'enableMultiAgent',
-    'useAgenticMode',
     'coverageTarget',
     'testCount',
-    'enableContextAnalysisAgent',
-    'enableRequirementAnalysisAgent',
-    'enablePositiveAgent',
-    'enableNegativeAgent',
-    'enableEdgeAgent',
-    'enableRegressionAgent',
-    'enableIntegrationAgent',
-    'enableReviewAgent',
-    'enableEnhanced',
-    'positivePercent',
-    'negativePercent',
-    'edgePercent',
-    'integrationPercent',
-    'enableEvolution',
-    'evolutionIntensity',
     'enableHistoricalMining',
     'historicalMaxResults',
     'historicalJqlFilters',
@@ -320,9 +304,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('maxTokens').value = settings.maxTokens || 32768;
   document.getElementById('enableStreaming').checked = settings.enableStreaming !== false;
   document.getElementById('enableMultiAgent').checked = settings.enableMultiAgent || false;
-  if (document.getElementById('useAgenticMode')) {
-    document.getElementById('useAgenticMode').checked = settings.useAgenticMode !== false; // default ON
-  }
   if (document.getElementById('coverageTarget')) {
     document.getElementById('coverageTarget').value = settings.coverageTarget || 80;
   }
@@ -337,26 +318,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const testCount = settings.testCount || 30;
   document.getElementById('testCount').value = testCount;
   document.getElementById('testCountValue').textContent = testCount;
-
-  // Agent Configuration
-  document.getElementById('enableContextAnalysisAgent').checked = settings.enableContextAnalysisAgent !== false;
-  document.getElementById('enableRequirementAnalysisAgent').checked = settings.enableRequirementAnalysisAgent !== false;
-  document.getElementById('enablePositiveAgent').checked = settings.enablePositiveAgent !== false;
-  document.getElementById('enableNegativeAgent').checked = settings.enableNegativeAgent !== false;
-  document.getElementById('enableEdgeAgent').checked = settings.enableEdgeAgent !== false;
-  document.getElementById('enableRegressionAgent').checked = settings.enableRegressionAgent !== false;
-  document.getElementById('enableIntegrationAgent').checked = settings.enableIntegrationAgent !== false;
-  document.getElementById('enableReviewAgent').checked = settings.enableReviewAgent !== false;
-  
-  // Test Case Settings
-  document.getElementById('enableEnhanced').checked = settings.enableEnhanced !== false;
-  document.getElementById('positivePercent').value = settings.positivePercent || 40;
-  document.getElementById('negativePercent').value = settings.negativePercent || 25;
-  document.getElementById('edgePercent').value = settings.edgePercent || 10;
-  document.getElementById('integrationPercent').value = settings.integrationPercent || 5;
-  
-  document.getElementById('enableEvolution').checked = settings.enableEvolution || false;
-  document.getElementById('evolutionIntensity').value = settings.evolutionIntensity || 'light';
 
   // Historical Mining
   document.getElementById('enableHistoricalMining').checked = settings.enableHistoricalMining || false;
@@ -630,29 +591,8 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     maxTokens: parseInt(document.getElementById('maxTokens').value),
     enableStreaming: document.getElementById('enableStreaming').checked,
     enableMultiAgent: document.getElementById('enableMultiAgent').checked,
-    useAgenticMode: document.getElementById('useAgenticMode') ? document.getElementById('useAgenticMode').checked : true,
     coverageTarget: document.getElementById('coverageTarget') ? parseInt(document.getElementById('coverageTarget').value) || 80 : 80,
     testCount: parseInt(document.getElementById('testCount').value),
-
-    // Agent Configuration
-    enableContextAnalysisAgent: document.getElementById('enableContextAnalysisAgent').checked,
-    enableRequirementAnalysisAgent: document.getElementById('enableRequirementAnalysisAgent').checked,
-    enablePositiveAgent: document.getElementById('enablePositiveAgent').checked,
-    enableNegativeAgent: document.getElementById('enableNegativeAgent').checked,
-    enableEdgeAgent: document.getElementById('enableEdgeAgent').checked,
-    enableRegressionAgent: document.getElementById('enableRegressionAgent').checked,
-    enableIntegrationAgent: document.getElementById('enableIntegrationAgent').checked,
-    enableReviewAgent: document.getElementById('enableReviewAgent').checked,
-
-    // Test Case Settings
-    enableEnhanced: document.getElementById('enableEnhanced').checked,
-    positivePercent: parseInt(document.getElementById('positivePercent').value),
-    negativePercent: parseInt(document.getElementById('negativePercent').value),
-    edgePercent: parseInt(document.getElementById('edgePercent').value),
-    integrationPercent: parseInt(document.getElementById('integrationPercent').value),
-
-    enableEvolution: document.getElementById('enableEvolution').checked,
-    evolutionIntensity: document.getElementById('evolutionIntensity').value,
 
     // Historical Mining
     enableHistoricalMining: document.getElementById('enableHistoricalMining').checked,
@@ -856,13 +796,6 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   // Debug logging before saving
   console.log('💾 Saving QAtalyst Settings:', {
     enableMultiAgent: settings.enableMultiAgent,
-    enableEvolution: settings.enableEvolution,
-    enableContextAnalysisAgent: settings.enableContextAnalysisAgent,
-    enableRequirementAnalysisAgent: settings.enableRequirementAnalysisAgent,
-    enableRegressionAgent: settings.enableRegressionAgent,
-    enablePositiveAgent: settings.enablePositiveAgent,
-    enableNegativeAgent: settings.enableNegativeAgent,
-    enableEdgeAgent: settings.enableEdgeAgent,
     testCount: settings.testCount
   });
 
@@ -873,7 +806,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   await chrome.storage.sync.set(settings);
 
   // Verify what was actually saved
-  const verification = await chrome.storage.sync.get(['enableMultiAgent', 'enableEvolution', 'testCount']);
+  const verification = await chrome.storage.sync.get(['enableMultiAgent', 'testCount']);
   console.log('✅ Settings saved and verified:', verification);
   console.log('✅ Type of verified enableMultiAgent:', typeof verification.enableMultiAgent);
 

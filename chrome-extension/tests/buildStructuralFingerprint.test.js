@@ -6,41 +6,15 @@
  */
 
 // ---------------------------------------------------------------------------
-// Inline the pure function under test
+// Import the REAL shipped method from crawler.js (WebAppCrawler). It is a pure
+// method (uses only its argument), so we invoke it via the prototype without
+// constructing the crawler. CONFIG is stubbed because requiring crawler.js
+// references the global; buildStructuralFingerprint itself never reads it.
 // ---------------------------------------------------------------------------
-function buildStructuralFingerprint(pageData) {
-  const parts = [];
-  const features = pageData.features || [];
-
-  // Count feature types
-  const typeCounts = {};
-  features.forEach(f => {
-    const type = f.type || 'unknown';
-    typeCounts[type] = (typeCounts[type] || 0) + 1;
-  });
-
-  Object.keys(typeCounts).sort().forEach(type => {
-    parts.push(`${type}:${typeCounts[type]}`);
-  });
-
-  // Include form field structure
-  const forms = features.filter(f => f.type === 'form');
-  forms.forEach((form, i) => {
-    if (form.fields) {
-      const fieldSig = form.fields.map(f => `${f.type || 'text'}`).sort().join(',');
-      parts.push(`form${i}[${fieldSig}]`);
-    }
-  });
-
-  // Include button intents
-  const buttons = features.filter(f => f.type === 'button');
-  if (buttons.length > 0) {
-    const intents = buttons.map(b => b.intent || 'unknown').sort().join(',');
-    parts.push(`btns[${intents}]`);
-  }
-
-  return parts.join('|');
-}
+global.CONFIG = global.CONFIG || { get: (_k, d) => d };
+const WebAppCrawler = require('../crawler.js');
+const buildStructuralFingerprint = (pageData) =>
+  WebAppCrawler.prototype.buildStructuralFingerprint.call(null, pageData);
 
 // ---------------------------------------------------------------------------
 // Fixtures

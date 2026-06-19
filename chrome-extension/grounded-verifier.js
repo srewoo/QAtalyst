@@ -29,12 +29,72 @@ class GroundedVerifier {
    * @param {object} [options]
    * @param {number} [options.minGroundingScore=0.5] accept threshold for grounded references
    * @param {number} [options.fuzzyThreshold=0.82] similarity needed to propose a repair
+   * @param {boolean} [options.behaviorCheck=true] flag described backend behaviours
+   *   (auto-sync, email, polling…) that have no supporting API in the crawl.
+   * @param {boolean} [options.strictBehaviors=false] hard-reject on unsupported
+   *   behaviours instead of just warning + applying a score penalty.
+   * @param {number} [options.minApisForBehaviorCheck=3] only reason about missing
+   *   backend mechanisms when we observed at least this many APIs (so an
+   *   incomplete crawl doesn't false-reject real behaviour).
    */
   constructor(knowledgeGraph, options = {}) {
     this.knowledgeGraph = knowledgeGraph || null;
     this.minGroundingScore = options.minGroundingScore ?? 0.5;
     this.fuzzyThreshold = options.fuzzyThreshold ?? 0.82;
+    this.behaviorCheck = options.behaviorCheck !== false;
+    this.strictBehaviors = options.strictBehaviors === true;
+    this.minApisForBehaviorCheck = options.minApisForBehaviorCheck ?? 3;
     this.index = this.buildIndex();
+  }
+
+  /**
+   * Backend behaviours a test can ASSERT but that the crawler can only confirm
+   * via an API. `re` detects the claim in the test text; `support` is what a
+   * real implementation would look like across the app's API surface.
+   */
+  static get BEHAVIOR_PATTERNS() {
+    return [
+      { name: 'auto-sync / background sync', re: /\bauto[\s-]?sync|background sync|sync(?:s|ed)?\s+(?:automatically|every|in the background)\b/i, support: /sync|refresh|poll|fetch|update/i },
+      { name: 'real-time / polling update', re: /\breal[\s-]?time|live updat|auto[\s-]?refresh|poll(?:s|ing)?\b|updates?\s+(?:every|in real[\s-]?time)\b/i, support: /poll|stream|live|socket|sse|subscribe|refresh|update|events?/i },
+      { name: 'websocket / server push', re: /\bweb\s?socket|server[\s-]?sent|\bsse\b|push (?:notification|update)\b/i, support: /ws|socket|sse|stream|push|subscribe|notify|events?/i },
+      { name: 'email notification', re: /\b(?:sends?|sent|receives?|received)\s+(?:an?\s+)?email|email (?:notification|confirmation|is sent)|confirmation email\b/i, support: /email|mail|notif|smtp|send|message/i },
+      { name: 'sms / OTP delivery', re: /\bsms|text message|\botp\b|one[\s-]?time (?:password|code)\b/i, support: /sms|otp|verify|code|message|notif|twilio/i },
+      { name: 'scheduled / periodic job', re: /\bscheduled|cron|nightly|periodic(?:ally)?|every\s+\d+\s+(?:seconds?|minutes?|hours?)\b/i, support: /schedul|cron|job|sync|batch|poll|task/i },
+      { name: 'retry / backoff', re: /\bretr(?:y|ies|ied)|exponential backoff|auto[\s-]?retr\b/i, support: /retr|backoff|queue|resend|attempt/i },
+      { name: 'webhook / callback', re: /\bweb\s?hook|callback url\b/i, support: /webhook|hook|callback|event|notify/i },
+      { name: 'rate limiting', re: /\brate[\s-]?limit|throttl(?:e|ing)|too many requests\b/i, support: /limit|throttle|quota|rate|429/i }
+    ];
+  }
+
+  /**
+   * Detect behavioural claims with no supporting mechanism in the crawled app.
+   * Returns { warnings:string[], penalty:number } where penalty ∈ (0,1] scales
+   * the grounding score. No-op (empty, penalty 1) unless the crawl is API-rich
+   * enough to make absence meaningful.
+   */
+  checkBehaviors(testCase) {
+    const out = { warnings: [], penalty: 1 };
+    if (!this.behaviorCheck) return out;
+    if (this.index.apis.length < this.minApisForBehaviorCheck) return out; // crawl too thin to judge
+
+    const steps = Array.isArray(testCase?.steps) ? testCase.steps : [];
+    const text = [testCase?.title, testCase?.description, testCase?.expected_result, ...steps]
+      .filter(Boolean).join('\n');
+    if (!text) return out;
+
+    // Everything the app actually offers, as one searchable haystack.
+    const haystack = [
+      ...this.index.apis.map(a => `${a.method} ${a.endpoint} ${a.url}`),
+      ...this.index.buttons, ...this.index.fields, ...this.index.routes
+    ].join(' ').toLowerCase();
+
+    for (const b of GroundedVerifier.BEHAVIOR_PATTERNS) {
+      if (b.re.test(text) && !b.support.test(haystack)) {
+        out.warnings.push(`Test asserts "${b.name}" but no supporting API/mechanism was observed in the app`);
+      }
+    }
+    if (out.warnings.length) out.penalty = Math.max(0.55, Math.pow(0.85, out.warnings.length));
+    return out;
   }
 
   /** Build a normalized index of real application entities from either KG shape. */
@@ -131,7 +191,11 @@ class GroundedVerifier {
    */
   verify(testCase) {
     if (this.index.empty) {
-      return { verdict: 'not_applicable', score: 1, references: {}, issues: [], repairs: {} };
+      // v13.2: no crawl data → grounding is impossible. Do NOT report score 1
+      // (which reads as "fully grounded"); report a null score and surface the
+      // fact that this test was never verified against a real app, so the test
+      // gets flagged 'unverified' downstream instead of silently trusted.
+      return { verdict: 'not_applicable', score: null, references: {}, issues: [], repairs: {}, unverified: true };
     }
 
     const refs = this.extractReferences(testCase);
@@ -194,12 +258,22 @@ class GroundedVerifier {
       }
     }
 
-    const score = referenced === 0 ? 0.6 : grounded / referenced;
+    let score = referenced === 0 ? 0.6 : grounded / referenced;
+
+    // --- behaviour validation (v13.2): catch hallucinated backend behaviours ---
+    const behavior = this.checkBehaviors(testCase);
+    const behaviorReject = this.strictBehaviors && behavior.warnings.length > 0;
+    if (behavior.warnings.length) {
+      score *= behavior.penalty; // unsupported behaviour drags the score down
+      if (this.strictBehaviors) issues.push(...behavior.warnings);
+    }
 
     // No concrete references at all → cannot confirm grounding, but don't hard-reject;
     // these flow to the relevance gate instead. Slight penalty (0.6).
     let verdict;
-    if (referenced === 0) {
+    if (behaviorReject) {
+      verdict = 'reject'; // strict mode: a hallucinated behaviour fails the test outright
+    } else if (referenced === 0) {
       verdict = 'grounded'; // abstract test, judged by relevance gate downstream
     } else if (Object.keys(repairs).length > 0 && score >= this.minGroundingScore) {
       verdict = 'needs_repair';
@@ -211,7 +285,7 @@ class GroundedVerifier {
       verdict = 'reject';
     }
 
-    return { verdict, score: round2(score), references: refs, issues, repairs };
+    return { verdict, score: round2(score), references: refs, issues, repairs, behaviorWarnings: behavior.warnings };
   }
 
   /** Apply proposed repairs to a test case in place-safe manner (returns a new object). */

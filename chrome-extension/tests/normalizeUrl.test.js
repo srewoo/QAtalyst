@@ -7,29 +7,14 @@
  */
 
 // ---------------------------------------------------------------------------
-// Inline the pure function under test
-// (CONFIG.get is called for removeParams list — we supply the default list directly)
+// Import the REAL shipped method from crawler.js (WebAppCrawler.normalizeUrl).
+// It reads its remove-param list from CONFIG.get(key, default); we stub CONFIG
+// to return the default list so the test exercises the production defaults. The
+// method uses no `this`, so we call it via the prototype.
 // ---------------------------------------------------------------------------
-const DEFAULT_REMOVE_PARAMS = [
-  'page', 'offset', 'limit', 'timestamp', 'ts', '_t',
-  '_requestStartTime', '_selfRouting', '_timestamp', 'cache', 'v',
-  'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
-  'fbclid', 'gclid', 'ref', 'source',
-];
-
-function normalizeUrl(url, paramsToRemove = DEFAULT_REMOVE_PARAMS) {
-  try {
-    const urlObj = new URL(url);
-    paramsToRemove.forEach(param => urlObj.searchParams.delete(param));
-    let normalized = urlObj.toString();
-    if (normalized.endsWith('/') && urlObj.pathname !== '/') {
-      normalized = normalized.slice(0, -1);
-    }
-    return normalized;
-  } catch (_) {
-    return url;
-  }
-}
+global.CONFIG = global.CONFIG || { get: (_k, d) => d };
+const WebAppCrawler = require('../crawler.js');
+const normalizeUrl = (url) => WebAppCrawler.prototype.normalizeUrl.call(null, url);
 
 // ---------------------------------------------------------------------------
 // Tests

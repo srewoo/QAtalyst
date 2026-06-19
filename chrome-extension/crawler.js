@@ -71,6 +71,14 @@ class WebAppCrawler {
     this.similarityThreshold = CONFIG.get('crawler.duplicateDetection.similarityThreshold', 0.98);
     this.pageSignatures = new Map(); // Store page signatures for duplicate detection
 
+    // Faceted-parameter explosion guard: cap how many distinct query-param
+    // variants we crawl per path (e.g. ?color=red&size=M&sort=...). Without this
+    // a faceted-filter UI can generate thousands of unique-but-equivalent URLs.
+    this.maxParamVariantsPerPath = CONFIG.get('crawler.limits.maxParamVariantsPerPath', 25);
+    this.maxValuesPerParamKey = CONFIG.get('crawler.limits.maxValuesPerParamKey', 50);
+    this.paramBudget = new Map(); // Map<pathKey, { count, keys: Map<key, Set<value>> }>
+    this.paramBudgetTrimmed = 0; // Count of URLs trimmed by the budget (for logging/metrics)
+
     // Parameterized URL pattern tracking (e.g., /recording/123, /recording/456 = same pattern)
     this.parameterizedUrlTracking = new Map(); // Map<pattern, count> - tracks samples per URL pattern
     this.urlTemplates = new Map(); // Map<template, [urls]> - for template-based learning
@@ -155,6 +163,15 @@ class WebAppCrawler {
       if (CONFIG.get('crawler.resourceBlocking.enabled', false)) {
         await this.resourceBlocker.start(this.startUrl);
         console.log(`🎯 Resource blocking active for domain: ${new URL(this.startUrl).hostname}`);
+      }
+
+      // Automated login (v13.3): if configured, log in before crawling so the
+      // session cookies carry through. Failure degrades to an unauthenticated
+      // crawl rather than aborting.
+      const autoLogin = CONFIG.get('crawler.authentication.autoLogin', null);
+      if (autoLogin && autoLogin.enabled) {
+        const r = await this.performLogin(autoLogin);
+        console.log(r.success ? `🔐 Auto-login succeeded` : `⚠️ Auto-login failed: ${r.reason} — crawling unauthenticated`);
       }
 
       // Parse sitemap first for instant URL discovery
@@ -496,7 +513,16 @@ class WebAppCrawler {
     // SPA Route Discovery
     const spaEnabled = CONFIG.get('crawler.spaDiscovery.enabled', true);
     const passiveEnabled = CONFIG.get('crawler.spaDiscovery.passiveEnabled', true);
-    const clickEnabled = CONFIG.get('crawler.spaDiscovery.clickEnabled', false);
+    // Auto-tune (v13.3): click-based discovery is expensive, so it's off by
+    // default — BUT when this page is detected as a real SPA (framework +
+    // hydration), auto-enable it so single-page apps actually get their
+    // click-only routes crawled. Explicit config still wins/forces it.
+    const clickConfigured = CONFIG.get('crawler.spaDiscovery.clickEnabled', false);
+    const autoClickOnSpa = CONFIG.get('crawler.spaDiscovery.autoClickOnSpa', true);
+    const clickEnabled = clickConfigured || (autoClickOnSpa && isSPA);
+    if (clickEnabled && !clickConfigured) {
+      console.log('🤖 SPA detected — auto-enabling click-based route discovery for this page');
+    }
     let spaDiscoveries = [];
     if (spaEnabled) {
       // CRITICAL FIX: Validate tab before SPA discovery
@@ -708,6 +734,55 @@ class WebAppCrawler {
   }
 
   /**
+   * Run automated form login before the crawl (v13.3). Wires CrawlerAuth to the
+   * real browser APIs. Returns { success, reason } and never throws.
+   */
+  async performLogin(authConfig) {
+    if (typeof CrawlerAuth === 'undefined') {
+      return { success: false, reason: 'CrawlerAuth module not loaded' };
+    }
+    const tabId = this.tabId;
+    const auth = new CrawlerAuth(authConfig, {
+      // Direct navigation that bypasses the isAuthUrl guard (the login URL is, by
+      // definition, an auth URL).
+      navigate: (url) => new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('login navigation timeout')), this.getNavigationTimeout());
+        chrome.tabs.update(tabId, { url }, () => {
+          clearTimeout(t);
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else setTimeout(resolve, 1200); // let the login page settle
+        });
+      }),
+      fillAndSubmit: async (steps) => {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          args: [steps],
+          func: (fillSteps) => {
+            const fire = (el, type) => el.dispatchEvent(new Event(type, { bubbles: true }));
+            for (const s of fillSteps) {
+              const el = document.querySelector(s.selector);
+              if (!el) continue;
+              if (s.action === 'fill') {
+                el.focus(); el.value = s.value; fire(el, 'input'); fire(el, 'change');
+              } else if (s.action === 'click') {
+                el.click();
+              } else if (s.action === 'enter') {
+                el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+                if (el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+              }
+            }
+          },
+        });
+      },
+      getCurrentUrl: () => new Promise((resolve) => {
+        chrome.tabs.get(tabId, (tab) => resolve(tab && tab.url ? tab.url : null));
+      }),
+      sleep: (ms) => this.sleep(ms),
+    });
+    return auth.authenticate();
+  }
+
+  /**
    * Navigate to URL in the target tab
    * P1.4: Uses adaptive timeout based on detected site type
    */
@@ -915,8 +990,8 @@ class WebAppCrawler {
 
     // Add domains from enabled categories
     for (const [category, isEnabled] of Object.entries(categories)) {
-      if (isEnabled && Crawler.BLACKLIST_CATEGORIES[category]) {
-        domains.push(...Crawler.BLACKLIST_CATEGORIES[category]);
+      if (isEnabled && WebAppCrawler.BLACKLIST_CATEGORIES[category]) {
+        domains.push(...WebAppCrawler.BLACKLIST_CATEGORIES[category]);
       }
     }
 
@@ -1664,6 +1739,16 @@ class WebAppCrawler {
       return false; // Invalid URL
     }
 
+    // Faceted-parameter explosion guard: cap distinct query-param variants per
+    // path so a faceted-filter UI (?color=red&size=M&sort=...) can't flood the
+    // queue. Only affects URLs that carry query params — non-faceted sites are
+    // untouched. Records into this.paramBudget and logs when it trims.
+    if (this.shouldSkipForParamBudget(url, this.paramBudget)) {
+      this.paramBudgetTrimmed++;
+      console.log(`⏩ Param budget reached, trimming faceted URL (#${this.paramBudgetTrimmed}): ${url}`);
+      return false;
+    }
+
     // Check parameterized URL detection
     if (!this.detectParameterizedUrls) {
       return true; // Detection disabled, queue everything
@@ -1686,6 +1771,97 @@ class WebAppCrawler {
 
     // We need more samples of this pattern - queue it
     return true;
+  }
+
+  /**
+   * Build the path-level key used by the param-budget guard.
+   * Same origin + pathname = same bucket; query string is what we budget.
+   * @returns {string|null} path key, or null if the URL has no query params
+   *                        (non-faceted URLs are never budgeted)
+   */
+  getParamBudgetKey(url) {
+    try {
+      const u = new URL(url);
+      if (!u.search || u.searchParams.toString() === '') return null;
+      return `${u.origin}${u.pathname}`;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Faceted-parameter explosion guard (pure w.r.t. the passed-in seenMap).
+   *
+   * Decides whether a query-bearing URL should be SKIPPED because we've already
+   * crawled too many variants that share its path. Two independent caps:
+   *   1. maxParamVariantsPerPath — distinct query strings seen per path.
+   *   2. maxValuesPerParamKey    — distinct values seen for any single key.
+   * Either cap being exceeded by a NEW variant/value trims the URL.
+   *
+   * On an allowed URL it RECORDS the variant + key/value pairs into seenMap so
+   * subsequent calls converge on the caps. URLs without query params are never
+   * budgeted (returns false), so non-faceted sites are unaffected.
+   *
+   * @param {string} url
+   * @param {Map} seenMap  Map<pathKey, { count:number, variants:Set, keys:Map<string,Set> }>
+   * @returns {boolean} true if the URL should be skipped
+   */
+  shouldSkipForParamBudget(url, seenMap) {
+    const pathKey = this.getParamBudgetKey(url);
+    if (pathKey === null) return false; // no query params → never budgeted
+
+    let params;
+    try {
+      params = new URL(url).searchParams;
+    } catch (e) {
+      return false;
+    }
+
+    const maxVariants = this.maxParamVariantsPerPath || 25;
+    const maxValues = this.maxValuesPerParamKey || 50;
+
+    let bucket = seenMap.get(pathKey);
+    if (!bucket) {
+      bucket = { count: 0, variants: new Set(), keys: new Map() };
+      seenMap.set(pathKey, bucket);
+    }
+
+    // Sorted canonical query signature so ?a=1&b=2 == ?b=2&a=1.
+    const variant = [...params.entries()]
+      .sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : (a[0] < b[0] ? -1 : 1)))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('&');
+
+    const isNewVariant = !bucket.variants.has(variant);
+
+    // Cap 1: too many distinct variants for this path, and this is a new one.
+    if (isNewVariant && bucket.count >= maxVariants) {
+      return true;
+    }
+
+    // Cap 2: any key whose distinct-value set is already full and this value is new.
+    for (const [k, v] of params.entries()) {
+      const valueSet = bucket.keys.get(k);
+      if (valueSet && valueSet.size >= maxValues && !valueSet.has(v)) {
+        return true;
+      }
+    }
+
+    // Allowed → record it.
+    if (isNewVariant) {
+      bucket.variants.add(variant);
+      bucket.count++;
+    }
+    for (const [k, v] of params.entries()) {
+      let valueSet = bucket.keys.get(k);
+      if (!valueSet) {
+        valueSet = new Set();
+        bucket.keys.set(k, valueSet);
+      }
+      valueSet.add(v);
+    }
+
+    return false;
   }
 
   /**

@@ -1,16 +1,17 @@
 {
   "name": "qatalyst",
-  "version": "13.1",
-  "description": "From QA Analyst to QA Visionary — Powered by QAtalyst. AI-Powered Test Case Generation for Jira - Advanced Chrome Extension with Multi-Agent System & Evolutionary Optimization",
+  "version": "13.3",
+  "description": "From QA Analyst to QA Visionary — Powered by QAtalyst. AI-Powered Test Case Generation for Jira - Chrome Extension with a grounded, coverage-driven agentic test engine",
   "main": "chrome-extension/background.js",
   "scripts": {
     "build": "./build.sh",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test -c chrome-extension/e2e/playwright.config.js",
     "lint": "eslint chrome-extension/**/*.js",
     "format": "prettier --write chrome-extension/**/*.{js,html,css,json}",
-    "zip": "cd chrome-extension && zip -r ../qatalyst-v13.0-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
+    "zip": "cd chrome-extension && zip -r ../qatalyst-v13.3-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/tests/**' '**/e2e/*' '**/e2e/**' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
   },
   "repository": {
     "type": "git",
@@ -32,7 +33,11 @@
   "author": "QA Engineering Team",
   "license": "PROPRIETARY",
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.9",
     "eslint": "^8.56.0",
+    "fake-indexeddb": "^6.2.5",
+    "happy-dom": "^20.10.6",
+    "jsdom": "^27.0.1",
     "prettier": "^3.2.4",
     "vitest": "^4.1.4"
   },

@@ -133,6 +133,81 @@ describe('GroundedVerifier.verifyBatch', () => {
   });
 });
 
+describe('GroundedVerifier behaviour validation (v13.2)', () => {
+  // API-rich KG so absence of a mechanism is meaningful.
+  const RICH_KG = {
+    pages: [{
+      url: 'https://app.example.com/settings',
+      title: 'Settings',
+      features: [
+        { type: 'form', selector: '#profile-form', inputs: [{ name: 'displayName' }, { name: 'email' }] },
+        { type: 'button', text: 'Save', selector: '#save' }
+      ],
+      apis: [
+        { method: 'GET', endpoint: '/api/profile', url: 'https://app.example.com/api/profile' },
+        { method: 'PUT', endpoint: '/api/profile', url: 'https://app.example.com/api/profile' },
+        { method: 'POST', endpoint: '/api/settings/save', url: 'https://app.example.com/api/settings/save' }
+      ]
+    }]
+  };
+
+  test('should warn and penalise when a test asserts auto-sync with no supporting API', () => {
+    const v = new GroundedVerifier(RICH_KG);
+    const tc = {
+      title: 'Settings auto-sync',
+      steps: ['Update the displayName field', 'Click "Save"'],
+      expected_result: 'Changes auto-sync to every other device in real-time'
+    };
+    const r = v.verify(tc);
+    expect(r.behaviorWarnings.length).toBeGreaterThan(0);
+    expect(r.behaviorWarnings.join(' ')).toMatch(/sync|real-time|polling/i);
+  });
+
+  test('should hard-reject unsupported behaviour in strict mode', () => {
+    const v = new GroundedVerifier(RICH_KG, { strictBehaviors: true, minGroundingScore: 0.5 });
+    const tc = {
+      title: 'Confirmation email',
+      steps: ['Update the email field', 'Click "Save"'],
+      expected_result: 'A confirmation email is sent and the account auto-syncs nightly via a scheduled job'
+    };
+    const r = v.verify(tc);
+    expect(r.verdict).toBe('reject');
+    expect(r.issues.some(i => /email|scheduled|sync/i.test(i))).toBe(true);
+  });
+
+  test('should NOT warn when the behaviour has a supporting API', () => {
+    const v = new GroundedVerifier(RICH_KG);
+    const tc = {
+      title: 'Save profile',
+      steps: ['Update the displayName field', 'Click "Save"'],
+      expected_result: 'POST /api/settings/save persists the changes'
+    };
+    const r = v.verify(tc);
+    expect(r.behaviorWarnings).toHaveLength(0);
+  });
+
+  test('should be a no-op on a thin crawl (too few APIs to judge)', () => {
+    const v = new GroundedVerifier(KG); // KG has only 1 API total
+    const tc = {
+      title: 'Login auto-sync',
+      steps: ['Enter a value in the username field', 'Click "Sign In"'],
+      expected_result: 'Session auto-syncs in real-time across devices'
+    };
+    const r = v.verify(tc);
+    expect(r.behaviorWarnings).toHaveLength(0);
+  });
+
+  test('should respect behaviorCheck:false', () => {
+    const v = new GroundedVerifier(RICH_KG, { behaviorCheck: false });
+    const tc = {
+      title: 'Auto sync',
+      steps: ['Update the email field'],
+      expected_result: 'Data syncs automatically every 30 seconds'
+    };
+    expect(v.verify(tc).behaviorWarnings).toHaveLength(0);
+  });
+});
+
 describe('pure helpers', () => {
   test('similarity is 1 for identical, lower for different', () => {
     expect(similarity('username', 'username')).toBe(1);

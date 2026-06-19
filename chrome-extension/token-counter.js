@@ -259,3 +259,11 @@ function getTokenStatistics(requestData, model) {
     remaining: limits.max - inputTokens
   };
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    getModelLimits, estimateTokenCount, estimateMessagesTokens,
+    checkTokenLimit, logTokenUsage, truncateToTokenLimit, getTokenStatistics,
+    TOKEN_LIMITS, MODEL_FAMILY_LIMITS,
+  };
+}
