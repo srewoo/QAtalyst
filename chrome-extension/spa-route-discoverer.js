@@ -123,6 +123,102 @@ class SPARouteDiscoverer {
             const clickedElements = new Set();
             let clickCount = 0;
 
+            // ── Visibility + lightweight feature snapshot (items 1 & 2) ──────────
+            const isVisible = (el) => {
+              try {
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return false;
+                const s = window.getComputedStyle(el);
+                return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) !== 0;
+              } catch (e) { return false; }
+            };
+            const cssPath = (el) => {
+              if (el.id) return '#' + el.id;
+              let p = el.tagName ? el.tagName.toLowerCase() : 'node';
+              if (el.className && typeof el.className === 'string') {
+                const c = el.className.split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+                if (c) p += '.' + c;
+              }
+              return p;
+            };
+            // Capture interactive features (forms/buttons) currently in the DOM
+            // as lightweight records, each with a stable signature for diffing.
+            const featureSig = (f) => [f.type, f.name || '', f.action || '',
+              (f.fields ? f.fields.length : ''), (f.text || '').slice(0, 40)].join('|');
+            const snapshotFeatures = () => {
+              const out = [];
+              try {
+                const forms = document.querySelectorAll('form');
+                for (let i = 0; i < forms.length && out.length < 40; i++) {
+                  const form = forms[i];
+                  if (!isVisible(form)) continue;
+                  const fields = Array.from(form.querySelectorAll('input, select, textarea'))
+                    .filter((f) => (f.type || '') !== 'hidden')
+                    .slice(0, 30)
+                    .map((f) => ({ name: f.name || f.id || f.placeholder || '', type: f.type || f.tagName.toLowerCase() }));
+                  if (fields.length === 0) continue;
+                  out.push({ type: 'form', name: form.name || form.id || ('Form ' + (i + 1)),
+                    action: form.action || '', fields, selector: cssPath(form), _discoveredVia: 'click' });
+                }
+                const btns = document.querySelectorAll('button, [role="button"]');
+                for (let i = 0; i < btns.length && out.length < 60; i++) {
+                  const b = btns[i];
+                  if (!isVisible(b)) continue;
+                  const text = (b.innerText || b.getAttribute('aria-label') || '').trim().slice(0, 50);
+                  if (text) out.push({ type: 'button', text, selector: cssPath(b), _discoveredVia: 'click' });
+                }
+              } catch (e) { /* snapshot best-effort */ }
+              return out;
+            };
+            // Baseline of features present before any interaction — only NEW ones
+            // (revealed by clicks/hover) are reported back as newFeatures.
+            const seenFeatureSigs = new Set(snapshotFeatures().map(featureSig));
+            const collectNewFeatures = () => {
+              const fresh = [];
+              for (const f of snapshotFeatures()) {
+                const s = featureSig(f);
+                if (seenFeatureSigs.has(s)) continue;
+                seenFeatureSigs.add(s);
+                fresh.push(f);
+              }
+              return fresh;
+            };
+
+            // ── Hover pass (item 2): reveal CSS/JS submenus, then record links ───
+            const hoverReveal = async () => {
+              const parents = [];
+              const sel = '[aria-haspopup], [class*="dropdown"], [class*="menu"], nav li, [class*="has-sub"]';
+              try { parents.push(...document.querySelectorAll(sel)); } catch (e) { /* ignore */ }
+              const fire = (el, type) => { try { el.dispatchEvent(new MouseEvent(type, { bubbles: true })); } catch (e) {} };
+              for (const el of parents.slice(0, 15)) {
+                if (!isVisible(el)) continue;
+                fire(el, 'mouseover'); fire(el, 'mouseenter');
+                try { if (el.focus) el.focus(); } catch (e) {}
+                await new Promise((r) => setTimeout(r, 120));
+              }
+              // Any internal anchors now visible are candidate routes.
+              const revealedUrls = new Set();
+              try {
+                document.querySelectorAll('a[href]').forEach((a) => {
+                  const href = a.getAttribute('href') || '';
+                  if (!href || href.startsWith('#') || /^(https?:|mailto:|tel:|javascript:)/i.test(href)) return;
+                  if (!isVisible(a)) return;
+                  try { revealedUrls.add(new URL(href, location.href).href); } catch (e) {}
+                });
+              } catch (e) { /* ignore */ }
+              const newFeatures = collectNewFeatures();
+              if (revealedUrls.size > 0 || newFeatures.length > 0) {
+                discoveries.push({
+                  type: 'hover-menu',
+                  trigger: { element: 'hover', text: 'submenu/hover reveal' },
+                  state: { url: window.location.href, hash: window.location.hash, title: document.title,
+                    revealedUrls: Array.from(revealedUrls).slice(0, 50), changed: { dom: newFeatures.length > 0 } },
+                  newFeatures,
+                  timestamp: Date.now()
+                });
+              }
+            };
+
             // Get initial page state
             const getPageState = () => {
               return {
@@ -241,6 +337,9 @@ class SPARouteDiscoverer {
                           title: newState.title,
                           changed: { url: urlChanged, dom: domChanged, hash: newHash !== initialHash }
                         },
+                        // Item 1: capture forms/buttons the click revealed (only when
+                        // the DOM actually changed) so they become testable features.
+                        newFeatures: domChanged ? collectNewFeatures() : [],
                         timestamp: Date.now()
                       });
                     } else {
@@ -257,6 +356,9 @@ class SPARouteDiscoverer {
 
             // Main discovery
             const initialState = getPageState();
+            // Item 2: hover pass first — open submenus/dropdowns so their items
+            // are visible to the click loop below and their links get recorded.
+            try { await hoverReveal(); } catch (e) { /* best-effort */ }
             while (clickCount < maxClicks) {
               const clickableElements = findClickableElements();
               if (clickableElements.length === 0) break;
@@ -560,12 +662,20 @@ class SPARouteDiscoverer {
     const routes = new Set();
 
     for (const discovery of discoveries) {
-      if (discovery.state.url !== discovery.state.originalUrl) {
-        routes.add(discovery.state.url);
+      const state = discovery && discovery.state;
+      if (!state) continue;
+
+      if (state.url !== state.originalUrl) {
+        routes.add(state.url);
       }
 
-      if (discovery.state.hash) {
-        routes.add(discovery.state.url + discovery.state.hash);
+      if (state.hash) {
+        routes.add(state.url + state.hash);
+      }
+
+      // Item 2: URLs surfaced by the hover/submenu reveal pass.
+      if (Array.isArray(state.revealedUrls)) {
+        for (const u of state.revealedUrls) routes.add(u);
       }
     }
 

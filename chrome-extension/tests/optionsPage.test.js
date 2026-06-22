@@ -123,19 +123,19 @@ describe('options.js — load settings into the form', () => {
     expect(optionValues).toContain('gpt-5.2');
   });
 
-  test('populates integration text fields (jira / testrail / confluence)', async () => {
+  test('populates integration text fields (jira / testrail)', async () => {
     await setupOptions({
       jiraBaseUrl: 'https://acme.atlassian.net',
       jiraEmail: 'qa@acme.com',
       testrailUrl: 'https://acme.testrail.io',
       testrailProjectId: '42',
-      confluenceUrl: 'https://acme.atlassian.net/wiki',
     });
     expect(el('jiraBaseUrl').value).toBe('https://acme.atlassian.net');
     expect(el('jiraEmail').value).toBe('qa@acme.com');
     expect(el('testrailUrl').value).toBe('https://acme.testrail.io');
     expect(el('testrailProjectId').value).toBe('42');
-    expect(el('confluenceUrl').value).toBe('https://acme.atlassian.net/wiki');
+    // Confluence reuses the Jira creds — there is no separate Confluence input.
+    expect(el('confluenceUrl')).toBeNull();
   });
 
   test('shows Bedrock credentials and hides api-key block for bedrock provider', async () => {
@@ -240,6 +240,21 @@ describe('options.js — save settings', () => {
     // Status message reflects success.
     expect(el('status').className).toContain('success');
     expect(el('status').textContent).toMatch(/saved/i);
+  });
+
+  test('persists the Deep Capture toggles (response bodies + scroll)', async () => {
+    const { chrome } = await setupOptions({});
+    // Both default checked on load.
+    expect(el('captureResponseBodies').checked).toBe(true);
+    expect(el('scrollTriggerEnabled').checked).toBe(true);
+
+    el('captureResponseBodies').checked = false; // user disables response bodies
+    el('saveBtn').dispatchEvent(new window.Event('click'));
+    await waitForStatus();
+
+    const saved = await chrome.storage.sync.get(['captureResponseBodies', 'scrollTriggerEnabled']);
+    expect(saved.captureResponseBodies).toBe(false);
+    expect(saved.scrollTriggerEnabled).toBe(true);
   });
 
   test('Save encrypts the LLM API key before persisting it', async () => {

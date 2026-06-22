@@ -137,6 +137,14 @@
       settings.bedrockSessionToken = await securityManager.decryptApiKeyFromStorage(settings.bedrockSessionToken);
     }
 
+    // Confluence lives on the same Atlassian instance as Jira and shares the same
+    // API token, so the separate Confluence settings were removed. Derive the
+    // Confluence creds from the Jira creds (when not explicitly set) so Confluence
+    // links still resolve for enrichment.
+    if (!settings.confluenceUrl && settings.jiraBaseUrl) settings.confluenceUrl = settings.jiraBaseUrl;
+    if (!settings.confluenceEmail && settings.jiraEmail) settings.confluenceEmail = settings.jiraEmail;
+    if (!settings.confluenceToken && settings.jiraApiToken) settings.confluenceToken = settings.jiraApiToken;
+
     return settings;
   }
 
@@ -179,6 +187,8 @@
         key: issueData.key,
         summary: issueData.fields.summary || '',
         description: extractTextFromADF(issueData.fields.description) || '',
+        // Issue type drives Epic Mode (generate per child story).
+        issueType: issueData.fields.issuetype?.name || '',
         comments: [],
         attachments: [],
         linkedPages: []
@@ -220,6 +230,374 @@
       console.error('❌ Error fetching from Jira API:', error);
       return null;
     }
+  }
+
+  /**
+   * Fetch an Epic's child stories. Returns { children: [], error: string|null }.
+   *
+   * Tries multiple strategies because epic→child linkage and the search endpoint
+   * vary by Jira project type and API version:
+   *   1. Agile API  /rest/agile/1.0/epic/{key}/issue  — most reliable, works for
+   *      both team-managed and company-managed projects, no JQL field pitfalls.
+   *   2. New search /rest/api/3/search/jql with `parent = KEY` (team-managed).
+   *   3. New search with `"Epic Link" = KEY` (classic/company-managed).
+   *   4. Legacy /rest/api/3/search (older self-hosted Jira) with the same JQLs.
+   * The first strategy that returns issues wins. If all fail, the LAST real
+   * error (status + message) is returned so the UI can show WHY, instead of a
+   * misleading "no children found".
+   */
+  async function fetchEpicChildren(epicKey) {
+    const settings = await loadAndDecryptSettings(['jiraBaseUrl', 'jiraEmail', 'jiraApiToken']);
+    if (!settings.jiraEmail || !settings.jiraApiToken) {
+      return { children: [], error: 'Jira API credentials are not configured (Email + API token).' };
+    }
+    const base = (settings.jiraBaseUrl || window.location.origin).replace(/\/+$/, '');
+    const auth = 'Basic ' + btoa(`${settings.jiraEmail}:${settings.jiraApiToken}`);
+    const maxResults = 50;
+
+    const mapIssue = (issue) => {
+      const f = issue.fields || {};
+      // Comments (URLs in comment bodies are preserved by extractTextFromADF).
+      const comments = (f.comment?.comments || []).map((c) => ({
+        author: c.author?.displayName || '',
+        text: extractTextFromADF(c.body) || ''
+      })).filter((c) => c.text);
+      // Issue-links panel: issue-to-issue links (other tickets) with direction.
+      const issueLinks = (f.issuelinks || []).map((l) => {
+        const linked = l.outwardIssue || l.inwardIssue;
+        if (!linked) return null;
+        const rel = l.outwardIssue ? (l.type?.outward || 'relates to') : (l.type?.inward || 'relates to');
+        return { key: linked.key, summary: linked.fields?.summary || '', type: rel };
+      }).filter(Boolean);
+      return {
+        key: issue.key,
+        summary: f.summary || '',
+        description: extractTextFromADF(f.description) || '',
+        issueType: f.issuetype?.name || '',
+        comments,
+        issueLinks
+      };
+    };
+
+    const getJson = async (url) => {
+      const resp = await fetch(url, { method: 'GET', headers: { 'Authorization': auth, 'Accept': 'application/json' } });
+      if (!resp.ok) {
+        let detail = '';
+        try { const j = await resp.json(); detail = (j.errorMessages && j.errorMessages.join('; ')) || JSON.stringify(j.errors || {}); } catch (_) {}
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}${detail ? ' — ' + detail : ''}`);
+      }
+      return resp.json();
+    };
+
+    const fields = 'summary,description,issuetype,comment,issuelinks';
+    const k = encodeURIComponent(epicKey);
+    const strategies = [
+      { label: 'agile-api', url: `${base}/rest/agile/1.0/epic/${k}/issue?fields=${fields}&maxResults=${maxResults}` },
+      { label: 'search/jql parent', url: `${base}/rest/api/3/search/jql?jql=${encodeURIComponent(`parent = "${epicKey}"`)}&fields=${fields}&maxResults=${maxResults}` },
+      { label: 'search/jql Epic Link', url: `${base}/rest/api/3/search/jql?jql=${encodeURIComponent(`"Epic Link" = "${epicKey}"`)}&fields=${fields}&maxResults=${maxResults}` },
+      { label: 'legacy search parent', url: `${base}/rest/api/3/search?jql=${encodeURIComponent(`parent = "${epicKey}"`)}&fields=${fields}&maxResults=${maxResults}` },
+      { label: 'legacy search Epic Link', url: `${base}/rest/api/3/search?jql=${encodeURIComponent(`"Epic Link" = "${epicKey}"`)}&fields=${fields}&maxResults=${maxResults}` },
+    ];
+
+    let lastError = null;
+    for (const s of strategies) {
+      try {
+        const result = await getJson(s.url);
+        const issues = (result.issues || []).map(mapIssue);
+        if (issues.length > 0) {
+          console.log(`📚 Epic ${epicKey}: ${issues.length} child stories via ${s.label}`);
+          return { children: issues, error: null };
+        }
+        console.log(`ℹ️ Epic ${epicKey}: 0 children via ${s.label}, trying next strategy`);
+      } catch (err) {
+        lastError = `${s.label}: ${err.message}`;
+        console.warn(`⚠️ Epic children fetch (${s.label}) failed:`, err.message);
+      }
+    }
+    return { children: [], error: lastError };
+  }
+
+  /**
+   * Fetch a single issue's web/remote links (the "Web links" in the issue-links
+   * panel — often where Confluence/Figma/Docs URLs live). Returns [{title,url}].
+   */
+  async function fetchChildRemoteLinks(issueKey) {
+    try {
+      const settings = await loadAndDecryptSettings(['jiraBaseUrl', 'jiraEmail', 'jiraApiToken']);
+      if (!settings.jiraEmail || !settings.jiraApiToken) return [];
+      const base = (settings.jiraBaseUrl || window.location.origin).replace(/\/+$/, '');
+      const resp = await fetch(`${base}/rest/api/3/issue/${encodeURIComponent(issueKey)}/remotelink`, {
+        method: 'GET',
+        headers: { 'Authorization': 'Basic ' + btoa(`${settings.jiraEmail}:${settings.jiraApiToken}`), 'Accept': 'application/json' }
+      });
+      if (!resp.ok) return [];
+      const links = await resp.json();
+      return (links || []).map((l) => ({ title: l.object?.title || '', url: l.object?.url || '' })).filter((l) => l.url);
+    } catch (err) {
+      console.warn(`⚠️ Remote-link fetch failed for ${issueKey}:`, err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Fold each selected child's comments + linked issues (free — already fetched)
+   * into its description. Web/remote links from the issue-links panel require an
+   * extra request per child, so that step is OPT-IN via the
+   * `epicFetchWebLinks` setting (default off) to keep large epics fast.
+   */
+  async function prepareSelectedChildren(selected) {
+    let fetchWebLinks = false;
+    try {
+      const s = await chrome.storage.sync.get(['epicFetchWebLinks']);
+      fetchWebLinks = s.epicFetchWebLinks === true;
+    } catch (_) { /* default off */ }
+
+    if (!fetchWebLinks) {
+      return selected.map((c) => QAtalystEpicMode.foldChildContext(c));
+    }
+
+    const settled = await QAtalystEpicMode.runWithConcurrency(selected, 5, async (child) => {
+      child.remoteLinks = await fetchChildRemoteLinks(child.key);
+      return QAtalystEpicMode.foldChildContext(child);
+    });
+    return settled.map((s, i) => (s && s.status === 'fulfilled' && s.value) ? s.value : QAtalystEpicMode.foldChildContext(selected[i]));
+  }
+
+  /**
+   * Show a modal listing the epic's child stories so the user can choose which
+   * to generate test cases for. All selected by default, with a Select-all bulk
+   * toggle. Resolves with the selected child array, or null if cancelled.
+   */
+  function promptEpicChildSelection(epic, children) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.id = 'qatalyst-epic-select-overlay';
+      overlay.style.cssText = `position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+        z-index: 10000000; display: flex; align-items: center; justify-content: center;`;
+
+      const modal = document.createElement('div');
+      modal.style.cssText = `background: white; border-radius: 12px; padding: 20px; width: 460px;
+        max-width: 92vw; max-height: 82vh; display: flex; flex-direction: column;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;`;
+
+      const rows = children.map((c, i) => {
+        const key = escapeHtml(c.key || '');
+        const summary = escapeHtml(c.summary || '(no summary)');
+        const type = escapeHtml(c.issueType || '');
+        return `<label style="display:flex; align-items:flex-start; gap:10px; padding:8px 10px;
+            border-radius:6px; cursor:pointer; ${i % 2 ? 'background:#f8fafc;' : ''}">
+          <input type="checkbox" class="qa-epic-child" data-key="${key}" checked
+            style="width:16px; height:16px; min-width:16px; margin:2px 0 0 0; flex-shrink:0;">
+          <span style="font-size:13px; color:#1e293b; line-height:1.4;">
+            <strong>${key}</strong>${type ? ` <span style="color:#64748b;">· ${type}</span>` : ''}<br>
+            <span style="color:#475569;">${summary}</span>
+          </span>
+        </label>`;
+      }).join('');
+
+      modal.innerHTML = `
+        <h3 style="margin:0 0 4px 0; font-size:18px; color:#1e293b;">🧭 Epic ${escapeHtml(epic.key)} — Select Stories</h3>
+        <p style="margin:0 0 12px 0; font-size:13px; color:#64748b;">
+          ${children.length} child stor${children.length === 1 ? 'y' : 'ies'} found. Choose which to generate test cases for.
+        </p>
+        <label style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid #e2e8f0; cursor:pointer;">
+          <input type="checkbox" id="qa-epic-select-all" checked
+            style="width:16px; height:16px; min-width:16px; margin:0; flex-shrink:0;">
+          <span style="font-size:13px; font-weight:600; color:#1e293b;">Select all</span>
+        </label>
+        <div id="qa-epic-list" style="overflow-y:auto; margin:8px 0; flex:1; min-height:60px;">${rows}</div>
+        <div style="display:flex; gap:8px; padding-top:12px; border-top:1px solid #e2e8f0;">
+          <button id="qa-epic-generate" style="flex:1; padding:10px 16px; background:#0ea5e9; color:white;
+            border:none; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer;">Generate (<span id="qa-epic-count">${children.length}</span>)</button>
+          <button id="qa-epic-cancel" style="flex:1; padding:10px 16px; background:white; color:#475569;
+            border:1px solid #cbd5e1; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer;">Cancel</button>
+        </div>`;
+
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+
+      const boxes = () => Array.from(modal.querySelectorAll('.qa-epic-child'));
+      const selectAll = modal.querySelector('#qa-epic-select-all');
+      const countEl = modal.querySelector('#qa-epic-count');
+      const genBtn = modal.querySelector('#qa-epic-generate');
+
+      const refresh = () => {
+        const checked = boxes().filter((b) => b.checked);
+        countEl.textContent = String(checked.length);
+        genBtn.disabled = checked.length === 0;
+        genBtn.style.opacity = checked.length === 0 ? '0.6' : '1';
+        const all = boxes();
+        selectAll.checked = checked.length === all.length;
+        selectAll.indeterminate = checked.length > 0 && checked.length < all.length;
+      };
+
+      selectAll.addEventListener('change', () => { boxes().forEach((b) => { b.checked = selectAll.checked; }); refresh(); });
+      modal.querySelector('#qa-epic-list').addEventListener('change', (e) => {
+        if (e.target.classList.contains('qa-epic-child')) refresh();
+      });
+
+      const close = (value) => { overlay.remove(); resolve(value); };
+      genBtn.addEventListener('click', () => {
+        const selectedKeys = new Set(boxes().filter((b) => b.checked).map((b) => b.dataset.key));
+        close(QAtalystEpicMode.filterSelectedChildren(children, selectedKeys));
+      });
+      modal.querySelector('#qa-epic-cancel').addEventListener('click', () => close(null));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+      refresh();
+    });
+  }
+
+  /**
+   * For Analyse Requirements / Generate Test Scope: if the open issue is an Epic,
+   * fetch its children, let the user select which to include, and return a single
+   * synthetic "rollup" ticket (epic + selected children digest) to run the normal
+   * single-ticket flow on. Returns:
+   *   - the original ticketData (unchanged) if it isn't an epic or has no children
+   *   - a rollup ticketData if the user confirms a selection
+   *   - null if the user cancels (caller should abort)
+   */
+  async function resolveEpicRollupTicketData(ticketData, resultsContainer) {
+    if (typeof QAtalystEpicMode === 'undefined' || !QAtalystEpicMode.isEpicIssue(ticketData)) {
+      return ticketData;
+    }
+    if (resultsContainer) {
+      resultsContainer.innerHTML = '<div class="qatalyst-loading">🧭 Epic detected — fetching child stories…</div>';
+    }
+    const { children, error } = await fetchEpicChildren(ticketData.key);
+    if (!children.length) {
+      // No children (or fetch failed): fall back to the epic's own body so the
+      // action still works, but log why.
+      if (error) console.warn(`⚠️ Epic rollup: could not fetch children — ${error}`);
+      return ticketData;
+    }
+    const picked = await promptEpicChildSelection(ticketData, children);
+    if (!picked || picked.length === 0) return null; // cancelled
+    if (resultsContainer) {
+      resultsContainer.innerHTML = '<div class="qatalyst-loading">🧭 Gathering story context (comments, links)…</div>';
+    }
+    const selected = await prepareSelectedChildren(picked);
+    return QAtalystEpicMode.buildEpicRollupTicketData(ticketData, selected);
+  }
+
+  /**
+   * Generate test cases for a single child story via the agentic engine
+   * (non-streaming so calls are parallel-safe — progress events are suppressed
+   * during Epic Mode). Resolves with the handler's result object.
+   */
+  function generateForChild(childData, perChildSettings, appContext) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({
+        action: 'generateTestCasesAgentic',
+        data: {
+          ticketKey: childData.key,
+          ticketData: childData,
+          settings: perChildSettings,
+          baseUrl: window.location.origin,
+          appContext
+        }
+      }, response => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'runtime error'));
+        } else if (!response) {
+          reject(new Error('No response from extension'));
+        } else if (response.error) {
+          reject(new Error(typeof response.error === 'string' ? response.error : (response.error.message || 'generation error')));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+  }
+
+  /**
+   * Epic Mode orchestration: fetch the epic's child stories, generate test cases
+   * for each in parallel (bounded concurrency), and render grouped per story.
+   * The test budget is split across children so the whole run stays bounded.
+   */
+  async function runEpicMode(epic, settings, appContext, resultsContainer) {
+    suppressAgentProgress = true; // concurrent agentic runs would scramble the panel
+    const concurrency = 3;
+    resultsContainer.innerHTML = '<div class="qatalyst-loading">🧭 Epic Mode: fetching child stories…</div>';
+
+    const { children, error } = await fetchEpicChildren(epic.key);
+    if (!children.length) {
+      resultsContainer.innerHTML = '';
+      const msg = error
+        ? `Could not fetch this epic's child stories. Jira API said: ${error}. ` +
+          `Verify the Jira Base URL/credentials in Advanced Settings, and that ${epic.key} actually has child issues.`
+        : `No child stories are linked to ${epic.key}. Add child issues to the epic, or generate against an individual story instead.`;
+      resultsContainer.appendChild(createSafeErrorMessage(msg));
+      return;
+    }
+
+    // Let the user pick which child stories to generate for (all selected by default).
+    const picked = await promptEpicChildSelection(epic, children);
+    if (!picked || picked.length === 0) {
+      resultsContainer.innerHTML = '';
+      resultsContainer.appendChild(createSafeErrorMessage('Epic Mode cancelled — no stories selected.'));
+      return;
+    }
+    // Pull each selected story's comments / linked issues / web links into context.
+    resultsContainer.innerHTML = '<div class="qatalyst-loading">🧭 Epic Mode: gathering story context (comments, links)…</div>';
+    const selected = await prepareSelectedChildren(picked);
+
+    const perCount = QAtalystEpicMode.perChildTestCount(settings.testCount, selected.length);
+    resultsContainer.innerHTML = '<div class="qatalyst-loading"></div>';
+    const setLoading = (txt) => {
+      const el = resultsContainer.querySelector('.qatalyst-loading');
+      if (el) el.textContent = txt;
+    };
+    setLoading(`🧭 Epic Mode: generating tests for ${selected.length} stories (0/${selected.length})…`);
+
+    const out = await QAtalystEpicMode.generateEpicTestCases(epic, {
+      fetchEpicChildren: async () => selected, // user-selected subset
+      concurrency,
+      onProgress: (done, total) => setLoading(`🧭 Epic Mode: generating tests for ${total} stories (${done}/${total})…`),
+      generateForChild: (childData) => generateForChild(childData, { ...settings, testCount: perCount }, appContext)
+    });
+
+    displayEpicResults(epic, out, resultsContainer);
+  }
+
+  /** Render Epic Mode results grouped per child story. */
+  function displayEpicResults(epic, out, resultsContainer) {
+    const { summary, results } = out;
+    const wrap = document.createElement('div');
+    wrap.className = 'result-content test-cases epic-results';
+    wrap.dataset.testid = 'epic-results';
+
+    const head = document.createElement('div');
+    head.className = 'epic-summary';
+    head.style.cssText = 'padding:12px;margin-bottom:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;font-size:13px;color:#075985;';
+    head.textContent = `🧭 Epic ${epic.key}: ${summary.totalTests} test cases across ${summary.stories} stories` +
+      (summary.failed ? ` • ${summary.failed} story(ies) failed` : '');
+    wrap.appendChild(head);
+
+    results.forEach((r, i) => {
+      const details = document.createElement('details');
+      details.style.cssText = 'margin-bottom:10px;border:1px solid #e2e8f0;border-radius:6px;';
+      if (i === 0) details.open = true;
+      const summaryEl = document.createElement('summary');
+      summaryEl.style.cssText = 'padding:10px 12px;cursor:pointer;font-weight:600;color:#1e293b;';
+      const count = r.ok ? `${r.testCases.length} tests` : `⚠️ ${r.error || 'failed'}`;
+      summaryEl.textContent = `${r.child.key} — ${r.child.summary || ''} (${count})`;
+      details.appendChild(summaryEl);
+
+      const body = document.createElement('div');
+      body.style.cssText = 'padding:0 12px 12px 12px;';
+      if (r.ok && r.testCases.length) {
+        // formatTestCases returns trusted, escaped HTML for the test-case cards.
+        body.innerHTML = formatTestCases(r.testCases);
+      } else {
+        body.appendChild(createSafeErrorMessage(r.error || 'No test cases generated for this story.'));
+      }
+      details.appendChild(body);
+      wrap.appendChild(details);
+    });
+
+    resultsContainer.innerHTML = '';
+    resultsContainer.appendChild(wrap);
   }
 
   // Extract all visible text from DOM using TreeWalker
@@ -1440,9 +1818,19 @@
     try {
       const settings = await loadAndDecryptSettings([
         'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'enableStreaming',
-        'confluenceUrl', 'confluenceEmail', 'confluenceToken',
+        'jiraBaseUrl', 'jiraEmail', 'jiraApiToken',
         'figmaToken', 'googleApiKey'
       ]);
+
+      // Epic Mode (rollup): if this is an epic, let the user pick child stories
+      // and fold them into a single rollup ticket so this action spans the epic.
+      const epicResolved = await resolveEpicRollupTicketData(ticketData, resultsContainer);
+      if (epicResolved === null) {
+        resultsContainer.innerHTML = '';
+        resultsContainer.appendChild(createSafeErrorMessage('Epic Mode cancelled — no stories selected.'));
+        return;
+      }
+      ticketData = epicResolved;
 
       // Enrich ticket with image and document attachment content
       await enrichTicketAttachments(ticketData, settings);
@@ -1563,9 +1951,19 @@
     try {
       const settings = await loadAndDecryptSettings([
         'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'enableStreaming',
-        'confluenceUrl', 'confluenceEmail', 'confluenceToken',
+        'jiraBaseUrl', 'jiraEmail', 'jiraApiToken',
         'figmaToken', 'googleApiKey'
       ]);
+
+      // Epic Mode (rollup): if this is an epic, let the user pick child stories
+      // and fold them into a single rollup ticket so this action spans the epic.
+      const epicResolved = await resolveEpicRollupTicketData(ticketData, resultsContainer);
+      if (epicResolved === null) {
+        resultsContainer.innerHTML = '';
+        resultsContainer.appendChild(createSafeErrorMessage('Epic Mode cancelled — no stories selected.'));
+        return;
+      }
+      ticketData = epicResolved;
 
       // Enrich ticket with image and document attachment content
       await enrichTicketAttachments(ticketData, settings);
@@ -1675,10 +2073,14 @@
     try {
       const settings = await loadAndDecryptSettings([
         'llmProvider', 'llmModel', 'apiKey', 'bedrockAccessKeyId', 'bedrockSecretKey', 'bedrockSessionToken', 'bedrockRegion', 'enableStreaming', 'enableMultiAgent',
+        // temperature/maxTokens were previously omitted here, so the LLM client
+        // always fell back to defaults regardless of the options sliders. Load
+        // them so the user's values are actually honored.
+        'temperature', 'maxTokens',
         'coverageTarget', 'dedupThreshold', 'relevanceThreshold', 'enabledCategories', 'testCount',
+        'useCrawledDataForTests',
         'enableHistoricalMining', 'historicalMaxResults', 'historicalJqlFilters',
-        'jiraEmail', 'jiraApiToken',
-        'confluenceUrl', 'confluenceEmail', 'confluenceToken',
+        'jiraBaseUrl', 'jiraEmail', 'jiraApiToken',
         'figmaToken', 'googleApiKey'
       ]);
 
@@ -1751,6 +2153,13 @@
           validationErrors.join('\\n') +
           '\\n\\n🔧 Please configure your settings by clicking the Settings button below.'
         );
+      }
+
+      // ── Epic Mode: when the open issue is an Epic, generate per-child-story
+      // test cases in parallel instead of one set for the epic body. ──────────
+      if (typeof QAtalystEpicMode !== 'undefined' && QAtalystEpicMode.isEpicIssue(ticketData)) {
+        await runEpicMode(ticketData, settings, appContext, resultsContainer);
+        return; // finally{} below re-enables the button
       }
 
       // Use multi-agent if enabled

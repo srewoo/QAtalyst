@@ -219,8 +219,82 @@ class NetworkMonitor {
       statusCode: req.statusCode,
       responseTime: req.responseTime,
       requestBody: req.requestBody,
+      // Response bodies come from the in-page fetch/XHR interceptor (webRequest
+      // can't read them); null when the interceptor didn't capture this call.
+      responseBody: req.responseBody ?? null,
       contentType: req.responseHeaders?.['content-type'] || 'unknown'
     }));
+  }
+
+  /**
+   * Truncate a captured body to a configurable size so a huge JSON payload
+   * can't bloat the knowledge graph. Strings are clipped; objects are kept
+   * whole when small, else clipped to a JSON string preview.
+   */
+  truncateBody(body) {
+    const MAX = CONFIG.get('network.maxResponseBodyChars', 4000);
+    if (body == null) return null;
+    if (typeof body === 'string') {
+      return body.length > MAX ? body.slice(0, MAX) + '…[truncated]' : body;
+    }
+    try {
+      const s = JSON.stringify(body);
+      if (s.length <= MAX) return body; // small enough — keep the structured object
+      return s.slice(0, MAX) + '…[truncated]';
+    } catch {
+      return null; // non-serialisable (circular, etc.)
+    }
+  }
+
+  /**
+   * Ingest a response body captured by the in-page fetch/XHR interceptor
+   * (network-interceptor.js, MAIN world). This is THE path that gives the
+   * crawler response payloads — webRequest exposes only headers/metadata.
+   * Attaches the body to a matching request (and feeds schema + error
+   * inference), or records a new API entry if the interceptor saw a call that
+   * webRequest didn't surface.
+   * @param {{url:string, method?:string, status?:number, body?:any, requestBody?:any}} cap
+   */
+  ingestResponseBody(cap) {
+    if (!cap || !cap.url || !this.isApiRequest(cap.url)) return;
+
+    let endpoint;
+    try { endpoint = new URL(cap.url).pathname; } catch { return; }
+
+    const method = (cap.method || 'GET').toUpperCase();
+    const truncated = this.truncateBody(cap.body);
+
+    // Prefer the most recent matching request that still lacks a response body.
+    let req = null;
+    for (let i = this.requests.length - 1; i >= 0; i--) {
+      const r = this.requests[i];
+      if (r.url === cap.url && (r.method || 'GET').toUpperCase() === method) {
+        req = r;
+        if (!r.responseBody) break;
+      }
+    }
+
+    if (req) {
+      req.responseBody = truncated;
+      if (cap.status != null && req.statusCode == null) req.statusCode = cap.status;
+    } else {
+      this.requests.push({
+        id: `intercept-${this.requests.length}-${endpoint}`,
+        url: cap.url,
+        method,
+        statusCode: cap.status,
+        requestBody: cap.requestBody ? { type: 'json', data: cap.requestBody } : null,
+        responseBody: truncated,
+        source: 'interceptor'
+      });
+    }
+
+    const status = cap.status != null ? cap.status : (req && req.statusCode);
+    // Feed response schema inference (already supports a responseBody arg).
+    this.updateEndpointSchema(endpoint, method, req && req.requestBody, cap.body, status);
+    if (typeof status === 'number' && status >= 400) {
+      this.catalogErrorResponse(endpoint, method, status, cap.body);
+    }
   }
 
   /**

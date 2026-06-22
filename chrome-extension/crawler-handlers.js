@@ -31,7 +31,9 @@ async function handleStartCrawl(data) {
     const userSettings = await chrome.storage.sync.get([
       'enableDuplicateDetection',
       'detectParameterizedUrls',
-      'maxSamplesPerPattern'
+      'maxSamplesPerPattern',
+      'captureResponseBodies',
+      'scrollTriggerEnabled'
     ]);
 
     // Apply user settings to CONFIG if they exist (use CONFIG.set() method)
@@ -44,11 +46,21 @@ async function handleStartCrawl(data) {
     if (userSettings.maxSamplesPerPattern !== undefined) {
       CONFIG.set('crawler.duplicateDetection.maxSamplesPerPattern', userSettings.maxSamplesPerPattern);
     }
+    // Deep Capture (A-tier) toggles — map UI keys to the CONFIG paths the
+    // crawler reads (network-interceptor + scroll-trigger).
+    if (userSettings.captureResponseBodies !== undefined) {
+      CONFIG.set('network.responseBodyCapture.enabled', userSettings.captureResponseBodies);
+    }
+    if (userSettings.scrollTriggerEnabled !== undefined) {
+      CONFIG.set('crawler.scrollTrigger.enabled', userSettings.scrollTriggerEnabled);
+    }
 
     console.log('🎛️ Crawler Settings:', {
       enableDuplicateDetection: CONFIG.get('crawler.duplicateDetection.enabled'),
       detectParameterizedUrls: CONFIG.get('crawler.duplicateDetection.detectParameterizedUrls'),
-      maxSamplesPerPattern: CONFIG.get('crawler.duplicateDetection.maxSamplesPerPattern')
+      maxSamplesPerPattern: CONFIG.get('crawler.duplicateDetection.maxSamplesPerPattern'),
+      captureResponseBodies: CONFIG.get('network.responseBodyCapture.enabled', true),
+      scrollTriggerEnabled: CONFIG.get('crawler.scrollTrigger.enabled', true)
     });
 
     // Apply authenticated crawling setting if passed from popup
@@ -836,10 +848,15 @@ async function handleGetMergeableApps() {
   try {
     const stats = await storageManager.getStats();
 
-    // Filter to only apps that have knowledge graphs
+    // Filter to only apps that have knowledge graphs.
+    // Use the real page/feature counts from the knowledge graph — NOT
+    // embeddingCount, which is 0 for knowledge-graph-only crawls and made the
+    // merge dialog show "0 pages • 0 features" for fully-crawled apps.
     const mergeableApps = (stats.apps || []).map(app => ({
       url: app.url,
-      pages: app.embeddingCount,
+      pages: app.pages,
+      features: app.features,
+      embeddingCount: app.embeddingCount,
       crawledAt: app.crawledAt,
       isMerged: app.url.startsWith('merged_')
     }));

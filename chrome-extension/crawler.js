@@ -480,6 +480,10 @@ class WebAppCrawler {
     // Wait for page load
     const loadedTab = await this.waitForPageLoad(tabId);
 
+    // Install the MAIN-world fetch/XHR interceptor ASAP so it captures API
+    // response bodies fired during the smart-wait / hydration windows below.
+    await this.injectNetworkInterceptor(tabId);
+
     // Verify we're on the correct URL (handle redirects)
     const actualUrl = loadedTab.url || url;
     if (actualUrl !== url) {
@@ -518,8 +522,16 @@ class WebAppCrawler {
     // Must be AFTER verifyContentScript since it sends messages to content script
     const isSPA = await this.waitForSPAHydration(tabId);
 
+    // Item 3: scroll to trigger lazy-loaded / infinite-scroll content before we
+    // snapshot the DOM, so deferred sections are captured rather than missed.
+    await this.triggerLazyContent(tabId);
+
     // Extract data from DOM
-    const features = await this.extractPageData(tabId);
+    let features = await this.extractPageData(tabId);
+
+    // Drain response bodies captured by the in-page interceptor and merge them
+    // into the network monitor before reading the API list (item 5: response bodies).
+    await this.drainApiCaptures(tabId);
 
     // Get API calls captured during page load
     const apis = this.networkMonitor.getApiCalls();
@@ -569,6 +581,16 @@ class WebAppCrawler {
             const spaRoutes = this.spaDiscoverer.extractRoutes(clickDiscoveries);
             console.log(`✅ Click SPA discovery found ${spaRoutes.length} new routes`);
             links.push(...spaRoutes);
+
+            // Item 1 + 2: merge interactive features revealed by clicks/hover
+            // (forms, inputs, buttons that only appear after interaction) into
+            // this page's feature list, de-duplicated against what we already have.
+            const revealed = clickDiscoveries.flatMap(d => (d && d.newFeatures) || []);
+            if (revealed.length > 0) {
+              const before = features.length;
+              features = this.mergeDiscoveredFeatures(features, revealed);
+              console.log(`✨ Merged ${features.length - before} interaction-revealed feature(s)`);
+            }
           }
 
           if (spaDiscoveries.length > 0) {
@@ -1173,6 +1195,115 @@ class WebAppCrawler {
 
     console.error(`❌ Failed to inject content script in tab ${tabId} after ${maxRetries} attempts:`, lastError?.message);
     return false;
+  }
+
+  /**
+   * Inject the MAIN-world fetch/XHR interceptor (network-interceptor.js) so the
+   * crawler can capture API response bodies (webRequest can't read them).
+   * Idempotent in-page; safe to call once per page load. Best-effort.
+   */
+  async injectNetworkInterceptor(tabId) {
+    if (CONFIG.get('network.responseBodyCapture.enabled', true) === false) return;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['network-interceptor.js'],
+        world: 'MAIN',
+      });
+    } catch (error) {
+      // MAIN-world injection can fail on restricted pages — non-fatal.
+      console.debug?.(`Network interceptor injection skipped for tab ${tabId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Read and clear the in-page capture buffer the interceptor populated, then
+   * feed each captured response into the network monitor. Best-effort.
+   */
+  async drainApiCaptures(tabId) {
+    if (CONFIG.get('network.responseBodyCapture.enabled', true) === false) return;
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: () => {
+          const buf = window.__qatalystApiCaptures || [];
+          window.__qatalystApiCaptures = [];
+          return buf;
+        },
+      });
+      const captures = (results && results[0] && results[0].result) || [];
+      for (const cap of captures) {
+        try { this.networkMonitor.ingestResponseBody(cap); } catch (_) { /* skip one bad capture */ }
+      }
+      if (captures.length > 0) {
+        console.log(`🌐 Ingested ${captures.length} response bodies from interceptor`);
+      }
+    } catch (error) {
+      console.debug?.(`Drain API captures skipped for tab ${tabId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Trigger lazy-loaded / infinite-scroll content by scrolling the page in
+   * bounded steps until the document stops growing (item 3). Runs in MAIN world.
+   * No-op unless the page hints at lazy/infinite content. Best-effort.
+   */
+  async triggerLazyContent(tabId) {
+    if (CONFIG.get('crawler.scrollTrigger.enabled', true) === false) return;
+    const maxSteps = CONFIG.get('crawler.scrollTrigger.maxSteps', 8);
+    const stepDelayMs = CONFIG.get('crawler.scrollTrigger.stepDelayMs', 400);
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        args: [maxSteps, stepDelayMs],
+        func: (steps, delayMs) => new Promise((resolve) => {
+          // Only bother if the page looks lazy/infinite; otherwise return fast.
+          const hinted = !!document.querySelector(
+            '[data-infinite-scroll],[class*="infinite"],[data-next-page],' +
+            'img[loading="lazy"],img[data-src],img.lazyload,[data-lazy]'
+          );
+          if (!hinted) { resolve(false); return; }
+          let i = 0;
+          let lastHeight = document.body ? document.body.scrollHeight : 0;
+          const tick = () => {
+            if (i >= steps) { resolve(true); return; }
+            window.scrollTo(0, document.body.scrollHeight);
+            i++;
+            setTimeout(() => {
+              const h = document.body ? document.body.scrollHeight : 0;
+              if (h <= lastHeight && i > 1) { resolve(true); return; } // stopped growing
+              lastHeight = h;
+              tick();
+            }, delayMs);
+          };
+          tick();
+        }),
+      });
+    } catch (error) {
+      console.debug?.(`Lazy-content scroll skipped for tab ${tabId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Merge features discovered after interaction (clicks/hover) into the page's
+   * feature list, de-duplicated by a structural signature so the same form/button
+   * isn't recorded twice (item 1). Pure given its args. Returns the merged array.
+   */
+  mergeDiscoveredFeatures(existing, incoming) {
+    const sig = (f) => [f.type, f.name || '', f.action || '', f.selector || '',
+      (f.fields ? f.fields.length : ''), (f.text || '').slice(0, 40)].join('|');
+    const seen = new Set((existing || []).map(sig));
+    const merged = [...(existing || [])];
+    for (const f of incoming || []) {
+      if (!f || !f.type) continue;
+      const s = sig(f);
+      if (seen.has(s)) continue;
+      seen.add(s);
+      merged.push({ ...f, _discoveredVia: f._discoveredVia || 'interaction' });
+    }
+    return merged;
   }
 
   /**

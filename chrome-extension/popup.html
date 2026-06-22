@@ -75,6 +75,13 @@
       background: white;
       transition: all 0.2s;
     }
+    /* Checkboxes/radios are not text fields — exempt them from the full-width,
+       padded input styling above (which otherwise blows them up in flex rows). */
+    input[type="checkbox"], input[type="radio"] {
+      width: auto;
+      padding: 0;
+      border-radius: 0;
+    }
     select:focus, input:focus {
       outline: none;
       border-color: #0ea5e9;

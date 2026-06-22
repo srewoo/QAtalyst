@@ -166,6 +166,52 @@ describe('NetworkMonitor.clear', () => {
   });
 });
 
+describe('NetworkMonitor.ingestResponseBody (item 5: response bodies)', () => {
+  test('attaches a captured response body to a matching webRequest record', () => {
+    const m = newMonitor();
+    m.handleRequest({ requestId: '1', url: 'https://app.io/api/users', method: 'GET', type: 'xmlhttprequest', timeStamp: 1000, requestBody: null });
+    m.handleResponse({ requestId: '1', statusCode: 200, responseHeaders: [], timeStamp: 1100 });
+
+    m.ingestResponseBody({ url: 'https://app.io/api/users', method: 'GET', status: 200, body: { users: [{ id: 1, name: 'Ada' }] } });
+
+    const call = m.getApiCalls().find((c) => c.url === 'https://app.io/api/users');
+    expect(call.responseBody).toEqual({ users: [{ id: 1, name: 'Ada' }] });
+    const schema = m.getApiSchemas().find((s) => s.endpoint === '/api/users');
+    expect(schema.responseSchema).toBeTruthy();
+  });
+
+  test('records a new API entry when the interceptor saw a call webRequest missed', () => {
+    const m = newMonitor();
+    m.ingestResponseBody({ url: 'https://app.io/api/orders', method: 'POST', status: 201, body: { id: 9 }, requestBody: { sku: 'X' } });
+    const call = m.getApiCalls().find((c) => c.url === 'https://app.io/api/orders');
+    expect(call).toBeTruthy();
+    expect(call.method).toBe('POST');
+    expect(call.responseBody).toEqual({ id: 9 });
+  });
+
+  test('catalogs an error response body for 4xx/5xx', () => {
+    const m = newMonitor();
+    m.ingestResponseBody({ url: 'https://app.io/api/thing', method: 'GET', status: 404, body: { message: 'Not found', code: 'E404' } });
+    expect(m.getErrorResponses().some((e) => e.endpoint === '/api/thing' && e.statusCode === 404 && /Not found/.test(e.message))).toBe(true);
+  });
+
+  test('ignores non-API URLs', () => {
+    const m = newMonitor();
+    m.ingestResponseBody({ url: 'https://app.io/about', method: 'GET', status: 200, body: '<html></html>' });
+    expect(m.getApiCalls()).toHaveLength(0);
+  });
+
+  test('truncateBody clips oversized strings and keeps small objects', () => {
+    const m = new NetworkMonitor();
+    const big = 'x'.repeat(50000);
+    const clipped = m.truncateBody(big);
+    expect(clipped.length).toBeLessThan(big.length);
+    expect(clipped).toMatch(/truncated/);
+    expect(m.truncateBody({ a: 1 })).toEqual({ a: 1 });
+    expect(m.truncateBody(null)).toBeNull();
+  });
+});
+
 describe('NetworkMonitor.start/stop with chrome.webRequest', () => {
   test('toggles monitoring flag and tracks tab id without throwing', async () => {
     // The shared chrome mock's webRequest listeners only expose addListener;

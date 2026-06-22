@@ -222,9 +222,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     'qmetryProjectId',
     'qmetryReleaseId',
     'fieldMappings',
-    'confluenceUrl',
-    'confluenceEmail',
-    'confluenceToken',
     'figmaToken',
     'figmaImageMode',
     'googleApiKey',
@@ -235,7 +232,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     'enableDuplicateDetection',
     'detectParameterizedUrls',
     'maxSamplesPerPattern',
-    'useCrawledDataForTests'
+    'useCrawledDataForTests',
+    'captureResponseBodies',
+    'scrollTriggerEnabled',
+    'epicFetchWebLinks'
   ]);
 
   // Decrypt sensitive tokens when loading
@@ -244,9 +244,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   if (settings.jiraApiToken) {
     settings.jiraApiToken = await securityManager.decryptApiKeyFromStorage(settings.jiraApiToken);
-  }
-  if (settings.confluenceToken) {
-    settings.confluenceToken = await securityManager.decryptApiKeyFromStorage(settings.confluenceToken);
   }
   if (settings.figmaToken) {
     settings.figmaToken = await securityManager.decryptApiKeyFromStorage(settings.figmaToken);
@@ -398,9 +395,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load custom field mappings
   loadFieldMappings(settings.fieldMappings);
 
-  document.getElementById('confluenceUrl').value = settings.confluenceUrl || '';
-  document.getElementById('confluenceEmail').value = settings.confluenceEmail || '';
-  document.getElementById('confluenceToken').value = settings.confluenceToken || '';
   document.getElementById('figmaToken').value = settings.figmaToken || '';
   
   // Figma Image Mode settings
@@ -451,6 +445,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('detectParameterizedUrls').checked = settings.detectParameterizedUrls !== false;
   document.getElementById('maxSamplesPerPattern').value = settings.maxSamplesPerPattern || 1;
   document.getElementById('useCrawledDataForTests').checked = settings.useCrawledDataForTests !== false;
+
+  // Deep Capture (A-tier) — default ON
+  document.getElementById('captureResponseBodies').checked = settings.captureResponseBodies !== false;
+  document.getElementById('scrollTriggerEnabled').checked = settings.scrollTriggerEnabled !== false;
+
+  // Epic Mode web-links fetch — default OFF (opt-in)
+  document.getElementById('epicFetchWebLinks').checked = settings.epicFetchWebLinks === true;
 
 });
 
@@ -635,9 +636,6 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     // Custom field mappings
     fieldMappings: JSON.stringify(getFieldMappings()),
 
-    confluenceUrl: document.getElementById('confluenceUrl').value,
-    confluenceEmail: document.getElementById('confluenceEmail').value,
-    confluenceToken: document.getElementById('confluenceToken').value,
     figmaToken: document.getElementById('figmaToken').value,
     figmaImageMode: document.querySelector('input[name="figmaImageMode"]:checked')?.value || 'single',
     googleApiKey: document.getElementById('googleApiKey').value,
@@ -652,20 +650,16 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     enableDuplicateDetection: document.getElementById('enableDuplicateDetection').checked,
     detectParameterizedUrls: document.getElementById('detectParameterizedUrls').checked,
     maxSamplesPerPattern: parseInt(document.getElementById('maxSamplesPerPattern').value),
-    useCrawledDataForTests: document.getElementById('useCrawledDataForTests').checked
+    useCrawledDataForTests: document.getElementById('useCrawledDataForTests').checked,
+    captureResponseBodies: document.getElementById('captureResponseBodies').checked,
+    scrollTriggerEnabled: document.getElementById('scrollTriggerEnabled').checked,
+    epicFetchWebLinks: document.getElementById('epicFetchWebLinks').checked
   };
 
   // Validate settings before saving
   const validationErrors = [];
 
   // Validate URLs
-  const confluenceUrlValidation = InputValidator.validateUrl(settings.confluenceUrl);
-  if (!confluenceUrlValidation.valid) {
-    validationErrors.push(`Confluence URL: ${confluenceUrlValidation.error}`);
-  } else if (confluenceUrlValidation.value) {
-    settings.confluenceUrl = confluenceUrlValidation.value;
-  }
-
   const testrailUrlValidation = InputValidator.validateUrl(settings.testrailUrl);
   if (!testrailUrlValidation.valid) {
     validationErrors.push(`TestRail URL: ${testrailUrlValidation.error}`);
@@ -695,13 +689,6 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     settings.jiraApiToken = jiraApiTokenValidation.value;
   }
 
-  const confluenceTokenValidation = InputValidator.validateApiKey(settings.confluenceToken);
-  if (!confluenceTokenValidation.valid) {
-    validationErrors.push(`Confluence Token: ${confluenceTokenValidation.error}`);
-  } else if (confluenceTokenValidation.value) {
-    settings.confluenceToken = confluenceTokenValidation.value;
-  }
-
   const figmaTokenValidation = InputValidator.validateApiKey(settings.figmaToken);
   if (!figmaTokenValidation.valid) {
     validationErrors.push(`Figma Token: ${figmaTokenValidation.error}`);
@@ -729,13 +716,6 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     validationErrors.push(`Jira Email: ${jiraEmailValidation.error}`);
   } else if (jiraEmailValidation.value) {
     settings.jiraEmail = jiraEmailValidation.value;
-  }
-
-  const confluenceEmailValidation = InputValidator.validateEmail(settings.confluenceEmail);
-  if (!confluenceEmailValidation.valid) {
-    validationErrors.push(`Confluence Email: ${confluenceEmailValidation.error}`);
-  } else if (confluenceEmailValidation.value) {
-    settings.confluenceEmail = confluenceEmailValidation.value;
   }
 
   const testrailUsernameValidation = InputValidator.validateEmail(settings.testrailUsername);
@@ -770,9 +750,6 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   }
   if (settings.jiraApiToken && settings.jiraApiToken.trim()) {
     settings.jiraApiToken = await securityManager.encryptApiKeyForStorage(settings.jiraApiToken.trim());
-  }
-  if (settings.confluenceToken && settings.confluenceToken.trim()) {
-    settings.confluenceToken = await securityManager.encryptApiKeyForStorage(settings.confluenceToken.trim());
   }
   if (settings.figmaToken && settings.figmaToken.trim()) {
     settings.figmaToken = await securityManager.encryptApiKeyForStorage(settings.figmaToken.trim());
@@ -1011,7 +988,6 @@ document.getElementById('testJiraAuth').addEventListener('click', async () => {
 });
 
 document.getElementById('testTestrail')?.addEventListener('click', () => handleTestIntegration('testrail'));
-document.getElementById('testConfluence')?.addEventListener('click', () => handleTestIntegration('confluence'));
 document.getElementById('testFigma')?.addEventListener('click', () => handleTestIntegration('figma'));
 document.getElementById('testGoogle')?.addEventListener('click', () => handleTestIntegration('google'));
 
@@ -1025,10 +1001,6 @@ async function handleTestIntegration(type) {
     data.url = document.getElementById('testrailUrl').value;
     data.username = document.getElementById('testrailUsername').value;
     data.apiKey = document.getElementById('testrailApiKey').value;
-  } else if (type === 'confluence') {
-    data.url = document.getElementById('confluenceUrl').value;
-    data.email = document.getElementById('confluenceEmail').value;
-    data.token = document.getElementById('confluenceToken').value;
   } else if (type === 'figma') {
     data.token = document.getElementById('figmaToken').value;
   } else if (type === 'google') {

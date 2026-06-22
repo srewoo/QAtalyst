@@ -545,7 +545,15 @@
           </div>
           <p class="help-text">Adjust the number of test cases to generate. More tests = better coverage but slower generation.</p>
         </div>
-        
+
+        <h3 style="margin-top: 24px;">🧭 Epic Mode</h3>
+        <p style="color: #64748b; margin-bottom: 12px;">When you generate from an Epic, QAtalyst lets you pick child stories and rolls their context in. Comments and linked issues are always included.</p>
+        <div class="checkbox-group">
+          <input type="checkbox" id="epicFetchWebLinks" data-testid="epic-fetch-web-links">
+          <label for="epicFetchWebLinks">Fetch web links from each story's issue-links panel</label>
+        </div>
+        <p class="help-text">Off by default. When on, QAtalyst makes one extra Jira request per selected story to pull "Web links" (e.g., Confluence/Figma/Docs URLs added to the issue-links panel) — more context, but slower for large epics.</p>
+
       </div>
 
       <div class="section">
@@ -660,6 +668,21 @@
             <li><strong>With Detection OFF:</strong> All 1,000 URLs crawled (slower, uses more memory, bloated knowledge graph)</li>
           </ul>
         </div>
+
+        <h3 style="margin-top: 32px;">Deep Capture</h3>
+        <p style="color: #64748b; margin-bottom: 16px;">Higher-fidelity crawling for richer test generation. Both default ON — turn them off for faster, lighter crawls.</p>
+
+        <div class="checkbox-group">
+          <input type="checkbox" id="captureResponseBodies" checked data-testid="capture-response-bodies">
+          <label for="captureResponseBodies">Capture API Response Bodies</label>
+        </div>
+        <p class="help-text">Records the JSON the app's fetch/XHR calls return (not just the endpoints), enabling response-schema inference for more realistic test data. No extra browser permissions.</p>
+
+        <div class="checkbox-group">
+          <input type="checkbox" id="scrollTriggerEnabled" checked data-testid="scroll-trigger-enabled">
+          <label for="scrollTriggerEnabled">Auto-scroll to Load Lazy / Infinite Content</label>
+        </div>
+        <p class="help-text">Scrolls pages that use lazy-loading or infinite scroll so deferred sections and elements are captured instead of missed. Bounded by step and time limits.</p>
 
         <h3 style="margin-top: 32px;">Test Generation Integration</h3>
         <p style="color: #64748b; margin-bottom: 16px;">Control whether crawled knowledge graphs are used during test case generation.</p>
@@ -1045,31 +1068,9 @@
 
       <div class="section">
         <h2>📄 Confluence Integration</h2>
-        <p>Configure Confluence for requirement extraction.</p>
-        
-        <div class="form-group">
-          <label for="confluenceUrl">Confluence URL:</label>
-          <input type="text" id="confluenceUrl" placeholder="https://your-domain.atlassian.net" data-testid="confluence-url">
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label for="confluenceEmail">Email Address:</label>
-            <input type="email" id="confluenceEmail" placeholder="your-email@company.com" data-testid="confluence-email">
-          </div>
-          <div class="form-group">
-            <label for="confluenceToken">API Token:</label>
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <input type="password" id="confluenceToken" placeholder="Enter Confluence API token" data-testid="confluence-token" style="flex-grow: 1;">
-              <button type="button" class="btn secondary" id="testConfluence">Test</button>
-            </div>
-            <span id="confluenceStatus" style="font-size: 12px; margin-top: 5px; display: block;"></span>
-          </div>
-        </div>
-        
-        <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" class="help-link">📖 Get Confluence API Token</a>
+        <p>Confluence runs on the same Atlassian instance as Jira and shares the same API token, so there's nothing to configure separately here — QAtalyst automatically reuses your <strong>Jira Base URL, Email, and API token</strong> (set in the Historical Test Case Mining section above) to read linked Confluence pages.</p>
       </div>
-      
+
       <div class="section">
         <h2>🎨 Figma Integration</h2>
         <p>Configure Figma for design analysis.</p>
@@ -1270,13 +1271,35 @@
     <div class="tab-content" id="help-tab">
       <div class="section">
         <h2>❓ Help & Documentation</h2>
-        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v12.9.0 - AI-powered test case generation with advanced features.</p>
+        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v13.4 - AI-powered test case generation with advanced features.</p>
 
         <!-- What's New -->
         <div class="help-card" style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border-color: #86efac;">
-          <h3 style="color: #16a34a;">✨ What's New in v12.9.0</h3>
+          <h3 style="color: #16a34a;">✨ What's New in v13.4</h3>
 
-          <h4 style="color: #15803d;">⚡ Parallel Agent Execution - 3-5x Faster Generation (NEW - v12.9.0)</h4>
+          <h4 style="color: #15803d;">🕷️ Deep Capture Crawling (NEW - v13.4)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>API Response Bodies:</strong> The crawler now captures the JSON your app's fetch/XHR calls return — not just the endpoints — enabling response-schema inference for far more realistic test data. No extra browser permissions required. Toggle under <em>Crawler Settings → Deep Capture</em>.</li>
+            <li><strong>Interaction-Aware Discovery:</strong> Click-based discovery now records forms, buttons, and inputs that only appear <em>after</em> a click (not just new URLs), and a hover pass opens dropdowns/submenus to capture their links.</li>
+            <li><strong>Lazy / Infinite Scroll:</strong> Pages that defer content until you scroll are now auto-scrolled (bounded by step/time limits) so deferred sections are captured instead of missed. Toggle under <em>Crawler Settings → Deep Capture</em>.</li>
+            <li><strong>Modern SPA Detection:</strong> Detects React 18 (createRoot/fiber), Svelte, and a generic SPA fallback — so client-rendered apps get the proper hydration wait before extraction.</li>
+          </ul>
+
+          <h4 style="color: #15803d;">🗺️ Wider, Faster, More Resilient Crawls (NEW - v13.4)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Recursive Sitemap Discovery:</strong> Unions every sitemap candidate plus all robots.txt directives and follows nested sitemap indexes (cycle-guarded) — discovering far more pages than the old first-hit, 10-submap approach.</li>
+            <li><strong>Adaptive Concurrency:</strong> Tab-pool scaling now keys off P90 response time (robust to slow outliers) and sheds tabs immediately on consecutive errors, so crawls stay fast without overloading the target.</li>
+            <li><strong>Authenticated Crawls:</strong> A successful auto-login is now honored for the rest of the crawl, so session-gated pages are reached.</li>
+          </ul>
+
+          <h4 style="color: #15803d;">🎛️ Streamlined Popup &amp; Fixes (v13.4)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Focused Popup:</strong> The toolbar popup now shows just the crawler and a how-to-use guide; AI provider, API keys, and integrations live here in Advanced Settings. A nudge appears if no API key is configured, and the Start button reflects a live "Crawling in progress" state.</li>
+            <li><strong>Merge Dialog Counts:</strong> The Merge Knowledge Graphs dialog now shows correct page/feature counts (previously read the wrong field and showed 0).</li>
+            <li><strong>Checkbox Layout:</strong> Fixed oversized checkboxes that broke the merge-selection rows.</li>
+          </ul>
+
+          <h4 style="color: #15803d; margin-top: 24px; padding-top: 8px; border-top: 1px solid #bbf7d0;">⚡ Parallel Agent Execution - 3-5x Faster Generation (v12.9.0)</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>3-Phase Pipeline:</strong> Analysis agents run first, then all 6 test generation agents run in parallel via Promise.allSettled, then the Review agent runs last</li>
             <li><strong>3-5x Speed Boost:</strong> Test generation that took 60-90 seconds now completes in 15-30 seconds</li>
@@ -1284,7 +1307,7 @@
             <li><strong>Safe Parallelism:</strong> Each agent gets its own results snapshot to prevent race conditions</li>
           </ul>
 
-          <h4 style="color: #15803d;">🛡️ Smarter Quality Pipeline (NEW - v12.9.0)</h4>
+          <h4 style="color: #15803d;">🛡️ Smarter Quality Pipeline (v12.9.0)</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>ReviewAgent Feedback Loop:</strong> Review suggestions are now acted on — flagged tests are auto-removed and coverage gap suggestions are added as new test shells</li>
             <li><strong>Hallucination Filtering:</strong> Tests with 3+ hallucinated references are automatically removed post-validation</li>
@@ -1773,7 +1796,7 @@
           <h4>Panel Issues:</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>Panel doesn't appear:</strong> Refresh Jira page, ensure you're on a ticket page (not board)</li>
-            <li><strong>Settings button error:</strong> Update to v12.9.0+</li>
+            <li><strong>Settings button error:</strong> Update to v13.4+</li>
             <li><strong>Panel position wrong:</strong> Resize browser window</li>
           </ul>
           

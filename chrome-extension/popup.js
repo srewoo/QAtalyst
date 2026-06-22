@@ -483,8 +483,8 @@ function showMergeSelectionUI(apps) {
     </p>
     <div id="mergeAppsList" style="margin-bottom: 16px;">
       ${apps.map((app, index) => `
-        <label style="display: flex; align-items: flex-start; padding: 12px; background: #f8fafc; border-radius: 4px; margin-bottom: 8px; cursor: pointer; gap: 12px;">
-          <input type="checkbox" class="merge-app-checkbox" value="${app.url}" style="margin: 0; flex-shrink: 0;">
+        <label style="display: flex; align-items: center; padding: 12px; background: #f8fafc; border-radius: 4px; margin-bottom: 8px; cursor: pointer; gap: 12px;">
+          <input type="checkbox" class="merge-app-checkbox" value="${app.url}" style="flex-shrink: 0; width: 16px; height: 16px; min-width: 16px; margin: 0; padding: 0;">
           <div style="flex: 1; min-width: 0;">
             <div style="font-size: 14px; font-weight: 500; color: #1e293b; margin-bottom: 4px;" title="${app.url}">${getCleanDomain(app.url)}${app.isMerged ? ' 🔀' : ''}</div>
             <div style="font-size: 12px; color: #64748b;">${app.pages || 0} pages • ${app.features || 0} features</div>

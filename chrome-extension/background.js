@@ -84,8 +84,10 @@ let activeIntegration = null;
 
 // Active multi-agent orchestrator (for cancellation)
 
-// Active agentic planner abort handle (for cancellation of the planner loop)
-let activeAgenticAbort = null;
+// Active agentic planner abort handles (a Set so Epic Mode's concurrent
+// per-story generations can ALL be cancelled by a single stop, not just the
+// most-recently-started one).
+const activeAgenticAborts = new Set();
 
 // Web Crawler state management - initialize AFTER config loads
 let activeCrawler = null;
@@ -525,7 +527,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'stopMultiAgentGeneration') {
     let stopped = false;
-    if (activeAgenticAbort) { activeAgenticAbort.cancelled = true; stopped = true; }
+    for (const abort of activeAgenticAborts) { abort.cancelled = true; stopped = true; }
     sendResponse(stopped ? { success: true } : { success: false, message: 'No active generation' });
     return true;
   }
@@ -2283,7 +2285,7 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
   // ── Budget: derive from the test-count slider ──
   const maxTests = clampInt(settings.testCount || settings.maxTestCases || 30, 8, 100);
   const abort = { cancelled: false };
-  activeAgenticAbort = abort;
+  activeAgenticAborts.add(abort);
 
   const planner = new PlannerAgent({
     callAI, settings, tools, gate,
@@ -2337,7 +2339,7 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
     };
   } finally {
     clearInterval(keepAlive);
-    if (activeAgenticAbort === abort) activeAgenticAbort = null;
+    activeAgenticAborts.delete(abort);
   }
 }
 

@@ -105,3 +105,29 @@ describe('navigate — post-login session reuse', () => {
     expect(tab).toEqual({ id: 1 });
   });
 });
+
+describe('mergeDiscoveredFeatures (item 1: interaction-revealed features)', () => {
+  test('appends genuinely new features and de-dupes against existing ones', () => {
+    const existing = [
+      { type: 'form', name: 'Login', fields: [{ name: 'user' }, { name: 'pass' }] },
+      { type: 'button', text: 'Submit' },
+    ];
+    const incoming = [
+      { type: 'form', name: 'Login', fields: [{ name: 'user' }, { name: 'pass' }] }, // dup
+      { type: 'form', name: 'Invite', fields: [{ name: 'email' }] },                  // new
+      { type: 'button', text: 'Add member' },                                          // new
+    ];
+    const merged = call('mergeDiscoveredFeatures', {}, existing, incoming);
+    expect(merged).toHaveLength(4);
+    expect(merged.find((f) => f.name === 'Invite')).toBeTruthy();
+    expect(merged.filter((f) => f.type === 'form' && f.name === 'Login')).toHaveLength(1);
+    // New ones are tagged as interaction-discovered.
+    expect(merged.find((f) => f.name === 'Invite')._discoveredVia).toBe('interaction');
+  });
+
+  test('skips malformed entries and handles empty inputs', () => {
+    expect(call('mergeDiscoveredFeatures', {}, [], [])).toEqual([]);
+    const merged = call('mergeDiscoveredFeatures', {}, [{ type: 'form', name: 'A' }], [null, {}, { type: 'button', text: 'X' }]);
+    expect(merged).toHaveLength(2);
+  });
+});

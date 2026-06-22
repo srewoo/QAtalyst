@@ -65,6 +65,19 @@ describe('SPARouteDiscoverer.extractRoutes', () => {
   test('returns an empty array for no discoveries', () => {
     expect(d.extractRoutes([])).toEqual([]);
   });
+
+  test('includes hover/submenu-revealed URLs (item 2)', () => {
+    const discoveries = [
+      { type: 'hover-menu', state: { url: 'https://x.com/', revealedUrls: ['https://x.com/sub1', 'https://x.com/sub2'] } },
+    ];
+    const routes = d.extractRoutes(discoveries);
+    expect(routes).toContain('https://x.com/sub1');
+    expect(routes).toContain('https://x.com/sub2');
+  });
+
+  test('tolerates discoveries with no state object', () => {
+    expect(() => d.extractRoutes([{ type: 'spa-route' }, null])).not.toThrow();
+  });
 });
 
 describe('SPARouteDiscoverer graceful degradation (no chrome.scripting)', () => {
