@@ -260,54 +260,28 @@
 </head>
 <body>
   <div class="header">
-    <h1>🚀 QAtalyst Settings</h1>
-    <p class="subtitle">Quick configuration for test case generation</p>
+    <h1>🚀 QAtalyst</h1>
+    <p class="subtitle">Crawl your web app & generate test cases from Jira</p>
   </div>
   
   <div class="content">
+    <!-- Shown only when no AI provider / API key is configured yet. -->
+    <div id="noApiKeyNotice" role="button" tabindex="0"
+         style="display: none; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; padding: 12px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; line-height: 1.5; cursor: pointer;">
+      ⚠️ <strong>No AI provider set.</strong> Test-case generation needs an API key —
+      click here to open <strong>Advanced Settings</strong>.
+    </div>
+
     <div class="section">
-      <div class="section-title">AI Provider Configuration</div>
-      <div class="form-group">
-        <label for="llmProvider">LLM Provider:</label>
-        <select id="llmProvider" data-testid="llm-provider-select">
-          <option value="openai">OpenAI (GPT-5.2)</option>
-          <option value="claude">Anthropic Claude</option>
-          <option value="gemini">Google Gemini</option>
-          <option value="bedrock">AWS Bedrock</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="llmModel">Model:</label>
-        <select id="llmModel" data-testid="llm-model-select">
-          <!-- Options populated dynamically -->
-        </select>
-      </div>
-      <div class="form-group" id="apiKeyGroup">
-        <label for="apiKey">API Key:</label>
-        <input type="password" id="apiKey" placeholder="Enter your API key" data-testid="api-key-input">
-        <div class="help-text">Configure your AI provider to generate test cases. <a href="#" id="getKeyLink" class="link-btn" target="_blank">Get API key →</a></div>
-      </div>
-      <div id="bedrockCredentialsGroup" style="display: none;">
-        <div class="form-group">
-          <label for="bedrockAccessKeyId">AWS Access Key ID:</label>
-          <input type="text" id="bedrockAccessKeyId" placeholder="AKIA..." data-testid="bedrock-access-key-input">
-        </div>
-        <div class="form-group">
-          <label for="bedrockSecretKey">AWS Secret Access Key:</label>
-          <input type="password" id="bedrockSecretKey" placeholder="Enter your secret access key" data-testid="bedrock-secret-key-input">
-        </div>
-        <div class="form-group">
-          <label for="bedrockRegion">AWS Region:</label>
-          <select id="bedrockRegion" data-testid="bedrock-region-select">
-            <option value="us-east-1">US East (N. Virginia)</option>
-            <option value="us-west-2">US West (Oregon)</option>
-            <option value="eu-west-1">EU (Ireland)</option>
-            <option value="eu-central-1">EU (Frankfurt)</option>
-            <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
-            <option value="ap-northeast-1">Asia Pacific (Tokyo)</option>
-          </select>
-        </div>
-        <div class="help-text">Use AWS IAM credentials with Bedrock access. <a href="https://docs.aws.amazon.com/bedrock/latest/userguide/setting-up.html" target="_blank" class="link-btn">Setup guide →</a></div>
+      <div class="section-title">📖 How to Use QAtalyst</div>
+      <ol style="margin: 0 0 0 18px; padding: 0; font-size: 13px; color: #475569; line-height: 1.8;">
+        <li><strong>Open a Jira ticket</strong> — go to any issue (a <code>.../browse/ABC-123</code> page on Jira or Atlassian). QAtalyst opens <strong>automatically</strong> on the page; you don't need to click anything.</li>
+        <li><strong>Generate test cases</strong> right there, using the QAtalyst panel that appears on the ticket.</li>
+        <li><strong>Map a web app</strong> for richer, grounded tests — open the app in a tab and run the crawler below.</li>
+      </ol>
+      <div class="help-text" style="margin-top: 12px;">
+        Set your AI provider, API key, and integrations (Confluence, TestRail) once in
+        <strong>Advanced Settings</strong> using the button at the bottom.
       </div>
     </div>
 
@@ -386,24 +360,10 @@
       </div>
     </div>
 
-    <div class="section">
-      <div class="section-title">External Integrations (Optional)</div>
-      <div class="form-group">
-        <label for="confluenceUrl">Confluence URL:</label>
-        <input type="text" id="confluenceUrl" placeholder="https://your-domain.atlassian.net">
-        <div class="help-text">Auto-fetch requirements from Confluence pages. <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" class="link-btn">Get token →</a></div>
-      </div>
-      <div class="form-group">
-        <label for="testrailUrl">TestRail URL:</label>
-        <input type="text" id="testrailUrl" placeholder="https://your-instance.testrail.io">
-        <div class="help-text">Export test cases to TestRail. <a href="https://www.gurock.com/testrail/docs/api" target="_blank" class="link-btn">Get API key →</a></div>
-      </div>
-    </div>
   </div>
-  
+
   <div class="actions">
-    <button class="btn-primary" id="saveBtn" data-testid="save-settings-btn">Save Settings</button>
-    <button class="btn-secondary" id="openOptionsBtn">Open Advanced Settings</button>
+    <button class="btn-primary" id="openOptionsBtn">⚙️ Open Advanced Settings</button>
     <div id="status"></div>
   </div>
 

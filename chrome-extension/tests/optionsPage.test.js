@@ -44,6 +44,31 @@ async function settle(n = 25) {
   for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
+/**
+ * Poll until `predicate()` is truthy, or `timeout` elapses. Deterministic
+ * replacement for a fixed macrotask count: async PBKDF2 + storage writes take a
+ * variable number of ticks under parallel CPU contention, so a fixed settle(25)
+ * races and flakes. Waiting on the actual completion condition does not.
+ */
+async function waitUntil(predicate, { timeout = 5000, interval = 5 } = {}) {
+  const start = Date.now();
+  for (;;) {
+    let ok = false;
+    try { ok = await predicate(); } catch (_) { ok = false; }
+    if (ok) return true;
+    if (Date.now() - start >= timeout) return false;
+    await new Promise((r) => setTimeout(r, interval));
+  }
+}
+
+/** Wait until the Save handler has finished (it always sets a success/error status). */
+async function waitForStatus() {
+  await waitUntil(() => {
+    const c = el('status').className || '';
+    return c.includes('success') || c.includes('error');
+  });
+}
+
 async function setupOptions(seed = {}, chromeOverride) {
   document.body.innerHTML = bodyMarkup('options.html');
   const chrome = chromeOverride || createChromeMock(seed);
@@ -128,6 +153,9 @@ describe('options.js — load settings into the form', () => {
     await chrome.storage.sync.set({ apiKey: encrypted });
 
     await setupOptions({}, chrome);
+    // The apiKey is decrypted asynchronously (PBKDF2) during DOMContentLoaded;
+    // wait for it to land rather than racing a fixed macrotask count.
+    await waitUntil(() => el('apiKey').value === 'sk-options-secret-456');
     expect(el('apiKey').value).toBe('sk-options-secret-456');
   });
 });
@@ -188,7 +216,7 @@ describe('options.js — save settings', () => {
     el('enableStreaming').checked = false;
 
     el('saveBtn').dispatchEvent(new window.Event('click'));
-    await settle();
+    await waitForStatus();
 
     const saved = await chrome.storage.sync.get([
       'llmProvider',
@@ -222,7 +250,7 @@ describe('options.js — save settings', () => {
     el('apiKey').value = 'sk-plaintext-should-be-encrypted-token';
 
     el('saveBtn').dispatchEvent(new window.Event('click'));
-    await settle();
+    await waitForStatus();
 
     const saved = await chrome.storage.sync.get(['apiKey']);
     expect(saved.apiKey).not.toBe('sk-plaintext-should-be-encrypted-token');
@@ -237,7 +265,7 @@ describe('options.js — save settings', () => {
     el('jiraEmail').value = 'not-an-email';
 
     el('saveBtn').dispatchEvent(new window.Event('click'));
-    await settle();
+    await waitForStatus();
 
     expect(el('status').className).toContain('error');
     expect(el('status').innerHTML).toMatch(/Jira Email/i);
@@ -257,7 +285,7 @@ describe('options.js — Save-path validation (real InputValidator, exercised vi
     el('testrailUrl').value = 'http://insecure.testrail.io';
 
     el('saveBtn').dispatchEvent(new window.Event('click'));
-    await settle();
+    await waitForStatus();
 
     expect(el('status').className).toContain('error');
     expect(el('status').innerHTML).toMatch(/TestRail URL/i);
@@ -269,7 +297,7 @@ describe('options.js — Save-path validation (real InputValidator, exercised vi
     el('testrailProjectId').value = 'ABC';
 
     el('saveBtn').dispatchEvent(new window.Event('click'));
-    await settle();
+    await waitForStatus();
 
     expect(el('status').className).toContain('error');
     expect(el('status').innerHTML).toMatch(/Project ID/i);
@@ -282,7 +310,7 @@ describe('options.js — Save-path validation (real InputValidator, exercised vi
     el('testrailProjectId').value = '7';
 
     el('saveBtn').dispatchEvent(new window.Event('click'));
-    await settle();
+    await waitForStatus();
 
     const saved = await chrome.storage.sync.get(['testrailUrl', 'testrailProjectId']);
     expect(el('status').className).toContain('success');

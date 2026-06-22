@@ -1375,6 +1375,9 @@ if (typeof DOMExtractor === 'undefined') {
    * Detect SPA framework
    */
   detectSPAFramework() {
+    // ── React ────────────────────────────────────────────────────────────────
+    // Legacy markers (React <=17) + the DevTools hook (only present when the
+    // DevTools extension is installed — unreliable on its own).
     if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__ || document.querySelector('[data-reactroot], [data-reactid]')) {
       return 'react';
     }
@@ -1393,7 +1396,61 @@ if (typeof DOMExtractor === 'undefined') {
     if (window.__NUXT__) {
       return 'nuxt';
     }
+    // ── Svelte / SvelteKit ─────────────────────────────────────────────────────
+    if (window.__svelte || document.querySelector('[class*="svelte-"]') || document.querySelector('#svelte')) {
+      return 'svelte';
+    }
+    // ── Modern React (18+ createRoot) ──────────────────────────────────────────
+    // createRoot apps drop data-reactroot/data-reactid entirely, so the legacy
+    // check above misses them. React attaches fiber state to the mount node via
+    // properties like `_reactRootContainer` (17) or `__reactContainer$<hash>` /
+    // `__reactFiber$<hash>` (18). Scan the common mount nodes for those keys.
+    if (this.hasReactFiber()) {
+      return 'react';
+    }
+    // ── Generic SPA heuristic (custom/unknown frameworks, web components) ───────
+    // A near-empty <body> whose content lives under a single mount node, paired
+    // with a script-heavy <head>, is almost certainly a client-rendered SPA even
+    // when we can't name the framework. Returning a non-null value here makes the
+    // crawler apply its hydration wait instead of extracting an empty shell.
+    if (this.looksLikeGenericSpa()) {
+      return 'spa-generic';
+    }
     return null;
+  }
+
+  /** True when a common mount node carries a React fiber/root property. */
+  hasReactFiber() {
+    try {
+      const roots = [
+        document.getElementById('root'),
+        document.getElementById('app'),
+        document.getElementById('__next'),
+        document.body && document.body.firstElementChild,
+      ];
+      for (const el of roots) {
+        if (!el) continue;
+        if (el._reactRootContainer) return true;
+        for (const key in el) {
+          if (key.startsWith('__reactContainer$') || key.startsWith('__reactFiber$')) return true;
+        }
+      }
+    } catch (_) { /* defensive: cross-origin / detached nodes */ }
+    return false;
+  }
+
+  /**
+   * Heuristic for unnamed client-rendered SPAs: a single empty mount node plus a
+   * script-heavy document and very little static body text.
+   */
+  looksLikeGenericSpa() {
+    try {
+      const mount = document.querySelector('#root, #app, #__next, [data-reactroot], main[role="main"]:empty');
+      const scriptCount = document.querySelectorAll('script[src]').length;
+      const bodyText = (document.body && document.body.innerText ? document.body.innerText : '').trim();
+      if (mount && scriptCount >= 1 && bodyText.length < 200) return true;
+    } catch (_) { /* ignore */ }
+    return false;
   }
   }
 

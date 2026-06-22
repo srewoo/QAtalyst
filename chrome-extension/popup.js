@@ -1,157 +1,39 @@
-// Popup script for quick settings
+// Popup script — crawler + how-to-use only.
+// AI provider, API keys, and external integrations now live exclusively in
+// Advanced Settings (options.html); the popup intentionally no longer renders
+// or persists them.
 
-// Model options - keep in sync with options.js
-const modelOptions = {
-  openai: [
-    { value: 'gpt-5.2', label: 'GPT-5.2 (Recommended)' },
-    { value: 'gpt-5.2-mini', label: 'GPT-5.2 Mini (Fast & Cheap)' },
-    { value: 'gpt-4.1', label: 'GPT-4.1' },
-    { value: 'o3', label: 'o3 (Reasoning)' },
-    { value: 'o4-mini', label: 'o4-mini (Fast reasoning)' }
-  ],
-  claude: [
-    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Most capable)' },
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Recommended)' },
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (Fast & Cheap)' },
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet v2 (legacy)' }
-  ],
-  gemini: [
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Recommended)' },
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Fast & Cheap)' },
-    { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (Cheapest)' }
-  ],
-  bedrock: [
-    { value: 'anthropic.claude-sonnet-4-5-20250514-v1:0', label: 'Claude 4.5 Sonnet (Recommended)' },
-    { value: 'anthropic.claude-opus-4-20250514-v1:0', label: 'Claude Opus 4' },
-    { value: 'anthropic.claude-3-5-sonnet-20241022-v2:0', label: 'Claude 3.5 Sonnet v2' },
-    { value: 'anthropic.claude-3-5-haiku-20241022-v1:0', label: 'Claude 3.5 Haiku (Fast & Cheap)' },
-    { value: 'us.openai.gpt-4.1-2025-04-14-v1:0', label: 'GPT-4.1 (Bedrock)' },
-    { value: 'us.openai.gpt-5-2-20250709-v1:0', label: 'GPT-5.2 (Bedrock)' },
-    { value: 'us.openai.o3-2025-04-16-v1:0', label: 'O3 (Bedrock - Reasoning)' }
-  ]
-};
-
-// Load saved settings
-document.addEventListener('DOMContentLoaded', async () => {
-  const settings = await chrome.storage.sync.get([
-    'llmProvider',
-    'llmModel',
-    'apiKey',
-    'testrailUrl',
-    'confluenceUrl',
-    'bedrockAccessKeyId',
-    'bedrockSecretKey',
-    'bedrockRegion'
-  ]);
-
-  if (settings.llmProvider) {
-    document.getElementById('llmProvider').value = settings.llmProvider;
-    updateModelOptions(settings.llmProvider);
-    toggleBedrockFields(settings.llmProvider);
-  } else {
-    updateModelOptions('openai');
-  }
-
-  if (settings.llmModel) {
-    document.getElementById('llmModel').value = settings.llmModel;
-  }
-
-  if (settings.apiKey) {
-    // Decrypt the API key when loading (stored encrypted)
-    const decryptedApiKey = await securityManager.decryptApiKeyFromStorage(settings.apiKey);
-    document.getElementById('apiKey').value = decryptedApiKey;
-  }
-
-  if (settings.bedrockAccessKeyId) {
-    document.getElementById('bedrockAccessKeyId').value = settings.bedrockAccessKeyId;
-  }
-  if (settings.bedrockSecretKey) {
-    // Decrypt the secret key when loading
-    const decryptedKey = await securityManager.decryptApiKeyFromStorage(settings.bedrockSecretKey);
-    document.getElementById('bedrockSecretKey').value = decryptedKey;
-  }
-  if (settings.bedrockRegion) {
-    document.getElementById('bedrockRegion').value = settings.bedrockRegion;
-  }
-
-  if (settings.testrailUrl) {
-    document.getElementById('testrailUrl').value = settings.testrailUrl;
-  }
-
-  if (settings.confluenceUrl) {
-    document.getElementById('confluenceUrl').value = settings.confluenceUrl;
-  }
-});
-
-// Provider change handler
-document.getElementById('llmProvider').addEventListener('change', (e) => {
-  updateModelOptions(e.target.value);
-  toggleBedrockFields(e.target.value);
-});
-
-function toggleBedrockFields(provider) {
-  const apiKeyGroup = document.getElementById('apiKeyGroup');
-  const bedrockGroup = document.getElementById('bedrockCredentialsGroup');
-  if (provider === 'bedrock') {
-    apiKeyGroup.style.display = 'none';
-    bedrockGroup.style.display = 'block';
-  } else {
-    apiKeyGroup.style.display = 'block';
-    bedrockGroup.style.display = 'none';
-  }
-}
-
-function updateModelOptions(provider) {
-  const modelSelect = document.getElementById('llmModel');
-  modelSelect.innerHTML = '';
-  
-  const options = modelOptions[provider] || modelOptions.openai;
-  options.forEach(opt => {
-    const option = document.createElement('option');
-    option.value = opt.value;
-    option.textContent = opt.label;
-    modelSelect.appendChild(option);
-  });
-}
-
-// Save settings
-document.getElementById('saveBtn').addEventListener('click', async () => {
-  const provider = document.getElementById('llmProvider').value;
-  const settings = {
-    llmProvider: provider,
-    llmModel: document.getElementById('llmModel').value,
-    apiKey: document.getElementById('apiKey').value,
-    testrailUrl: document.getElementById('testrailUrl').value,
-    confluenceUrl: document.getElementById('confluenceUrl').value
-  };
-
-  if (provider === 'bedrock') {
-    settings.bedrockAccessKeyId = document.getElementById('bedrockAccessKeyId').value;
-    const secretKey = document.getElementById('bedrockSecretKey').value;
-    // Encrypt the secret key before saving
-    if (secretKey && secretKey.trim()) {
-      settings.bedrockSecretKey = await securityManager.encryptApiKeyForStorage(secretKey.trim());
-    } else {
-      settings.bedrockSecretKey = '';
-    }
-    settings.bedrockRegion = document.getElementById('bedrockRegion').value;
-  }
-
-  await chrome.storage.sync.set(settings);
-  
-  const statusDiv = document.getElementById('status');
-  statusDiv.className = 'status success';
-  statusDiv.textContent = '✅ Settings saved successfully!';
-  
-  setTimeout(() => {
-    statusDiv.textContent = '';
-  }, 3000);
-});
-
-// Open full options page
+// Open full options page (where AI provider, API key & integrations are set)
 document.getElementById('openOptionsBtn').addEventListener('click', () => {
   chrome.runtime.openOptionsPage();
 });
+
+// ── "No AI provider set" notice ──────────────────────────────────────────────
+// AI config lives only in Advanced Settings now, so a first-time user may open
+// the popup before configuring a key. Surface a dismissible-by-action nudge that
+// links straight to the options page. Considered configured if a standard API
+// key OR a Bedrock secret key has been stored.
+async function checkApiKeyConfigured() {
+  const notice = document.getElementById('noApiKeyNotice');
+  if (!notice) return;
+  try {
+    const { apiKey, bedrockSecretKey } = await chrome.storage.sync.get(['apiKey', 'bedrockSecretKey']);
+    const configured = Boolean((apiKey && apiKey.trim()) || (bedrockSecretKey && bedrockSecretKey.trim()));
+    notice.style.display = configured ? 'none' : 'block';
+  } catch (_) {
+    // If storage can't be read, fail closed (show the nudge) — it's harmless.
+    notice.style.display = 'block';
+  }
+}
+
+const noApiKeyNoticeEl = document.getElementById('noApiKeyNotice');
+if (noApiKeyNoticeEl) {
+  const openSettings = () => chrome.runtime.openOptionsPage();
+  noApiKeyNoticeEl.addEventListener('click', openSettings);
+  noApiKeyNoticeEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSettings(); }
+  });
+}
 
 // ============ WEB CRAWLER FUNCTIONALITY ============
 
@@ -734,6 +616,28 @@ async function loadLastCrawlSummary() {
   }
 }
 
+/**
+ * Reflect crawl-in-progress state on the Start button so reopening the popup
+ * mid-crawl clearly shows a crawl is running (and can't launch a second one).
+ * Idempotent: stashes the original label once in a data attribute.
+ */
+function setCrawlButtonRunning(isRunning) {
+  const btn = document.getElementById('crawlAppBtn');
+  if (!btn) return;
+  if (isRunning) {
+    if (!btn.dataset.idleLabel) btn.dataset.idleLabel = btn.textContent;
+    btn.textContent = '🕷️ Crawling in progress…';
+    btn.disabled = true;
+    btn.style.opacity = '0.7';
+    btn.style.cursor = 'not-allowed';
+  } else {
+    btn.textContent = btn.dataset.idleLabel || 'Start Full Application Crawl';
+    btn.disabled = false;
+    btn.style.opacity = '';
+    btn.style.cursor = '';
+  }
+}
+
 // Show active crawl status
 function showActiveCrawlStatus(url) {
   const activeCrawlDiv = document.getElementById('activeCrawlStatus');
@@ -747,12 +651,15 @@ function showActiveCrawlStatus(url) {
   `;
 
   activeCrawlDiv.style.display = 'block';
+  // Keep the primary Start button in sync with the active-crawl banner.
+  setCrawlButtonRunning(true);
 }
 
 // Hide active crawl status
 function hideActiveCrawlStatus() {
   const activeCrawlDiv = document.getElementById('activeCrawlStatus');
   activeCrawlDiv.style.display = 'none';
+  setCrawlButtonRunning(false);
 }
 
 // Check for active crawl
@@ -858,3 +765,4 @@ chrome.runtime.onMessage.addListener((message) => {
 loadCrawledApps();
 loadLastCrawlSummary();
 checkActiveCrawl();
+checkApiKeyConfigured();

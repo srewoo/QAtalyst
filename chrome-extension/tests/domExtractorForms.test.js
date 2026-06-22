@@ -355,6 +355,33 @@ describe('DOMExtractor.detectSPAFramework', () => {
     const ex = new DOMExtractor();
     expect(ex.detectSPAFramework()).toBe('angular');
   });
+
+  test('detects modern React (18 createRoot) via a fiber property on #root', () => {
+    reset(`<div id="root"></div>`);
+    // React 18 createRoot drops data-reactroot; it attaches a __reactContainer$<hash>
+    // expando to the mount node instead.
+    document.getElementById('root')['__reactContainer$abc123'] = {};
+    const ex = new DOMExtractor();
+    expect(ex.detectSPAFramework()).toBe('react');
+  });
+
+  test('detects Svelte via a svelte- scoped class', () => {
+    reset(`<div class="svelte-1a2b3c">hi</div>`);
+    const ex = new DOMExtractor();
+    expect(ex.detectSPAFramework()).toBe('svelte');
+  });
+
+  test('falls back to spa-generic for an empty mount node + script-heavy shell', () => {
+    reset(`<div id="root"></div><script src="/static/app.js"></script>`);
+    const ex = new DOMExtractor();
+    expect(ex.detectSPAFramework()).toBe('spa-generic');
+  });
+
+  test('returns null for a plain server-rendered page', () => {
+    reset(`<main><h1>About us</h1><p>We sell widgets to everyone, everywhere, all the time.</p></main>`);
+    const ex = new DOMExtractor();
+    expect(ex.detectSPAFramework()).toBeNull();
+  });
 });
 
 describe('DOMExtractor.extractTextContent', () => {
