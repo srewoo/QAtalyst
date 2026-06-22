@@ -49,6 +49,11 @@ class WebAppCrawler {
     // Track which tabs have content scripts injected to avoid duplicates
     this.scriptInjectedTabs = new Set();
 
+    // Set true once an automated login succeeds. From that point the crawl runs
+    // on the established session, so navigate() should treat it like
+    // useCurrentSession (and not refuse auth-section URLs).
+    this.sessionAuthenticated = false;
+
     // Performance tracking for adaptive scaling
     this.pageLoadTimes = [];
     this.avgLoadTime = 0;
@@ -56,6 +61,13 @@ class WebAppCrawler {
     this.scaleDownThreshold = CONFIG.get('crawler.parallel.scaleDownThreshold', 3.0); // seconds
     this.lastScaleCheck = Date.now();
     this.scaleCheckInterval = 10; // Check every 10 pages
+    // Adaptive concurrency hardening (ported from Pathfinder): scale on the P90
+    // load time rather than the mean so a few slow outliers don't drag tab count
+    // down, and back off aggressively on consecutive crawl errors (a server
+    // starting to fail under load should shed tabs immediately, not in 30s).
+    this.usePercentileScaling = CONFIG.get('crawler.parallel.usePercentileScaling', true);
+    this.consecutiveErrors = 0;
+    this.errorBackoffThreshold = CONFIG.get('crawler.parallel.errorBackoffThreshold', 2);
 
     // Site detection (Week 2)
     this.siteType = null; // Will be detected: 'static', 'dynamic', or 'heavy'
@@ -171,6 +183,7 @@ class WebAppCrawler {
       const autoLogin = CONFIG.get('crawler.authentication.autoLogin', null);
       if (autoLogin && autoLogin.enabled) {
         const r = await this.performLogin(autoLogin);
+        if (r.success) this.sessionAuthenticated = true;
         console.log(r.success ? `🔐 Auto-login succeeded` : `⚠️ Auto-login failed: ${r.reason} — crawling unauthenticated`);
       }
 
@@ -383,6 +396,10 @@ class WebAppCrawler {
    */
   async handleCrawlError(url, depth, error) {
     console.error(`❌ Failed to crawl ${url}:`, error);
+
+    // Feed the adaptive-concurrency error backoff: a run of failures means the
+    // server (or our tab pool) is overloaded — checkAdaptiveScaling sheds tabs.
+    this.consecutiveErrors++;
 
     // Retry logic for timeout and network errors
     const retryableErrors = ['timeout', 'net::', 'ERR_', 'Failed to fetch'];
@@ -787,8 +804,9 @@ class WebAppCrawler {
    * P1.4: Uses adaptive timeout based on detected site type
    */
   async navigate(url, tabId) {
-    // P1.5: Check for authentication redirect (skip if using current session)
-    const useCurrentSession = CONFIG.get('crawler.authentication.useCurrentSession', false);
+    // P1.5: Check for authentication redirect (skip if using current session).
+    // A successful auto-login means we're now ON the session, so honour it too.
+    const useCurrentSession = this.sessionAuthenticated || CONFIG.get('crawler.authentication.useCurrentSession', false);
     if (!useCurrentSession && this.isAuthUrl(url)) {
       console.warn(`⚠️ Skipping authentication URL: ${url}`);
       throw new Error(`Authentication required: ${url}`);
@@ -2037,7 +2055,11 @@ class WebAppCrawler {
         clearTimeout(timeout);
 
         if (chrome.runtime.lastError) {
-          resolve(false);
+          // Content script wasn't reachable yet (common right after navigation on
+          // an SPA that hasn't booted). Bailing with zero wait means we extract an
+          // empty shell — give the page a brief settle window first.
+          const fallbackWait = CONFIG.get('crawler.spaDetection.fallbackWait', 1500);
+          setTimeout(() => resolve(false), fallbackWait);
           return;
         }
 
@@ -2184,6 +2206,20 @@ class WebAppCrawler {
 
     // Calculate rolling average
     this.avgLoadTime = this.pageLoadTimes.reduce((a, b) => a + b, 0) / this.pageLoadTimes.length;
+
+    // A successful page resets the consecutive-error backoff counter.
+    this.consecutiveErrors = 0;
+  }
+
+  /**
+   * Nearest-rank percentile of a numeric array (e.g. p=0.9 → P90).
+   * Returns 0 for an empty array. Pure helper used by adaptive scaling.
+   */
+  percentile(values, p) {
+    if (!values || values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p));
+    return sorted[idx];
   }
 
   /**
@@ -2192,14 +2228,43 @@ class WebAppCrawler {
   async checkAdaptiveScaling(tabIds) {
     if (!this.adaptiveScaling) return tabIds;
 
+    // ── Error backoff (bypasses the cooldown) ────────────────────────────────
+    // A burst of consecutive failures means the target is struggling under our
+    // load. Shed tabs immediately rather than waiting out the 30s scale window.
+    if (this.consecutiveErrors >= this.errorBackoffThreshold && tabIds.length > this.minTabs) {
+      const newTabCount = Math.max(this.minTabs, Math.floor(tabIds.length / 2));
+      const tabsToRemove = tabIds.length - newTabCount;
+      console.warn(`🛑 Error backoff: ${this.consecutiveErrors} consecutive errors — shedding ${tabsToRemove} tab(s) to ${newTabCount}`);
+      for (let i = 0; i < tabsToRemove; i++) {
+        const tabToRemove = tabIds.pop();
+        if (tabToRemove && this.activeTabs.has(tabToRemove)) {
+          try {
+            await chrome.tabs.remove(tabToRemove);
+            this.activeTabs.delete(tabToRemove);
+          } catch (error) {
+            // Tab might already be closed
+          }
+        }
+      }
+      this.currentTabCount = newTabCount;
+      this.consecutiveErrors = 0; // Reset after acting so we don't thrash
+      this.lastScaleCheck = Date.now();
+      return tabIds;
+    }
+
     // Only check every N pages
     if (this.pageLoadTimes.length < this.scaleCheckInterval) return tabIds;
     if (Date.now() - this.lastScaleCheck < 30000) return tabIds; // Min 30s between checks
 
-    const avgLoadTime = this.avgLoadTime / 1000; // Convert to seconds
+    // Scale on P90 (robust to a few slow outliers) when enabled, else the mean.
+    const decisionMs = this.usePercentileScaling
+      ? this.percentile(this.pageLoadTimes, 0.9)
+      : this.avgLoadTime;
+    const avgLoadTime = decisionMs / 1000; // Convert to seconds
     const currentTabs = tabIds.length;
 
-    console.log(`📊 Adaptive Scaling Check: ${currentTabs} tabs, ${avgLoadTime.toFixed(2)}s avg load time`);
+    const metricLabel = this.usePercentileScaling ? 'P90' : 'avg';
+    console.log(`📊 Adaptive Scaling Check: ${currentTabs} tabs, ${avgLoadTime.toFixed(2)}s ${metricLabel} load time`);
 
     // Scale UP if pages load quickly
     if (avgLoadTime < this.scaleUpThreshold && currentTabs < this.maxTabs) {
