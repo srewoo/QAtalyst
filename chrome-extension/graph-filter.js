@@ -21,8 +21,10 @@ class GraphFilter {
       'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
       'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
       'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those',
-      'error', 'issue', 'bug', 'problem', 'fix', 'update', 'change', 'add',
-      'test', 'user', 'when', 'after', 'before', 'while', 'though', 'even'
+      // F31: QA-domain terms (error/issue/bug/problem/fix/test/user) removed — a
+      // bug ticket about a "user error" was losing its most discriminating terms.
+      'update', 'change', 'add',
+      'when', 'after', 'before', 'while', 'though', 'even'
     ];
 
     // Extract words (3+ characters, not stop words)

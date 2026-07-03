@@ -111,10 +111,55 @@ describe('GroundedVerifier.verify', () => {
     expect(JSON.stringify(repaired).toLowerCase()).toContain('username');
   });
 
-  test('abstract tests with no concrete references pass to relevance gate (grounded)', () => {
+  test('F6: with a KG present, a vague test that names no concrete entity is rejected', () => {
     const v = new GroundedVerifier(KG);
     const r = v.verify({ title: 'Verify the system behaves correctly', steps: ['Do the thing'] });
+    expect(r.verdict).toBe('reject');
+    expect(r.score).toBeLessThan(0.5);
+    expect(r.issues.join(' ')).toMatch(/too vague/i);
+  });
+
+  test('F6: lenient mode (requireGroundingRefs:false) still passes vague tests through', () => {
+    const v = new GroundedVerifier(KG, { requireGroundingRefs: false });
+    const r = v.verify({ title: 'Verify the system behaves correctly', steps: ['Do the thing'] });
     expect(r.verdict).toBe('grounded');
+  });
+
+  test('F6: with NO crawl data, a vague test is not_applicable (not rejected)', () => {
+    const v = new GroundedVerifier(null);
+    const r = v.verify({ title: 'Verify the system behaves correctly', steps: ['Do the thing'] });
+    expect(r.verdict).toBe('not_applicable');
+    expect(r.unverified).toBe(true);
+  });
+});
+
+describe('GroundedVerifier F7 — boundary/param-aware matching', () => {
+  const KG = {
+    pages: [{
+      url: 'https://app.io/settings',
+      features: [],
+      apis: [
+        { method: 'GET', endpoint: '/api/users/{id}' },
+        { method: 'POST', endpoint: '/api/orders' }
+      ]
+    }]
+  };
+  test('root route "/" does not ground an arbitrary route', () => {
+    const v = new GroundedVerifier({ pages: [{ url: 'https://app.io/', features: [], apis: [] }] });
+    expect(v.routeExists('/some/deep/path')).toBe(false);
+    expect(v.routeExists('/')).toBe(true);
+  });
+  test('param endpoint matches a concrete id but not a different resource', () => {
+    const v = new GroundedVerifier(KG);
+    expect(v.apiExists('GET /api/users/42')).toBe(true);   // {id} wildcard
+    expect(v.apiExists('GET /api/orders')).toBe(true);      // exact
+    expect(v.apiExists('GET /api/payments')).toBe(false);   // not present
+    expect(v.apiExists('GET /api')).toBe(true);             // ancestor of known endpoints
+  });
+  test('short endpoint fragment does not ground via substring', () => {
+    const v = new GroundedVerifier(KG);
+    // old bidirectional includes would have grounded this against /api/orders
+    expect(v.apiExists('GET /ord')).toBe(false);
   });
 });
 
@@ -186,12 +231,23 @@ describe('GroundedVerifier behaviour validation (v13.2)', () => {
     expect(r.behaviorWarnings).toHaveLength(0);
   });
 
-  test('should be a no-op on a thin crawl (too few APIs to judge)', () => {
-    const v = new GroundedVerifier(KG); // KG has only 1 API total
+  test('F25: now RUNS on a thin (≥1 API) crawl and flags unsupported auto-sync', () => {
+    const v = new GroundedVerifier(KG); // KG has 1 API; threshold lowered to 1 (F25)
     const tc = {
       title: 'Login auto-sync',
       steps: ['Enter a value in the username field', 'Click "Sign In"'],
       expected_result: 'Session auto-syncs in real-time across devices'
+    };
+    const r = v.verify(tc);
+    expect(r.behaviorWarnings.length).toBeGreaterThan(0);
+  });
+
+  test('F25: still a no-op when the crawl observed ZERO APIs', () => {
+    const kgNoApis = { pages: [{ url: 'https://app/x', features: [{ type: 'button', text: 'Go' }], apis: [] }] };
+    const v = new GroundedVerifier(kgNoApis);
+    const tc = {
+      title: 'Auto sync', steps: ['Click "Go"'],
+      expected_result: 'Data auto-syncs in real-time'
     };
     const r = v.verify(tc);
     expect(r.behaviorWarnings).toHaveLength(0);

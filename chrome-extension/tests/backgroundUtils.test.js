@@ -13,7 +13,78 @@ global.securityManager = {
     return key.startsWith('sk-') && key.length > 20;
   },
 };
-const { validateSettings, round2, clampInt, rejectionBreakdown, deriveAdaptiveThresholds } = require('../background-utils.js');
+const { validateSettings, round2, clampInt, rejectionBreakdown, deriveAdaptiveThresholds, formatTicketContextForPrompt, buildHistoricalJql } = require('../background-utils.js');
+
+describe('buildHistoricalJql (F11)', () => {
+  test('scopes to project + Bug + significant terms, excludes the ticket', () => {
+    const jql = buildHistoricalJql({ key: 'PAY-123', summary: 'Refund processing fails for expired coupons' });
+    expect(jql).toContain('project = "PAY"');
+    expect(jql).toContain('issuetype = Bug');
+    expect(jql).toContain('key != "PAY-123"');
+    expect(jql).toMatch(/text ~ "refund"/i);
+    expect(jql).toContain('ORDER BY created DESC');
+  });
+  test('returns empty string when there are no significant terms', () => {
+    expect(buildHistoricalJql({ key: 'X-1', summary: 'the a to of' })).toBe('');
+  });
+  test('works without a project key', () => {
+    const jql = buildHistoricalJql({ summary: 'checkout payment gateway timeout' });
+    expect(jql).not.toContain('project =');
+    expect(jql).toContain('issuetype = Bug');
+  });
+});
+
+describe('formatTicketContextForPrompt (F1/F2/F4)', () => {
+  test('includes description, AC, labels, components, priority', () => {
+    const out = formatTicketContextForPrompt({
+      summary: 'Login page', description: 'desc here', priority: 'High',
+      labels: ['auth', 'p1'], components: ['Web'],
+      acceptanceCriteria: 'AC-1 must work',
+    });
+    expect(out).toContain('**Description:** desc here');
+    expect(out).toContain('AC-1 must work');
+    expect(out).toContain('auth, p1');
+    expect(out).toContain('Web');
+    expect(out).toContain('High');
+  });
+  test('injects comment discussion text, not just a count (F1)', () => {
+    const out = formatTicketContextForPrompt({
+      description: 'd',
+      comments: [{ author: 'Alice', text: 'the real edge case is empty email' }],
+    });
+    expect(out).toContain('Alice');
+    expect(out).toContain('empty email');
+  });
+  test('lists linked issues with direction and key (F2)', () => {
+    const out = formatTicketContextForPrompt({
+      description: 'd',
+      issueLinks: [{ type: 'blocks', key: 'PROJ-9', summary: 'old bug', status: 'Open' }],
+    });
+    expect(out).toContain('blocks PROJ-9');
+    expect(out).toContain('old bug');
+    expect(out).toContain('[Open]');
+  });
+  test('injects extracted document text (F4)', () => {
+    const out = formatTicketContextForPrompt({
+      description: 'd',
+      documentAttachments: [{ fileName: 'spec.pdf', text: 'section 3 covers refunds' }],
+    });
+    expect(out).toContain('spec.pdf');
+    expect(out).toContain('refunds');
+  });
+  test('clips a huge comment thread to a bounded size', () => {
+    const comments = Array.from({ length: 200 }, (_, i) => ({ author: 'u', text: 'x'.repeat(500) + i }));
+    const out = formatTicketContextForPrompt({ description: 'd', comments });
+    // comment section budget is ~1800 chars; total stays well under 4k
+    expect(out.length).toBeLessThan(4000);
+  });
+  test('omits sections that are absent', () => {
+    const out = formatTicketContextForPrompt({ summary: 's', description: 'd' });
+    expect(out).not.toContain('Linked Issues');
+    expect(out).not.toContain('Comments');
+    expect(out).not.toContain('Attached Documents');
+  });
+});
 
 describe('validateSettings', () => {
   const ok = { llmProvider: 'openai', llmModel: 'gpt-4.1', apiKey: 'sk-' + 'a'.repeat(40) };

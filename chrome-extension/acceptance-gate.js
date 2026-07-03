@@ -73,9 +73,17 @@ class AcceptanceGate {
       ? this.embeddings.embed(Array.from(this.referenceVocab.keys()).join(' '))
       : null;
 
+    // F14: an existing test suite (e.g. fetched from TestRail) to dedupe AGAINST
+    // but never emit. Generated tests that duplicate one of these are rejected as
+    // "already covered by existing suite", so QAtalyst doesn't re-propose tests
+    // the team already maintains. Tagged _existing so the reason can say so.
+    this.existingSuite = (Array.isArray(cfg.existingTests) ? cfg.existingTests : [])
+      .filter(t => t && (t.title || t.description))
+      .map(t => ({ ...t, _existing: true }));
+
     this.accepted = [];        // tests admitted so far
     this.rejected = [];        // { test, stage, reason }
-    this.stats = { grounding: 0, relevance: 0, duplicate: 0, repaired: 0, accepted: 0 };
+    this.stats = { grounding: 0, relevance: 0, duplicate: 0, duplicateExisting: 0, repaired: 0, accepted: 0 };
   }
 
   /**
@@ -123,10 +131,15 @@ class AcceptanceGate {
         }
       }
 
-      // ── 3. DEDUP (vs accepted + this batch) ──
-      const dup = this.findDuplicate(test, this.accepted.concat(newlyAccepted));
+      // ── 3. DEDUP (vs accepted + this batch + existing suite) ──
+      const dup = this.findDuplicate(test, this.accepted.concat(newlyAccepted, this.existingSuite));
       if (dup) {
-        this.reject(candidate, 'duplicate', `near-duplicate of "${dup.against.title || dup.against.id}" (sim ${dup.sim.toFixed(2)})`);
+        if (dup.against._existing) {
+          this.stats.duplicateExisting++;
+          this.reject(candidate, 'duplicate', `already covered by existing suite case "${dup.against.title || dup.against.id}" (sim ${dup.sim.toFixed(2)})`);
+        } else {
+          this.reject(candidate, 'duplicate', `near-duplicate of "${dup.against.title || dup.against.id}" (sim ${dup.sim.toFixed(2)})`);
+        }
         continue;
       }
 
@@ -180,9 +193,11 @@ class AcceptanceGate {
       const w = this.referenceVocab.get(c);
       if (w) matchedWeight += w;
     }
-    // Mean weight over distinct concepts → a concept that is squarely on-topic
-    // scores ~1.0; off-topic tests trend to ~0. Mild sqrt damping keeps long,
-    // partially-relevant tests from being unfairly penalised.
+    // F39: this is NOT a mean (the old comment claimed "mean weight") — it's the
+    // total matched reference-vocab weight, sqrt-damped by the number of distinct
+    // concepts so long, partially-relevant tests aren't over-rewarded for volume.
+    // A squarely on-topic test scores high; off-topic trends to ~0. Value is not
+    // bounded to 1, which is fine: it's compared against relevanceThreshold only.
     return matchedWeight / Math.sqrt(seen.size);
   }
 

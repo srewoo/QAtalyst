@@ -1,7 +1,7 @@
 {
   "name": "qatalyst",
-  "version": "13.6",
-  "description": "From QA Analyst to QA Visionary — Powered by QAtalyst. AI-Powered Test Case Generation for Jira - Chrome Extension with a grounded, coverage-driven agentic test engine",
+  "version": "13.8",
+  "description": "AI test case generator for Jira. Turn tickets, requirements & acceptance criteria into positive, negative & edge-case tests.",
   "main": "chrome-extension/background.js",
   "scripts": {
     "build": "./build.sh",
@@ -9,9 +9,10 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test -c chrome-extension/e2e/playwright.config.js",
+    "eval": "node chrome-extension/eval/run-eval.js",
     "lint": "eslint chrome-extension/**/*.js",
     "format": "prettier --write chrome-extension/**/*.{js,html,css,json}",
-    "zip": "cd chrome-extension && zip -r ../qatalyst-v13.3-webstore.zip . -x '*.DS_Store' '*.git*' '**/tests/*' '**/tests/**' '**/e2e/*' '**/e2e/**' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
+    "zip": "cd chrome-extension && zip -r \"../qatalyst-v$npm_package_version-webstore.zip\" . -x '*.DS_Store' '*.git*' '**/tests/*' '**/tests/**' '**/e2e/*' '**/e2e/**' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
   },
   "repository": {
     "type": "git",
@@ -27,8 +28,9 @@
     "openai",
     "claude",
     "gemini",
-    "multi-agent",
-    "genetic-algorithm"
+    "bedrock",
+    "agentic",
+    "test-generation"
   ],
   "author": "QA Engineering Team",
   "license": "PROPRIETARY",

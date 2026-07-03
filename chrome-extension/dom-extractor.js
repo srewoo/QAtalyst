@@ -939,7 +939,7 @@ if (typeof DOMExtractor === 'undefined') {
    * Extract main text content from page (for help articles, documentation, etc.)
    * MEMORY OPTIMIZED: Default reduced to 2000 chars
    */
-  extractTextContent(maxLength = 2000) {
+  extractTextContent(maxLength = 5000) { // F32: was 2000 — long content pages were mostly dropped
     const textParts = [];
     let totalLength = 0;
 

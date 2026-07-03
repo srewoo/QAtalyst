@@ -83,6 +83,64 @@ describe('extractTextFromADF', () => {
     expect(extractTextFromADF({ type: 'blockCard', attrs: { url } })).toContain(url);
     expect(extractTextFromADF({ type: 'embedCard', attrs: { data: { url } } })).toContain(url);
   });
+  test('renders bullet list items with markers (F3)', () => {
+    const adf = { type: 'bulletList', content: [
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'first' }] }] },
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'second' }] }] },
+    ]};
+    const out = extractTextFromADF(adf);
+    expect(out).toContain('- first');
+    expect(out).toContain('- second');
+  });
+  test('renders ordered list items with numbers (F3)', () => {
+    const adf = { type: 'orderedList', content: [
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'alpha' }] }] },
+      { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'beta' }] }] },
+    ]};
+    const out = extractTextFromADF(adf);
+    expect(out).toContain('1. alpha');
+    expect(out).toContain('2. beta');
+  });
+  test('preserves task-item checkbox state (F3)', () => {
+    const adf = { type: 'taskList', content: [
+      { type: 'taskItem', attrs: { state: 'DONE' }, content: [{ type: 'text', text: 'done item' }] },
+      { type: 'taskItem', attrs: { state: 'TODO' }, content: [{ type: 'text', text: 'todo item' }] },
+    ]};
+    const out = extractTextFromADF(adf);
+    expect(out).toContain('- [x] done item');
+    expect(out).toContain('- [ ] todo item');
+  });
+  test('renders a table as markdown pipes with a header separator (F3)', () => {
+    const cell = (t) => ({ type: 'tableCell', content: [{ type: 'paragraph', content: [{ type: 'text', text: t }] }] });
+    const hcell = (t) => ({ type: 'tableHeader', content: [{ type: 'paragraph', content: [{ type: 'text', text: t }] }] });
+    const adf = { type: 'table', content: [
+      { type: 'tableRow', content: [hcell('Field'), hcell('Rule')] },
+      { type: 'tableRow', content: [cell('email'), cell('required')] },
+    ]};
+    const out = extractTextFromADF(adf);
+    expect(out).toContain('| Field | Rule |');
+    expect(out).toContain('| --- | --- |');
+    expect(out).toContain('| email | required |');
+  });
+  test('renders mentions and status lozenges inline (F3)', () => {
+    const adf = { type: 'paragraph', content: [
+      { type: 'text', text: 'Owner ' },
+      { type: 'mention', attrs: { text: '@Alice' } },
+      { type: 'text', text: ' status ' },
+      { type: 'status', attrs: { text: 'IN PROGRESS' } },
+    ]};
+    const out = extractTextFromADF(adf);
+    expect(out).toContain('@Alice');
+    expect(out).toContain('[IN PROGRESS]');
+  });
+  test('prefixes panel content as a note block (F3)', () => {
+    const adf = { type: 'panel', attrs: { panelType: 'warning' }, content: [
+      { type: 'paragraph', content: [{ type: 'text', text: 'careful' }] },
+    ]};
+    const out = extractTextFromADF(adf);
+    expect(out).toContain('[!WARNING]');
+    expect(out).toContain('> careful');
+  });
 });
 
 describe('extractFileType', () => {

@@ -37,7 +37,9 @@
     }
 
     if (request.action === 'keepAlive') {
-      // Keep-alive heartbeat to prevent timeout - no action needed
+      // UI liveness heartbeat only. NOTE: the real service-worker keepalive is
+      // done worker-side (F15) — a message to this tab does NOT reset the SW
+      // idle timer. This just signals the panel that generation is progressing.
       console.log('💓 Keep-alive heartbeat received');
     }
     if (request.action === 'agentProgress') {
@@ -152,7 +154,7 @@
   async function fetchTicketDataFromAPI(ticketKey) {
     try {
       // Load Jira credentials
-      const settings = await loadAndDecryptSettings(['jiraBaseUrl', 'jiraEmail', 'jiraApiToken']);
+      const settings = await loadAndDecryptSettings(['jiraBaseUrl', 'jiraEmail', 'jiraApiToken', 'jiraAcFieldId']);
 
       if (!settings.jiraEmail || !settings.jiraApiToken) {
         console.log('🔑 Jira API credentials not configured, will use DOM scraping');
@@ -164,8 +166,10 @@
 
       console.log('🌐 Fetching ticket data from Jira API:', ticketKey);
 
-      // Fetch ticket data
-      const response = await fetch(`${jiraBaseUrl}/rest/api/3/issue/${ticketKey}`, {
+      // Fetch ticket data. `expand=names` returns the human-readable display
+      // name for every field (incl. customfield_*) so we can auto-detect an
+      // "Acceptance Criteria" custom field without hard-coded field IDs (F2).
+      const response = await fetch(`${jiraBaseUrl}/rest/api/3/issue/${ticketKey}?expand=names`, {
         method: 'GET',
         headers: {
           'Authorization': 'Basic ' + btoa(`${settings.jiraEmail}:${settings.jiraApiToken}`),
@@ -182,17 +186,64 @@
       const issueData = await response.json();
       console.log('✅ Successfully fetched ticket data from Jira API');
 
+      const f = issueData.fields || {};
+
       // Extract and format data
       const data = {
         key: issueData.key,
-        summary: issueData.fields.summary || '',
-        description: extractTextFromADF(issueData.fields.description) || '',
+        summary: f.summary || '',
+        description: extractTextFromADF(f.description) || '',
         // Issue type drives Epic Mode (generate per child story).
-        issueType: issueData.fields.issuetype?.name || '',
+        issueType: f.issuetype?.name || '',
         comments: [],
         attachments: [],
-        linkedPages: []
+        linkedPages: [],
+        // F2: ticket metadata that carries scope/grounding signal.
+        issueLinks: [],
+        parent: null,
+        labels: Array.isArray(f.labels) ? f.labels : [],
+        components: Array.isArray(f.components) ? f.components.map(c => c?.name).filter(Boolean) : [],
+        priority: f.priority?.name || '',
+        status: f.status?.name || '',
+        fixVersions: Array.isArray(f.fixVersions) ? f.fixVersions.map(v => v?.name).filter(Boolean) : [],
+        acceptanceCriteria: ''
       };
+
+      // Issue-links panel (linked bugs / blocks / relates-to) — same shape and
+      // direction handling as the Epic path (F2). Previously invisible for a
+      // normal story, hiding linked defects/duplicates from generation.
+      data.issueLinks = (f.issuelinks || []).map((l) => {
+        const linked = l.outwardIssue || l.inwardIssue;
+        if (!linked) return null;
+        const rel = l.outwardIssue ? (l.type?.outward || 'relates to') : (l.type?.inward || 'relates to');
+        return { key: linked.key, summary: linked.fields?.summary || '', type: rel, status: linked.fields?.status?.name || '' };
+      }).filter(Boolean);
+
+      // Parent / epic context.
+      if (f.parent) {
+        data.parent = {
+          key: f.parent.key,
+          summary: f.parent.fields?.summary || '',
+          issueType: f.parent.fields?.issuetype?.name || ''
+        };
+      }
+
+      // Acceptance criteria: prefer a configured custom-field id, else auto-detect
+      // any custom field whose display name mentions "acceptance criteria" (F2/F5).
+      try {
+        const names = issueData.names || {};
+        let acFieldId = settings.jiraAcFieldId || '';
+        if (!acFieldId) {
+          acFieldId = Object.keys(names).find(id =>
+            /^customfield_/.test(id) && /accept(ance)?\s*criteria|^ac$|acceptance/i.test(names[id] || '')
+          ) || '';
+        }
+        if (acFieldId && f[acFieldId] != null) {
+          data.acceptanceCriteria = extractTextFromADF(f[acFieldId]) || (typeof f[acFieldId] === 'string' ? f[acFieldId] : '');
+        }
+      } catch (e) {
+        console.warn('⚠️ AC custom-field detection failed:', e.message);
+      }
 
       // Extract comments
       if (issueData.fields.comment && issueData.fields.comment.comments) {
@@ -2084,11 +2135,16 @@
         'figmaToken', 'googleApiKey'
       ]);
 
-      // Fetch Jira image attachments if model supports vision
-      const visionModels = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.VISION_MODELS) || ['gpt-4.1', 'gpt-4.1-mini', 'claude-3-opus', 'claude-3-sonnet', 'gemini-pro-vision', 'gemini-1.5-pro', 'anthropic.claude', 'us.openai.gpt', 'us.openai.o3'];
-      if (visionModels.some(model => settings.llmModel?.includes(model)) && ticketData.attachments?.length > 0) {
-        console.log('📷 Vision model detected, fetching Jira image attachments...');
-        ticketData.imageAttachments = await fetchImageAttachments(ticketData.attachments);
+      // Enrich with BOTH image and document attachments (F4). Previously only
+      // images were fetched here, so spec PDFs/requirement docs attached to the
+      // ticket were never extracted or sent to the generator. enrichTicketAttachments
+      // handles the vision-model gate for images and always extracts document text.
+      if (ticketData.attachments?.length > 0) {
+        try {
+          await enrichTicketAttachments(ticketData, settings);
+        } catch (e) {
+          console.warn('⚠️ Attachment enrichment failed, continuing without it:', e.message);
+        }
       }
 
       // Extract app context from crawled knowledge graphs (if enabled)
@@ -4153,29 +4209,24 @@
         console.log(`   ${i + 1}. ${app.url} - ${app.pages} pages, ${app.features} features`);
       });
 
-      // SIMPLIFIED: Use the first available crawled data (user typically has one source)
-      // Prioritize: merged graphs > largest app > first app
-      let selectedApp = response.apps[0]; // Default to first app
-
-      // Prefer merged graphs (most comprehensive)
-      const mergedApps = response.apps.filter(app => app.url.startsWith('merged_'));
-      if (mergedApps.length > 0) {
-        // Use the largest merged graph
-        selectedApp = mergedApps.reduce((prev, current) =>
-          (current.pages > prev.pages) ? current : prev
-        );
-        console.log(`📌 [CRAWL DATA] Using merged graph: ${selectedApp.url}`);
-      } else if (response.apps.length > 1) {
-        // Use the largest app by page count
-        selectedApp = response.apps.reduce((prev, current) =>
-          (current.pages > prev.pages) ? current : prev
-        );
-        console.log(`📌 [CRAWL DATA] Using largest app: ${selectedApp.url}`);
+      // F18: pick the crawled app that matches THIS ticket, not simply the
+      // largest graph. Previously every ticket was grounded against the biggest
+      // crawl regardless of relevance — with two apps crawled, tickets for the
+      // small app got confidently-wrong entities from the big one. findMatchingApp
+      // scores apps by domain/product mentions in the ticket and only falls back
+      // to merged/largest when nothing matches. (It also handles the single-app
+      // and merged-graph cases internally.)
+      let selectedApp;
+      if (typeof findMatchingApp === 'function') {
+        selectedApp = findMatchingApp(response.apps, ticketData) || response.apps[0];
       } else {
-        console.log(`📌 [CRAWL DATA] Using only available app: ${selectedApp.url}`);
+        // Defensive fallback (should not happen — content-utils loads first).
+        const merged = response.apps.filter(a => a.url.startsWith('merged_'));
+        const pool = merged.length ? merged : response.apps;
+        selectedApp = pool.reduce((p, c) => (c.pages > p.pages ? c : p), pool[0]);
       }
 
-      console.log(`✅ Selected crawled app: ${selectedApp.url} (${selectedApp.pages} pages, ${selectedApp.features} features)`);
+      console.log(`✅ [CRAWL DATA] Selected crawled app (ticket-matched): ${selectedApp.url} (${selectedApp.pages} pages, ${selectedApp.features} features)`);
       const matchedApp = selectedApp;
 
       // Load the knowledge graph from background script

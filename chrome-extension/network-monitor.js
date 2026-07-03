@@ -232,7 +232,9 @@ class NetworkMonitor {
    * whole when small, else clipped to a JSON string preview.
    */
   truncateBody(body) {
-    const MAX = CONFIG.get('network.maxResponseBodyChars', 4000);
+    // F32: default raised 4000→8000 to match the in-page clip so API schemas
+    // aren't clipped twice mid-JSON. Still overridable via config.
+    const MAX = CONFIG.get('network.maxResponseBodyChars', 8000);
     if (body == null) return null;
     if (typeof body === 'string') {
       return body.length > MAX ? body.slice(0, MAX) + '…[truncated]' : body;

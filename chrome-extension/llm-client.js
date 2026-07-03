@@ -208,7 +208,9 @@ async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RE
     const requestBody = {
       model: settings.llmModel || 'gpt-4.1',
       messages: messages,
-      temperature: settings.temperature || 0.7,
+      // `?? 0.7` (not `|| 0.7`) so an explicit temperature of 0 is honored
+      // rather than silently bumped to 0.7 — matters for structured JSON gen (F9).
+      temperature: settings.temperature ?? 0.7,
       max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
     };
 
@@ -308,7 +310,7 @@ async function callGemini(systemMessage, userContent, settings, retries = MAX_RE
         parts: geminiContent
       }],
       generationConfig: {
-        temperature: settings.temperature || 0.7,
+        temperature: settings.temperature ?? 0.7,
         maxOutputTokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
       }
     };
@@ -417,15 +419,24 @@ async function callClaude(systemMessage, userContent, settings, retries = MAX_RE
       model: settings.llmModel || 'claude-sonnet-4-20250514',
       max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS,
       messages: claudeMessages,
-      temperature: settings.temperature || 0.7
+      temperature: settings.temperature ?? 0.7
     };
 
+    // JSON mode (F9): the Anthropic API has no response_format, so harden via the
+    // system prompt — raw JSON only, no markdown fences. parseRobustJSON handles
+    // the rest. Kept out of the vision path where prose framing may be desired.
+    let effectiveSystem = systemMessage;
+    const claudeHasImages = userContent.some(p => p && p.type === 'image_url');
+    if (settings._jsonMode && !claudeHasImages) {
+      effectiveSystem = `${systemMessage || ''}\n\nIMPORTANT: Respond with raw, valid JSON only — no markdown code fences, no explanatory prose before or after.`.trim();
+    }
+
     // Use system parameter for system message (enables prompt caching)
-    if (systemMessage) {
+    if (effectiveSystem) {
       requestBody.system = [
         {
           type: 'text',
-          text: systemMessage,
+          text: effectiveSystem,
           cache_control: { type: 'ephemeral' }
         }
       ];
@@ -503,18 +514,50 @@ async function callAI(systemMessage, userContent, settings) {
     userContentParts: userContent.length
   });
 
+  // F24: token preflight for ALL providers (previously only callOpenAI checked).
+  // A long ticket + big grounding list could silently overflow Claude/Gemini/
+  // Bedrock. Estimate here from the shared system+user content so every provider
+  // gets the same guard before the request goes out.
   try {
-    let result;
-    if (settings.llmProvider === 'openai') {
-      result = await callOpenAI(systemMessage, userContent, settings);
-    } else if (settings.llmProvider === 'gemini') {
-      result = await callGemini(systemMessage, userContent, settings);
-    } else if (settings.llmProvider === 'claude') {
-      result = await callClaude(systemMessage, userContent, settings);
-    } else if (settings.llmProvider === 'bedrock') {
-      result = await callBedrock(systemMessage, userContent, settings);
-    } else {
+    if (typeof checkTokenLimit === 'function' && typeof estimateMessagesTokens === 'function') {
+      const pseudoMessages = [];
+      if (systemMessage) pseudoMessages.push({ role: 'system', content: systemMessage });
+      pseudoMessages.push({ role: 'user', content: userContent });
+      const tokenCheck = checkTokenLimit(
+        estimateMessagesTokens(pseudoMessages),
+        settings.llmModel || '',
+        settings.maxTokens || (typeof APP_CONFIG !== 'undefined' ? APP_CONFIG.DEFAULT_MAX_TOKENS : 4000)
+      );
+      if (!tokenCheck.safe) {
+        throw new Error(`Token limit exceeded for ${settings.llmModel}: ${tokenCheck.warning} Reduce the ticket size, test count, or crawl scope.`);
+      }
+      if (tokenCheck.warning) console.warn(`⚠️ [AI Call] ${tokenCheck.warning}`);
+    }
+  } catch (e) {
+    if (/Token limit exceeded/.test(e.message)) throw e; // real overflow — surface it
+    // estimator hiccup shouldn't block a valid request; fall through.
+  }
+
+  try {
+    const dispatch = () => {
+      if (settings.llmProvider === 'openai') return callOpenAI(systemMessage, userContent, settings);
+      if (settings.llmProvider === 'gemini') return callGemini(systemMessage, userContent, settings);
+      if (settings.llmProvider === 'claude') return callClaude(systemMessage, userContent, settings);
+      if (settings.llmProvider === 'bedrock') return callBedrock(systemMessage, userContent, settings);
       throw new Error(`Unsupported AI provider: ${settings.llmProvider}`);
+    };
+
+    // F34: route through the (previously dead) shared rate limiter so a 30-test
+    // agentic burst is throttled to the provider's RPM instead of firing all at
+    // once and tripping 429s. Falls back to a direct call if the limiter isn't
+    // loaded (e.g. unit tests importing this module standalone).
+    let result;
+    const getLimiter = (typeof getRateLimiter === 'function') ? getRateLimiter
+      : (typeof self !== 'undefined' && self.getRateLimiter);
+    if (getLimiter) {
+      result = await getLimiter(settings.llmProvider).execute(dispatch);
+    } else {
+      result = await dispatch();
     }
 
     console.log('✅ [AI Call] Request successful', {

@@ -43,7 +43,15 @@ class GroundedVerifier {
     this.fuzzyThreshold = options.fuzzyThreshold ?? 0.82;
     this.behaviorCheck = options.behaviorCheck !== false;
     this.strictBehaviors = options.strictBehaviors === true;
-    this.minApisForBehaviorCheck = options.minApisForBehaviorCheck ?? 3;
+    // F25: was 3 — thin SPA crawls (<3 APIs) disabled the hallucinated-behaviour
+    // guard exactly when the app was least observed. Lowered to 1 so any observed
+    // API surface lets the check run; with 0 APIs it still no-ops (nothing to judge).
+    this.minApisForBehaviorCheck = options.minApisForBehaviorCheck ?? 1;
+    // F6: when a crawl exists, a test that names no concrete entity cannot be
+    // grounded — it's too vague. Reject it (default) so the planner regenerates
+    // something specific, instead of waving it through at 0.6. Set false to
+    // restore the old lenient behaviour.
+    this.requireGroundingRefs = options.requireGroundingRefs !== false;
     this.index = this.buildIndex();
   }
 
@@ -268,13 +276,20 @@ class GroundedVerifier {
       if (this.strictBehaviors) issues.push(...behavior.warnings);
     }
 
-    // No concrete references at all → cannot confirm grounding, but don't hard-reject;
-    // these flow to the relevance gate instead. Slight penalty (0.6).
     let verdict;
     if (behaviorReject) {
       verdict = 'reject'; // strict mode: a hallucinated behaviour fails the test outright
     } else if (referenced === 0) {
-      verdict = 'grounded'; // abstract test, judged by relevance gate downstream
+      // F6: a KG exists (index.empty was handled earlier) yet the test names no
+      // concrete UI element/field/button/API/route. Too vague to ground — reject
+      // so the planner produces a specific, executable test instead.
+      if (this.requireGroundingRefs) {
+        issues.push('Test references no concrete UI element, field, button, API or route from the crawled app — too vague to ground.');
+        score = Math.min(score, 0.2);
+        verdict = 'reject';
+      } else {
+        verdict = 'grounded'; // legacy lenient mode: judged by relevance gate downstream
+      }
     } else if (Object.keys(repairs).length > 0 && score >= this.minGroundingScore) {
       verdict = 'needs_repair';
     } else if (score >= this.minGroundingScore && issues.length === 0) {
@@ -416,29 +431,47 @@ class GroundedVerifier {
   // ────────────────────────── matching helpers ──────────────────────────
 
   selectorMatchesKnown(sel) {
-    // an id/class selector matches if any known selector contains it
+    // F7: match on a selector-token boundary, not an arbitrary substring. The
+    // old `known.includes(sel) || sel.includes(known)` grounded `#a` against any
+    // longer id and vice-versa. Now `.submit` matches a known `form#login .submit`
+    // (whole compound-selector token) but not `.submit-all`.
+    const s = String(sel || '').trim();
+    if (s.length < 2) return false;
+    if (this.index.selectors.has(s)) return true;
     for (const known of this.index.selectors) {
-      if (known.includes(sel) || sel.includes(known)) return true;
+      const tokens = String(known).split(/[\s>+~,]+/).filter(Boolean);
+      if (tokens.includes(s)) return true;
     }
     return false;
   }
 
   apiExists(apiRef) {
     const [method, endpoint] = apiRef.split(' ');
-    const ep = (endpoint || '').toLowerCase();
+    const ep = normPath(endpoint || '');
+    if (!ep) return false;
     return this.index.apis.some(a => {
-      const known = (a.endpoint || pathOf(a.url) || '').toLowerCase();
+      const known = normPath(a.endpoint || pathOf(a.url) || '');
       if (!known) return false;
       const methodOk = !method || method === 'GET' || a.method === method;
-      return methodOk && (known === ep || known.includes(ep) || ep.includes(known));
+      if (!methodOk) return false;
+      // F7: exact, param-aware same-arity match ({id}/:id/numeric wildcards), or a
+      // segment-boundary ancestor relationship — never a raw substring. The root
+      // '/' matches only itself so it can't ground every endpoint.
+      if (known === ep) return true;
+      if (known === '/' || ep === '/') return false;
+      return segMatch(known, ep) || isSegmentPrefix(known, ep) || isSegmentPrefix(ep, known);
     });
   }
 
   routeExists(route) {
-    const r = route.toLowerCase();
+    const r = normPath(route);
+    if (!r) return false;
     for (const known of this.index.routes) {
-      const k = known.toLowerCase();
-      if (k === r || k.includes(r) || r.includes(k)) return true;
+      const k = normPath(known);
+      if (!k) continue;
+      if (k === r) return true;
+      if (k === '/' || r === '/') continue; // root grounds only itself (F7)
+      if (segMatch(k, r) || isSegmentPrefix(k, r) || isSegmentPrefix(r, k)) return true;
     }
     return false;
   }
@@ -486,6 +519,38 @@ function pathOf(url) {
   // already a path
   const m = url.match(/^(\/[\w\-/{}:.]*)/);
   return m ? m[1].replace(/\/$/, '') || '/' : '';
+}
+
+/** Normalize a URL/path for comparison: lowercase, drop query/hash, strip trailing slash. */
+function normPath(url) {
+  const p = pathOf(url);
+  if (!p) return '';
+  return p.toLowerCase().split(/[?#]/)[0].replace(/\/+$/, '') || '/';
+}
+
+/** True when `b` is `a` or a descendant of `a` on a segment boundary (F7). */
+function isSegmentPrefix(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return b.startsWith(a.endsWith('/') ? a : a + '/');
+}
+
+/**
+ * Same-arity path match treating `{id}`, `:id` and bare numeric ids as wildcards,
+ * so `/api/users/{id}` matches `/api/users/1` but `/api/users` does NOT match
+ * `/api/orders` (F7).
+ */
+function segMatch(a, b) {
+  const sa = a.split('/').filter(Boolean);
+  const sb = b.split('/').filter(Boolean);
+  if (sa.length === 0 || sa.length !== sb.length) return false;
+  const wild = (s) => /^\{.*\}$/.test(s) || /^:/.test(s) || /^\d+$/.test(s);
+  for (let i = 0; i < sa.length; i++) {
+    if (sa[i] === sb[i]) continue;
+    if (wild(sa[i]) || wild(sb[i])) continue;
+    return false;
+  }
+  return true;
 }
 
 /** Normalized similarity in [0,1] using Levenshtein distance. */

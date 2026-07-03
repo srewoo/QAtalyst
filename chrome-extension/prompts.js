@@ -96,7 +96,7 @@ function testCasesSystem() {
 For each test case include:
 - Unique ID (TC-XXX-NNN format)
 - Clear title
-- Category (Positive/Negative/Edge/Integration)
+- Category (Positive/Negative/Edge/Regression/Integration)
 - Priority (P0/P1/P2/P3)
 - Preconditions
 - Test steps (numbered)
@@ -104,10 +104,11 @@ For each test case include:
 - Test data
 
 Generate 20-30 comprehensive test cases covering:
-- Happy path scenarios (40%)
+- Happy path scenarios (35%)
 - Negative scenarios (30%)
 - Edge cases (20%)
-- Integration scenarios (10%)
+- Regression scenarios that protect existing, previously-working behaviour and areas adjacent to this change (10%)
+- Integration scenarios (5%)
 
 Format as JSON array.`;
 }

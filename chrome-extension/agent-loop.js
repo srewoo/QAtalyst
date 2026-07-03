@@ -162,6 +162,15 @@ class PlannerAgent {
       const focus = this.gapFocus();
       return { tool: 'propose_tests', input: { category: pick, count: Math.min(5, deficit), focus }, thought: `fill ${pick} (${deficit} short)` };
     }
+
+    // F5: category targets met but acceptance criteria still uncovered → keep
+    // generating tests aimed at the uncovered AC instead of finishing early.
+    const ac = this.lastCoverage?.acCoverage;
+    if (ac && ac.applicable && ac.covered < ac.total && this.gate.getAccepted().length < this.budget.maxTests) {
+      const gap = (ac.uncovered && ac.uncovered[0] && ac.uncovered[0].text) || '';
+      const cat = Object.keys(this.targets)[0] || 'Positive';
+      return { tool: 'propose_tests', input: { category: cat, count: Math.min(4, ac.total - ac.covered), focus: `Acceptance criterion: ${gap}` }, thought: `cover AC (${ac.covered}/${ac.total})` };
+    }
     return { tool: 'finish', input: { reason: 'all category targets met' }, thought: 'targets met' };
   }
 
@@ -218,6 +227,13 @@ class PlannerAgent {
     if (this.noProgressStreak >= this.budget.maxNoProgress) { if (!silent) this.emit({ phase: 'stop', reason: 'no-progress' }); return true; }
     const cov = this.lastCoverage?.coveragePercent;
     if (typeof cov === 'number' && cov >= this.budget.coverageTarget && accepted >= this.budget.minTests) {
+      // F5: feature-coverage target reached — but don't declare done while the
+      // ticket's acceptance criteria are still uncovered and budget remains. AC
+      // coverage is the ticket-level promise and outranks the app-feature %.
+      const ac = this.lastCoverage?.acCoverage;
+      if (ac && ac.applicable && ac.covered < ac.total && accepted < this.budget.maxTests) {
+        return false;
+      }
       if (!silent) this.emit({ phase: 'stop', reason: 'coverage-target' });
       return true;
     }
@@ -240,7 +256,7 @@ class PlannerAgent {
       '',
       'Strategy: use run_coverage_check to see untested features; use bm25_search/inspect_element to',
       'ground yourself before proposing; call propose_tests for the categories furthest below target;',
-      'when a coverage gap is on an un-crawled area, crawl_route into it; query_jira for regression history.',
+      'query_jira for regression history when proposing Regression tests.',
       'Proposed tests are auto-verified, dedup-checked and relevance-gated — focus on COVERAGE, not volume.',
       'Call finish when more tests would be redundant.',
       '',

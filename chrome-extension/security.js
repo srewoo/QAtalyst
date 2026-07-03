@@ -216,10 +216,13 @@ if (typeof SecurityManager === 'undefined') {
       // Decrypt using the original method
       return await this.decryptApiKey(encrypted, salt, iv, password);
     } catch (error) {
-      console.error('Failed to decrypt API key from storage:', error);
-      // If decryption fails, return the original value without the prefix
-      // This handles corrupted encrypted data
-      return storedValue.substring(4);
+      // F30: previously returned storedValue.substring(4) — i.e. the raw
+      // ciphertext/JSON minus the "enc:" prefix — which would then be sent to the
+      // provider as if it were the API key (guaranteed auth failure with a
+      // confusing error, and it leaks ciphertext into request logs). Return null
+      // so the caller can prompt the user to re-enter the key instead.
+      console.error('Failed to decrypt API key from storage (corrupted or wrong device key):', error.message);
+      return null;
     }
   }
 
@@ -279,8 +282,19 @@ if (typeof SecurityManager === 'undefined') {
           return;
         }
 
-        // Remove javascript: URLs
-        if (attr.value && attr.value.toLowerCase().includes('javascript:')) {
+        // F39: constrain URL attributes to safe schemes rather than only
+        // blocking javascript:. data: URLs (which could carry text/html) and
+        // other exotic schemes are now dropped too; only http(s), mailto, tel
+        // and same-page/relative anchors are allowed on href/src.
+        if (attrName === 'href' || attrName === 'src') {
+          const v = (attr.value || '').trim();
+          const scheme = (v.match(/^([a-z][a-z0-9+.-]*):/i) || [])[1];
+          const safeScheme = !scheme || /^(https?|mailto|tel)$/i.test(scheme);
+          if (!safeScheme || v.toLowerCase().includes('javascript:')) {
+            element.removeAttribute(attr.name);
+            return;
+          }
+        } else if (attr.value && attr.value.toLowerCase().includes('javascript:')) {
           element.removeAttribute(attr.name);
           return;
         }

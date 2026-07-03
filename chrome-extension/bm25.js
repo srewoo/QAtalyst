@@ -25,7 +25,10 @@ class BM25Index {
     'few','more','most','other','some','such','than','too','very','just',
     'http','https','www','com','org','net','html','css','api','get','post',
     'put','delete','patch','true','false','null','undefined','new','return',
-    'error','issue','bug','problem','fix','update','change','add','test','when',
+    // F31: QA-domain terms (error/issue/bug/problem/fix/test) removed so a bug
+    // ticket doesn't lose its most discriminating retrieval terms. 'user' kept
+    // out too as it's ubiquitous and low-signal for page retrieval.
+    'update','change','add','when',
     'after','before','while','though','even','also','only','then','than',
   ]);
 
