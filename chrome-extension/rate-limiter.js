@@ -3,10 +3,11 @@
  * Handles rate limiting across all API integrations with exponential backoff
  * and retry-after header support
  *
- * NOTE: Currently UNUSED — loaded via importScripts but getRateLimiter() is never called.
- * Each API function (callOpenAI, callClaude, callGemini, callBedrock) implements
- * its own retry logic with exponential backoff instead.
- * TODO: Wire into API calls or remove to reduce service worker load.
+ * Wired into llm-client.callAI (F34): every provider call is routed through the
+ * per-provider limiter's execute() so a burst of agentic generation calls is
+ * throttled to the provider RPM instead of firing all at once and tripping 429s.
+ * The per-call fetch functions still keep their own exponential-backoff retry as
+ * a second line of defence.
  */
 
 class RateLimiter {
@@ -310,4 +311,8 @@ function getRateLimiter(service) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { RateLimiter, getRateLimiter, rateLimiters };
+}
+if (typeof self !== 'undefined') {
+  self.getRateLimiter = getRateLimiter;
+  self.RateLimiter = RateLimiter;
 }

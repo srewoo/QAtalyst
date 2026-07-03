@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QAtalyst - AI Test Case Generator",
-  "version": "13.6",
-  "description": "AI-powered Jira assistant with intelligent web app crawling and context-aware test generation.",
+  "version": "13.8",
+  "description": "AI test case generator for Jira. Turn tickets, requirements & acceptance criteria into positive, negative & edge-case tests.",
   "permissions": [
     "storage",
     "identity",
@@ -78,13 +78,11 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "icons/*",
-        "config.json"
+        "icons/*"
       ],
       "matches": [
         "https://*.atlassian.net/*",
-        "https://*.jira.com/*",
-        "<all_urls>"
+        "https://*.jira.com/*"
       ]
     }
   ],

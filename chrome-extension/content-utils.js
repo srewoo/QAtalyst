@@ -13,77 +13,150 @@
  */
   'use strict';
 
-  // Extract plain text with URLs from Jira's ADF (Atlassian Document Format)
+  // Extract plain text with URLs from Jira's ADF (Atlassian Document Format).
+  //
+  // Structural nodes are rendered to markdown so that acceptance criteria written
+  // as tables, bullet/numbered lists, or task checklists survive extraction with
+  // their structure intact (F3). Previously these were flattened into a run-on
+  // blob and checkbox done/undone state was lost, garbling the very AC the LLM
+  // needs. Inline text/link/code-block/smart-card behaviour is preserved verbatim.
   function extractTextFromADF(adfContent) {
     if (!adfContent) return '';
     if (typeof adfContent === 'string') return adfContent;
 
-    let text = '';
+    // Render inline content of a node (text, links, mentions, cards, …).
+    function renderInline(node) {
+      if (!node) return '';
 
-    function traverse(node) {
-      if (!node) return;
-
-      // Extract text content
-      if (node.type === 'text') {
-        text += node.text || '';
-      }
-
-      // Extract URLs from links
-      if (node.type === 'text' && node.marks) {
-        const linkMark = node.marks.find(m => m.type === 'link');
-        if (linkMark && linkMark.attrs && linkMark.attrs.href) {
-          // If text doesn't match URL, append URL in parentheses
-          if (node.text !== linkMark.attrs.href) {
-            text += ` (${linkMark.attrs.href})`;
+      switch (node.type) {
+        case 'text': {
+          let t = node.text || '';
+          if (node.marks) {
+            const linkMark = node.marks.find(m => m.type === 'link');
+            if (linkMark && linkMark.attrs && linkMark.attrs.href && node.text !== linkMark.attrs.href) {
+              t += ` (${linkMark.attrs.href})`;
+            }
           }
+          return t;
         }
-      }
-
-      // Handle media/images
-      if (node.type === 'media' || node.type === 'mediaInline') {
-        if (node.attrs && node.attrs.url) {
-          text += node.attrs.url + ' ';
+        case 'hardBreak':
+          return '\n';
+        case 'media':
+        case 'mediaInline':
+          return (node.attrs && node.attrs.url) ? node.attrs.url + ' ' : '';
+        // Smart links (inlineCard/blockCard/embedCard): a pasted Confluence/Figma/
+        // Docs URL auto-converts to a card node with the URL in attrs.url (or
+        // attrs.data.url) and no text/link mark, so extract it explicitly.
+        case 'inlineCard':
+        case 'blockCard':
+        case 'embedCard': {
+          const cardUrl = node.attrs && (node.attrs.url || (node.attrs.data && node.attrs.data.url));
+          return cardUrl ? ' ' + cardUrl + ' ' : '';
         }
-      }
-
-      // Handle smart links (inlineCard/blockCard/embedCard). When a Confluence/
-      // Figma/Docs URL is pasted into a Jira description it auto-converts to one
-      // of these card nodes — the URL lives in attrs.url (or attrs.data.url) with
-      // no text node or link mark, so without this it would be dropped and the
-      // external-source integrations would never see the link.
-      if (node.type === 'inlineCard' || node.type === 'blockCard' || node.type === 'embedCard') {
-        const cardUrl = node.attrs && (node.attrs.url || (node.attrs.data && node.attrs.data.url));
-        if (cardUrl) text += ' ' + cardUrl + ' ';
-      }
-
-      // Handle code blocks
-      if (node.type === 'codeBlock' && node.content) {
-        text += '\n```\n';
-        node.content.forEach(traverse);
-        text += '\n```\n';
-        return;
-      }
-
-      // Add line breaks for paragraphs and headings
-      if (['paragraph', 'heading'].includes(node.type)) {
-        if (text && !text.endsWith('\n')) {
-          text += '\n';
+        case 'mention': {
+          const name = node.attrs && (node.attrs.text || node.attrs.id);
+          return name ? `@${String(name).replace(/^@/, '')}` : '';
         }
-      }
-
-      // Recursively process child nodes
-      if (node.content && Array.isArray(node.content)) {
-        node.content.forEach(traverse);
-      }
-
-      // Add line break after paragraphs
-      if (['paragraph', 'heading'].includes(node.type)) {
-        text += '\n';
+        case 'status':
+          return (node.attrs && node.attrs.text) ? `[${node.attrs.text}]` : '';
+        case 'emoji':
+          return (node.attrs && (node.attrs.text || node.attrs.shortName)) || '';
+        case 'date': {
+          const ts = node.attrs && node.attrs.timestamp;
+          if (!ts) return '';
+          const n = Number(ts);
+          return Number.isFinite(n) ? new Date(n).toISOString().slice(0, 10) : '';
+        }
+        default:
+          return renderChildren(node);
       }
     }
 
-    traverse(adfContent);
-    return text.trim();
+    function renderChildren(node) {
+      if (!node || !Array.isArray(node.content)) return '';
+      return node.content.map(render).join('');
+    }
+
+    function prefixLines(str, prefix) {
+      return str.split('\n').map(l => (l.length ? prefix + l : l)).join('\n');
+    }
+
+    function renderList(node, ordered, depth) {
+      const items = (node.content || []).filter(n => n.type === 'listItem');
+      const indent = '  '.repeat(depth);
+      return items.map((item, i) => {
+        const marker = ordered ? `${i + 1}.` : '-';
+        const inner = renderChildren(item).trim();
+        const lines = inner.split('\n');
+        const first = lines.shift() || '';
+        let out = `${indent}${marker} ${first}`;
+        if (lines.length) out += '\n' + lines.join('\n');
+        return out;
+      }).join('\n');
+    }
+
+    function renderTaskList(node) {
+      const items = (node.content || []).filter(n => n.type === 'taskItem');
+      return items.map(item => {
+        const checked = item.attrs && item.attrs.state === 'DONE';
+        return `- [${checked ? 'x' : ' '}] ${renderChildren(item).trim()}`;
+      }).join('\n');
+    }
+
+    function renderTable(node) {
+      const rows = (node.content || []).filter(n => n.type === 'tableRow');
+      if (!rows.length) return '';
+      let headerSeen = false;
+      const out = [];
+      rows.forEach((row, ri) => {
+        const cells = (row.content || []).filter(c => c.type === 'tableCell' || c.type === 'tableHeader');
+        const isHeader = cells.length > 0 && cells.every(c => c.type === 'tableHeader');
+        const rendered = cells.map(c => renderChildren(c).replace(/\s*\n\s*/g, ' ').trim());
+        out.push('| ' + rendered.join(' | ') + ' |');
+        // Emit a markdown header separator after the first row when it is a
+        // header row (or unconditionally after row 0 as a best-effort table).
+        if (ri === 0 && (isHeader || !headerSeen)) {
+          out.push('| ' + rendered.map(() => '---').join(' | ') + ' |');
+          headerSeen = true;
+        }
+      });
+      return out.join('\n');
+    }
+
+    // Render any node to text; block nodes carry their own trailing newline.
+    function render(node) {
+      if (!node) return '';
+
+      switch (node.type) {
+        case 'codeBlock':
+          return '\n```\n' + renderChildren(node) + '\n```\n';
+        case 'paragraph':
+        case 'heading':
+          return renderChildren(node).replace(/\n+$/, '') + '\n';
+        case 'blockquote':
+          return prefixLines(renderChildren(node).trim(), '> ') + '\n';
+        case 'panel': {
+          const kind = (node.attrs && node.attrs.panelType) ? String(node.attrs.panelType).toUpperCase() : 'NOTE';
+          return `> [!${kind}]\n` + prefixLines(renderChildren(node).trim(), '> ') + '\n';
+        }
+        case 'bulletList':
+          return renderList(node, false, 0) + '\n';
+        case 'orderedList':
+          return renderList(node, true, 0) + '\n';
+        case 'taskList':
+          return renderTaskList(node) + '\n';
+        case 'table':
+          return renderTable(node) + '\n';
+        case 'rule':
+          return '\n---\n';
+        default:
+          // Inline nodes and structural containers (doc, listItem, tableCell…).
+          return renderInline(node);
+      }
+    }
+
+    const out = render(adfContent);
+    return out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
   // Extract file type from filename
@@ -145,7 +218,9 @@
     const text = `${ticketData.summary || ''} ${ticketData.description || ''}`.toLowerCase();
 
     // Remove common words
-    const stopWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'error', 'issue', 'bug', 'problem', 'fix', 'update', 'add', 'remove', 'while', 'after', 'before'];
+    // F31: QA-domain terms (error/issue/bug/problem/fix) are NOT stop words — a
+    // ticket about a "user error" would otherwise lose its most discriminating terms.
+    const stopWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'update', 'add', 'remove', 'while', 'after', 'before'];
 
     // Extract words (3+ chars, not stop words)
     const words = text.match(/\b[a-z]{3,}\b/g) || [];
@@ -637,11 +712,20 @@ _Generated on ${new Date().toLocaleString()}_
 
 `;
 
+    // Objects/arrays from the LLM (test_data is often an object) must be
+    // stringified — naive interpolation renders "[object Object]".
+    const display = (v, fallback) => {
+      if (v == null || v === '') return fallback;
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) return v.map(x => display(x, '')).join('; ');
+      try { return JSON.stringify(v); } catch (_) { return String(v); }
+    };
+
     const testCaseBlocks = testCases.map((tc, idx) => {
-      const expectedResult = tc.expected_result || tc.expectedResult || 'Not specified';
+      const expectedResult = display(tc.expected_result || tc.expectedResult, 'Not specified');
       const steps = tc.steps || [];
-      const preconditions = tc.preconditions || tc.precondition || 'None';
-      const testData = tc.testData || tc.test_data || 'Not specified';
+      const preconditions = display(tc.preconditions || tc.precondition, 'None');
+      const testData = display(tc.testData || tc.test_data, 'Not specified');
 
       const stepsFormatted = steps.length > 0
         ? steps.map((step, i) => `# ${step}`).join('\n')

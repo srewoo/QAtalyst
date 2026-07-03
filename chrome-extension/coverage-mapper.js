@@ -62,32 +62,15 @@ class CoverageMapper {
     // Build feature inventory from knowledge graph
     const inventory = this.buildFeatureInventory();
 
-    // Map each test case to features
-    testCases.forEach((testCase, index) => {
+    // Map each test case to features. (F39: the covered-marking that used to
+    // run here was a no-op — coverage.*.details is populated *below* — so it was
+    // removed. Marking happens once, correctly, after details are initialized.)
+    testCases.forEach((testCase) => {
       const mappedFeatures = this.mapTestToFeatures(testCase, inventory);
-
       coverage.testMapping.push({
         testId: testCase.id,
         testTitle: testCase.title,
         coveredFeatures: mappedFeatures
-      });
-
-      // Mark features as covered (LOW confidence = mentioned only, not exercised)
-      mappedFeatures.forEach(feature => {
-        if (feature.confidence === 'LOW') return;
-        if (feature.type === 'form') {
-          const formDetail = coverage.forms.details.find(f => f.id === feature.id);
-          if (formDetail) formDetail.covered = true;
-        } else if (feature.type === 'api') {
-          const apiDetail = coverage.apis.details.find(a => a.endpoint === feature.id);
-          if (apiDetail) apiDetail.covered = true;
-        } else if (feature.type === 'button') {
-          const buttonDetail = coverage.buttons.details.find(b => b.text === feature.id);
-          if (buttonDetail) buttonDetail.covered = true;
-        } else if (feature.type === 'page') {
-          const pageDetail = coverage.pages.details.find(p => p.url === feature.id);
-          if (pageDetail) pageDetail.covered = true;
-        }
       });
     });
 
@@ -192,63 +175,261 @@ class CoverageMapper {
   }
 
   /**
+   * F5: split raw acceptance-criteria text into discrete, checkable items.
+   * Relies on F3's structured ADF extraction (lists/tasks/tables render as
+   * markdown), stripping list/task/number/table markers and dropping separators,
+   * headers and trivially-short lines.
+   */
+  static parseAcceptanceCriteria(text) {
+    if (!text || typeof text !== 'string') return [];
+    const items = [];
+    for (let raw of text.split(/\r?\n/)) {
+      let line = raw.trim();
+      if (!line) continue;
+      line = line
+        .replace(/^[-*•]\s+/, '')          // bullet
+        .replace(/^\d+[.)]\s+/, '')         // ordered
+        .replace(/^\[[ xX]?\]\s*/, '')      // task checkbox
+        .replace(/^\|\s*/, '').replace(/\s*\|$/, '') // table edges
+        .trim();
+      if (!line) continue;
+      if (/^[-|\s:]+$/.test(line)) continue;               // table separator / rule
+      if (/^(acceptance criteria|ac|scenarios?)\s*:?\s*$/i.test(line)) continue; // header
+      if (line.replace(/[^a-z0-9]/gi, '').length < 5) continue; // too short to be meaningful
+      items.push(line);
+    }
+    return items;
+  }
+
+  /**
+   * G1: harvest ALL requirement items from a ticket, not just a dedicated AC
+   * field. Many stories (e.g. RE-11256) put the acceptance criteria, behavioural
+   * "Case N:" scenarios and grooming notes inside the description prose — none of
+   * which reached coverage before, so scenarios like a one-time migration went
+   * silently untested. Returns a de-duplicated array of requirement strings that
+   * feeds mapAcceptanceCriteria exactly like AC items.
+   */
+  static extractRequirementItems(ticketData) {
+    const t = ticketData || {};
+    const out = [];
+    const seen = new Set();
+    const add = (line) => {
+      const item = String(line || '').trim();
+      if (!item) return;
+      if (item.replace(/[^a-z0-9]/gi, '').length < 5) return; // too short to be meaningful
+      const key = item.toLowerCase().replace(/\s+/g, ' ');
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(item);
+    };
+
+    // 1. Dedicated AC custom field (if F2 detected one).
+    const acField = t.acceptanceCriteria || t.acceptance_criteria || '';
+    if (acField) this.parseAcceptanceCriteria(acField).forEach(add);
+
+    // 2. Requirement-bearing sections embedded in the description.
+    if (t.description) this._harvestDescriptionRequirements(String(t.description)).forEach(add);
+
+    return out.slice(0, 40); // hard cap so a huge description can't explode the item list
+  }
+
+  /**
+   * Section-aware requirement harvester for a (markdown-ish, post-ADF)
+   * description. Captures bullets under "Acceptance Criteria" / "Grooming notes"
+   * / "Mobile UI" headings, treats each "Case N:" block (title + bullets) as a
+   * scenario, and picks up inline "Good to have:" requirements. Non-requirement
+   * headings (Story, Description, Scope, …) end capture.
+   */
+  static _harvestDescriptionRequirements(desc) {
+    const items = [];
+    const stripEmphasis = (s) => s.replace(/\*\*/g, '').replace(/^#+\s*/, '').replace(/^\*\s+/, '').trim();
+    const isBullet = (s) => /^\s*[-*•]\s+/.test(s) || /^\s*\d+[.)]\s+/.test(s);
+    const bulletText = (s) => s.replace(/^\s*[-*•]\s+/, '').replace(/^\s*\d+[.)]\s+/, '').trim();
+
+    const reqSection = /^(acceptance criteria|grooming notes|current story grooming notes|mobile ui)\s*:?$/i;
+    const caseHeading = /^case\s*\d+\s*:?\s*(.*)$/i;
+    const inlineReq = /^(good to have|expected|note)\s*:\s*(.+)$/i;
+    const stopSection = /^(story|description|scope|background|context|design|figma|out of scope|dependencies|references?|attachments?)\s*:?.*$/i;
+
+    let capturing = false;
+    for (const raw of String(desc).split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      const bare = stripEmphasis(line);
+
+      const caseM = bare.match(caseHeading);
+      if (caseM && !isBullet(raw)) {
+        capturing = true;
+        if (caseM[1] && caseM[1].trim()) items.push(`Case: ${caseM[1].trim()}`);
+        continue;
+      }
+
+      const inlineM = bare.match(inlineReq);
+      if (inlineM && !isBullet(raw)) { capturing = false; items.push(inlineM[2].trim()); continue; }
+
+      if (reqSection.test(bare) && !isBullet(raw)) { capturing = true; continue; }
+      if (stopSection.test(bare) && !isBullet(raw)) { capturing = false; continue; }
+
+      // Any other heading-looking line (short, ends with ':' or fully bold) ends capture.
+      const looksHeading = !isBullet(raw) && ((/:$/.test(bare) && bare.length < 60) || /^\*\*.+\*\*$/.test(line));
+      if (looksHeading) { capturing = false; continue; }
+
+      if (capturing && isBullet(raw)) items.push(bulletText(raw));
+    }
+    return items;
+  }
+
+  /**
+   * F5 + G4: map accepted tests to acceptance-criteria items so we can assert
+   * every AC is exercised (the core "full coverage for a ticket" promise).
+   *
+   * An AC counts as covered when EITHER signal clears its threshold:
+   *   - token recall: fraction of the AC's significant tokens present in a test
+   *     (precise for shared vocabulary), OR
+   *   - semantic similarity (G4): cosine of offline embeddings, which catches a
+   *     criterion covered by a differently-worded test (e.g. "migration names
+   *     chat from first question" vs a test titled "existing chat auto-named").
+   * Embeddings are optional/injected so this stays testable and degrades to pure
+   * token recall when `Embeddings` is unavailable.
+   */
+  static mapAcceptanceCriteria(testCases, acItems, opts = {}) {
+    const threshold = opts.threshold ?? 0.4;
+    // NOTE (G4): the default embedder (embeddings.js) is offline feature-hashed
+    // TF, which captures morphology more than meaning — genuinely related pairs
+    // only reach ~0.4 cosine, so 0.62 is deliberately conservative: the semantic
+    // path stays inert (no false coverage) until a stronger embedding model is
+    // injected via opts.embeddings, at which point it starts catching
+    // differently-worded coverage. Token recall remains the primary signal.
+    const embThreshold = opts.embThreshold ?? 0.62;
+    const items = (acItems || []).filter(Boolean);
+    if (!items.length) return { applicable: false, total: 0, covered: 0, uncovered: [], percentage: 100, details: [] };
+
+    const tests = testCases || [];
+    const testText = (tc) => [tc.title, tc.description, tc.expected_result, tc.test_data,
+      ...(Array.isArray(tc.steps) ? tc.steps : [])].filter(Boolean).join(' ');
+    const testTokenSets = tests.map(tc => new Set(acTokens(testText(tc))));
+
+    // Semantic layer (G4): precompute one embedding per test when available.
+    const EMB = opts.embeddings || (typeof self !== 'undefined' && self.Embeddings) || null;
+    const canEmbed = EMB && typeof EMB.embed === 'function' && typeof EMB.cosine === 'function';
+    const testVecs = canEmbed ? tests.map(tc => EMB.embed(testText(tc))) : null;
+
+    const details = items.map((text, index) => {
+      const itemTokens = acTokens(text);
+      if (!itemTokens.length) return { index, text, covered: true, score: 1, coveredBy: null, matchType: 'trivial' };
+
+      let bestTok = 0, bestTokTc = null;
+      testTokenSets.forEach((set, i) => {
+        const hit = itemTokens.filter(t => set.has(t)).length / itemTokens.length;
+        if (hit > bestTok) { bestTok = hit; bestTokTc = tests[i]; }
+      });
+
+      let bestEmb = 0, bestEmbTc = null;
+      if (canEmbed) {
+        const itemVec = EMB.embed(text);
+        testVecs.forEach((vec, i) => {
+          const sim = EMB.cosine(itemVec, vec);
+          if (sim > bestEmb) { bestEmb = sim; bestEmbTc = tests[i]; }
+        });
+      }
+
+      const coveredByToken = bestTok >= threshold;
+      const coveredByEmb = bestEmb >= embThreshold;
+      const covered = coveredByToken || coveredByEmb;
+      // Attribute to whichever signal is stronger relative to its own threshold.
+      const tokMargin = bestTok - threshold, embMargin = bestEmb - embThreshold;
+      const useEmb = coveredByEmb && (!coveredByToken || embMargin > tokMargin);
+      const bestTc = useEmb ? bestEmbTc : bestTokTc;
+      return {
+        index, text,
+        covered,
+        score: Math.round(Math.max(bestTok, bestEmb) * 100) / 100,
+        matchType: covered ? (useEmb ? 'semantic' : 'token') : 'none',
+        coveredBy: covered ? (bestTc && (bestTc.id || bestTc.title)) || null : null
+      };
+    });
+
+    const covered = details.filter(d => d.covered).length;
+    return {
+      applicable: true,
+      total: items.length,
+      covered,
+      uncovered: details.filter(d => !d.covered).map(d => ({ index: d.index, text: d.text })),
+      percentage: Math.round((covered / items.length) * 100),
+      details
+    };
+  }
+
+  /**
    * Build inventory of all features from knowledge graph
    */
   buildFeatureInventory() {
-    const inventory = {
-      forms: [],
-      apis: [],
-      buttons: [],
-      pages: []
+    const inventory = { forms: [], apis: [], buttons: [], pages: [] };
+    const kg = this.knowledgeGraph;
+    if (!kg) return inventory;
+
+    // F8: previously this read ONLY the aggregated top-level .forms/.apis/.features
+    // and object-keyed .pages. On the raw-array KG shape (pages:[{features,apis}])
+    // — which GroundedVerifier fully supports — the inventory came back empty, so
+    // coverage silently reported 0%/N/A and the gap-feedback loop went blind. Now
+    // both shapes are flattened, with de-duplication so shape-(b) graphs that carry
+    // both top-level and per-page collections aren't double-counted.
+    const seenForm = new Set(), seenApi = new Set(), seenBtn = new Set(), seenPage = new Set();
+
+    const pushForm = (form, url) => {
+      if (!form || typeof form !== 'object') return;
+      const id = form.id || form.action || 'unknown';
+      const u = form.url || url || '';
+      const key = `${id}|${u}`;
+      if (seenForm.has(key)) return; seenForm.add(key);
+      inventory.forms.push({
+        id, url: u,
+        fields: (form.inputs || form.fields || []).map(inp => (inp && (inp.name || inp.id)) || inp).filter(Boolean)
+      });
+    };
+    const pushApi = (api) => {
+      if (!api || typeof api !== 'object') return;
+      const endpoint = api.endpoint || '';
+      const u = api.url || '';
+      if (!endpoint && !u) return;
+      const method = (api.method || 'GET');
+      const key = `${method} ${endpoint || u}`;
+      if (seenApi.has(key)) return; seenApi.add(key);
+      inventory.apis.push({ method, endpoint, url: u });
+    };
+    const pushButton = (feature, url) => {
+      if (!feature || feature.type !== 'button' || !feature.text) return;
+      const u = feature.url || url || '';
+      const key = `${feature.text}|${u}`;
+      if (seenBtn.has(key)) return; seenBtn.add(key);
+      inventory.buttons.push({ text: feature.text, url: u });
+    };
+    const pushPage = (url, title) => {
+      if (!url || seenPage.has(url)) return; seenPage.add(url);
+      inventory.pages.push({ url, title: title || '' });
     };
 
-    if (!this.knowledgeGraph) {
-      return inventory;
-    }
+    // Aggregated top-level collections (shape b).
+    if (Array.isArray(kg.forms)) kg.forms.forEach(f => pushForm(f));
+    if (Array.isArray(kg.apis)) kg.apis.forEach(pushApi);
+    if (Array.isArray(kg.features)) kg.features.forEach(f => pushButton(f));
 
-    // Extract forms
-    if (this.knowledgeGraph.forms && Array.isArray(this.knowledgeGraph.forms)) {
-      this.knowledgeGraph.forms.forEach(form => {
-        inventory.forms.push({
-          id: form.id || form.action || 'unknown',
-          url: form.url || '',
-          fields: (form.inputs || []).map(inp => inp.name || inp.id).filter(Boolean)
-        });
+    // Per-page features (shape a: array; shape b: object keyed by url).
+    const ingestPage = (page, url) => {
+      if (!page || typeof page !== 'object') return;
+      const u = url || page.url || '';
+      pushPage(u, (page.metadata && page.metadata.title) || page.title || '');
+      const feats = Array.isArray(page.features) ? page.features : [];
+      feats.forEach(feat => {
+        if (!feat || typeof feat !== 'object') return;
+        if (feat.type === 'form') pushForm(feat, u);
+        else pushButton(feat, u);
       });
-    }
-
-    // Extract APIs
-    if (this.knowledgeGraph.apis && Array.isArray(this.knowledgeGraph.apis)) {
-      this.knowledgeGraph.apis.forEach(api => {
-        inventory.apis.push({
-          method: api.method || 'GET',
-          endpoint: api.endpoint || '',
-          url: api.url || ''
-        });
-      });
-    }
-
-    // Extract buttons
-    if (this.knowledgeGraph.features && Array.isArray(this.knowledgeGraph.features)) {
-      this.knowledgeGraph.features.forEach(feature => {
-        if (feature.type === 'button' && feature.text) {
-          inventory.buttons.push({
-            text: feature.text,
-            url: feature.url || ''
-          });
-        }
-      });
-    }
-
-    // Extract pages
-    if (this.knowledgeGraph.pages && typeof this.knowledgeGraph.pages === 'object') {
-      Object.keys(this.knowledgeGraph.pages).forEach(url => {
-        const page = this.knowledgeGraph.pages[url];
-        inventory.pages.push({
-          url: url,
-          title: page.title || ''
-        });
-      });
+      (Array.isArray(page.apis) ? page.apis : []).forEach(pushApi);
+    };
+    if (Array.isArray(kg.pages)) kg.pages.forEach(p => ingestPage(p, p && p.url));
+    else if (kg.pages && typeof kg.pages === 'object') {
+      Object.keys(kg.pages).forEach(url => ingestPage(kg.pages[url], url));
     }
 
     return inventory;
@@ -551,6 +732,15 @@ class CoverageMapper {
 
     return lines.join('\n');
   }
+}
+
+// Significant-token extractor for AC↔test matching (F5): lowercase words ≥3
+// chars, minus generic function/QA-boilerplate words (user/system/ensure/able…)
+// that appear in nearly every AC and test and so carry no discriminating signal.
+const AC_STOPWORDS = new Set(['the','a','an','and','or','but','if','then','when','while','for','of','to','in','on','at','by','with','from','as','is','are','be','been','was','were','will','would','should','shall','can','could','may','might','must','that','this','these','those','it','its','their','they','user','users','able','ensure','system','not','no','yes','all','any','each','via','into','onto']);
+function acTokens(text) {
+  const words = String(text || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [];
+  return [...new Set(words.filter(w => !AC_STOPWORDS.has(w)))];
 }
 
 // Export for use in other modules

@@ -8,31 +8,36 @@
 
 ## 📋 Overview
 
-QAtalyst is a production-ready Chrome extension that revolutionizes test case generation for Jira tickets using advanced AI technology. It features a sophisticated **8-agent system**, **genetic algorithm optimization**, and **external integrations** to create comprehensive, high-quality test cases directly within your Jira workflow.
+QAtalyst is a Chrome extension that generates grounded, full-coverage test cases for Jira tickets. Its core is an **agentic planner loop**: one orchestrating LLM decides each step (search the crawled app, inspect an element, check coverage, propose tests, query Jira history, finish), and every proposed test must pass an **acceptance gate** — grounding against the real crawled app, relevance to the ticket, and de-duplication — before it counts. Coverage is re-measured each round and fed back into the next decision.
 
 ### ✨ Key Highlights
 
-- **🧬 8-Agent Multi-Agent System**: Specialized agents for different test types (NEW: Context Analysis Agent)
-- **🔄 Response Streaming**: Real-time AI output with stop button
-- **🧬 Evolutionary Optimization**: Genetic algorithm for +50-150% coverage
-- **🎯 Enhanced Features**: Gap analysis, complexity scaling, context-aware generation
-- **🔗 External Integrations**: Confluence, Figma, Google Docs auto-fetch
-- **🤖 3 AI Providers**: OpenAI (gpt-4.1), Claude (3.5 Sonnet), Gemini (2.0 Flash)
-- **📊 Smart Test Count**: Configurable 20-100 tests with auto-scaling
+- **🧭 Agentic Planner Loop**: observe → decide → act over a tool registry, with a deterministic fallback controller that guarantees forward progress even if the LLM misbehaves.
+- **🛡️ Grounded Acceptance Gate**: tests that reference UI elements/fields/APIs not found in the crawled knowledge graph are repaired or rejected — not hallucinated. Vague, zero-reference tests are rejected when crawl data exists.
+- **🎯 Coverage Feedback + AC Mapping**: coverage of real app features AND of the ticket's acceptance criteria drives generation and the stop condition.
+- **🔁 Regression Support**: past bugs mined from Jira ground regression tests; optional de-dupe against an existing TestRail suite.
+- **🔄 Response Streaming**: real-time AI output with a stop button; truncated output is salvaged rather than discarded.
+- **🔗 External Integrations**: Confluence, Figma, Google Docs auto-fetch.
+- **🤖 Multiple AI Providers**: OpenAI, Claude, Gemini, and AWS Bedrock.
+- **📊 Smart Test Count**: configurable 20-100 tests, dynamically distributed by ticket shape.
+
+> **Note (v13):** earlier versions described an "8-agent pipeline" and a "genetic algorithm" (`agents.js`, `evolution.js`). Those were removed in v13.2 and replaced by the agentic planner + acceptance gate documented here and in `chrome-extension/AGENTIC.md`. This README reflects the current design.
 
 ## 🏗️ Architecture
 
 **Pure Chrome Extension** - No backend server required!
 
 ### Components
-- **Content Script** (`content.js`): Injects QAtalyst panel into Jira pages
-- **Background Service Worker** (`background.js`): Direct API calls to AI providers
-- **Multi-Agent System** (`agents.js`): 8 specialized AI agents (Context Analysis, Requirement Analysis, Positive, Negative, Edge, Regression, Integration, Review)
-- **Evolutionary Optimizer** (`evolution.js`): Genetic algorithm for test enhancement
-- **External Integrations** (`integrations.js`): Confluence, Figma, Google Docs
-- **Enhanced Features** (`enhancements.js`): Gap analysis, complexity scaling
-- **Popup Interface** (`popup.html`): Quick settings configuration
-- **Options Page** (`options.html`): Advanced settings with 5 tabs
+- **Content Script** (`content.js`): Injects the QAtalyst panel into Jira pages, fetches ticket data (description, comments, linked issues, acceptance criteria, attachments).
+- **Background Service Worker** (`background.js`): Orchestrates generation and makes direct API calls to AI providers.
+- **Agentic Planner** (`agent-loop.js`, `agent-tools.js`): the observe→decide→act loop and its tool registry.
+- **Acceptance Gate** (`acceptance-gate.js`): grounding + relevance + dedup choke-point.
+- **Grounded Verifier** (`grounded-verifier.js`): matches test references against real crawled entities; repairs near-misses.
+- **Coverage Mapper** (`coverage-mapper.js`): maps tests to app features and acceptance criteria, surfaces gaps.
+- **Crawler** (`crawler.js`, `dom-extractor.js`, `network-monitor.js`): builds the knowledge graph of the app under test.
+- **Historical Mining** (`historical-mining.js`): Jira search for past bugs to ground regression tests.
+- **External Integrations** (`integrations.js`): Confluence, Figma, Google Docs, TestRail, Xray, Zephyr, Qmetry.
+- **Popup Interface** (`popup.html`) and **Options Page** (`options.html`): configuration.
 
 ### Why No Backend?
 - ✅ **Direct API Calls**: Extension calls OpenAI/Claude/Gemini directly
@@ -86,40 +91,35 @@ chrome://extensions/
 3. **Click "Analyse Requirements"** → AI extracts requirements
 4. **Click "Generate Test Scope"** → Creates test plan
 5. **Click "Generate Test Cases"** → Generates 20-100 tests
-6. **Watch progress**:
-   - Agent 1/7: Requirement Analysis...
-   - Agent 2/7: Positive Tests...
-   - Enhancements: Gap Analysis...
-   - Evolution: Generation 3/5...
+6. **Watch progress**: the planner reports each step (searching the app, checking coverage, proposing a category, etc.) and a running accepted-test count.
 7. **Review results** → Add to Jira
 
-## 🧬 Multi-Agent System (Phase 2)
+## 🧭 Agentic Planner (v13)
 
-### 7 Specialized AI Agents
+Instead of a fixed multi-agent pipeline, one planner LLM runs an **observe → decide → act** loop over a tool registry:
 
-| Agent | Purpose | Test Distribution |
-|-------|---------|-------------------|
-| **1. Requirement Analysis Agent** | Extracts & structures requirements | - |
-| **2. Positive Test Agent** | Happy path & valid inputs | 40% |
-| **3. Negative Test Agent** | Error handling & validation | 30% |
-| **4. Edge Case Agent** | Boundary conditions & limits | 20% |
-| **5. Regression Test Agent** | Existing functionality checks | 5% |
-| **6. Integration Test Agent** | API & system integration | 5% |
-| **7. Review Agent** | Quality check & gap analysis | - |
+| Tool | Purpose |
+|------|---------|
+| `bm25_search` | Find the crawled pages/features most relevant to the ticket |
+| `inspect_element` | Check whether a selector / field / button exists in the crawled app |
+| `run_coverage_check` | Map accepted tests to app features **and acceptance criteria**, return gaps |
+| `propose_tests` | Generate grounded candidate tests for a category, focused on a gap |
+| `query_jira` | Search Jira for past bugs to ground regression tests |
+| `fetch_confluence` | Pull extra requirement context |
+| `finish` | Stop when further tests would be redundant |
 
-### How It Works
+**How it works**
 
-1. **Sequential Execution**: Agents run one after another
-2. **Context Sharing**: Later agents build on earlier results
-3. **Progress Tracking**: Real-time UI updates per agent
-4. **Specialized Prompts**: Each agent has domain-specific instructions
-5. **Combined Results**: All tests merged into final suite
+1. **Grounding-first**: every proposed test passes the acceptance gate (grounding + relevance + dedup) before it counts.
+2. **Coverage feedback**: coverage of app features and acceptance criteria is re-measured each round and steers the next proposal; the loop won't finish while an acceptance criterion is uncovered and budget remains.
+3. **Deterministic fallback**: if the LLM emits malformed output or stalls, a deterministic controller takes the next sensible action, guaranteeing forward progress.
+4. **Dynamic distribution**: category mix (Positive/Negative/Edge/Regression/Integration) is derived from the ticket shape rather than a fixed split.
 
-### Enable/Disable Agents
+Category distribution is configured in **Options → Categories**.
 
-Configure in **Options → Agent Configuration**
+## 🎯 All Features
 
-## 🎯 All Features (5 Phases Implemented)
+> Historical note: the sections below were written around an earlier "5-phase / multi-agent / genetic" design. The generation engine is now the agentic planner described above (see `chrome-extension/AGENTIC.md` for the authoritative design); treat any "agent"/"evolution" phrasing below as historical.
 
 ### Phase 1: Foundation
 - ✅ **3 AI Providers**: OpenAI (gpt-4.1, GPT-4 Turbo), Claude (3.5 Sonnet, 3 Opus), Gemini (2.0 Flash, 1.5 Pro)

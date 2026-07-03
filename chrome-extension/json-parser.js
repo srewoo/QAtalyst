@@ -14,6 +14,12 @@
  * including truncated responses from LLMs.
  */
 function parseRobustJSON(jsonString) {
+  // F16: strip a ```json … ``` markdown fence the model sometimes wraps output
+  // in, so we don't rely solely on the greedy last-resort regex to recover it.
+  if (typeof jsonString === 'string') {
+    const fence = jsonString.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence && fence[1].trim()) jsonString = fence[1].trim();
+  }
   // Try direct parse first
   try {
     return JSON.parse(jsonString);

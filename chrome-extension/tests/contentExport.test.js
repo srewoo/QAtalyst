@@ -5,9 +5,12 @@
 const { buildTestCasesCSV, buildTestCasesClipboardText } = require('../content-export.js');
 
 describe('buildTestCasesCSV', () => {
+  // F27: CSV now carries Source / Historical Reference / Rationale columns.
+  const HEADER = 'ID,Title,Category,Priority,Description,Expected Result,Source,Historical Reference,Rationale';
+
   test('emits the fixed header row first', () => {
     const csv = buildTestCasesCSV([]);
-    expect(csv).toBe('ID,Title,Category,Priority,Description,Expected Result');
+    expect(csv).toBe(HEADER);
   });
 
   test('one quoted row per test case in order', () => {
@@ -17,15 +20,15 @@ describe('buildTestCasesCSV', () => {
     ]);
     const lines = csv.split('\n');
     expect(lines).toHaveLength(3);
-    expect(lines[1]).toBe('"TC-1","Login","Positive","P0","d1","ok"');
-    expect(lines[2]).toBe('"TC-2","Logout","Negative","P1","d2","bye"');
+    expect(lines[1]).toBe('"TC-1","Login","Positive","P0","d1","ok","","",""');
+    expect(lines[2]).toBe('"TC-2","Logout","Negative","P1","d2","bye","","",""');
   });
 
   test('escapes embedded double-quotes by doubling them', () => {
     const csv = buildTestCasesCSV([
       { id: 'TC-1', title: 'Click "Save" button', category: 'Positive', priority: 'P0', description: 'has "quotes"', expected_result: 'saved' },
     ]);
-    expect(csv.split('\n')[1]).toBe('"TC-1","Click ""Save"" button","Positive","P0","has ""quotes""","saved"');
+    expect(csv.split('\n')[1]).toBe('"TC-1","Click ""Save"" button","Positive","P0","has ""quotes""","saved","","",""');
   });
 
   test('commas inside fields stay inside the quoted cell (not new columns)', () => {
@@ -33,7 +36,7 @@ describe('buildTestCasesCSV', () => {
       { id: 'TC-1', title: 'a, b, c', category: 'Positive', priority: 'P0', description: 'x,y', expected_result: 'p,q' },
     ]);
     const row = csv.split('\n')[1];
-    expect(row).toBe('"TC-1","a, b, c","Positive","P0","x,y","p,q"');
+    expect(row).toBe('"TC-1","a, b, c","Positive","P0","x,y","p,q","","",""');
   });
 
   test('newlines inside a field are preserved within the quoted cell', () => {
@@ -49,11 +52,36 @@ describe('buildTestCasesCSV', () => {
     const csv = buildTestCasesCSV([
       { id: 'TC-1', title: 'T', expectedResult: 'via camelCase' },
     ]);
-    expect(csv.split('\n')[1]).toBe('"TC-1","T","","","","via camelCase"');
+    expect(csv.split('\n')[1]).toBe('"TC-1","T","","","","via camelCase","","",""');
+  });
+
+  test('carries regression provenance (F27)', () => {
+    const csv = buildTestCasesCSV([
+      { id: 'TC-9', title: 'Reset still works', category: 'Regression', priority: 'P1', expected_result: 'ok', historicalReference: 'PROJ-42', rationale: 'guards password reset regression' },
+    ]);
+    const row = csv.split('\n')[1];
+    expect(row).toContain('"regression"');
+    expect(row).toContain('"PROJ-42"');
+    expect(row).toContain('"guards password reset regression"');
+  });
+
+  test('infers regression source from _proposedFor when source absent (F27)', () => {
+    const csv = buildTestCasesCSV([
+      { id: 'TC-9', title: 'x', category: 'Regression', _proposedFor: { category: 'Regression' } },
+    ]);
+    expect(csv.split('\n')[1]).toContain('"regression"');
   });
 
   test('handles empty / null input', () => {
-    expect(buildTestCasesCSV(null)).toBe('ID,Title,Category,Priority,Description,Expected Result');
+    expect(buildTestCasesCSV(null)).toBe(HEADER);
+  });
+
+  test('stringifies object fields instead of printing [object Object]', () => {
+    const csv = buildTestCasesCSV([
+      { id: 'TC-1', title: 'T', description: { note: 'obj desc' }, expected_result: 'ok' },
+    ]);
+    expect(csv).not.toContain('[object Object]');
+    expect(csv).toContain('obj desc');
   });
 });
 
@@ -120,5 +148,17 @@ describe('buildTestCasesClipboardText', () => {
   test('handles empty input (header only, no filter block)', () => {
     const txt = buildTestCasesClipboardText([]);
     expect(txt).toBe('QAtalyst Test Cases\n===================\n\n');
+  });
+
+  test('stringifies object test_data/preconditions instead of [object Object]', () => {
+    const txt = buildTestCasesClipboardText([{
+      id: 'TC-1', title: 'T', category: 'Edge', priority: 'P1',
+      preconditions: { loggedIn: true },
+      test_data: { user: 'alice', sessions: 3 },
+      expected_result: 'ok',
+    }]);
+    expect(txt).not.toContain('[object Object]');
+    expect(txt).toContain('alice');
+    expect(txt).toContain('loggedIn');
   });
 });

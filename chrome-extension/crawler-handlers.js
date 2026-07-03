@@ -301,8 +301,13 @@ async function handleLoadEmbeddings(data) {
       if (bm25) {
         // BM25 semantic relevance scoring
         const queryText = `${data.ticketData.summary || ''} ${data.ticketData.description || ''}`;
-        const topResults = bm25.search(queryText, MAX_PAGES_TO_SEND);
-        console.log(`[LOAD GRAPH] 🎯 BM25 top match: "${topResults[0]?.url}" (score ${topResults[0]?.score?.toFixed(2)})`);
+        // F17: keep ONLY pages that genuinely matched the ticket (score > 0).
+        // The old code padded up to 30 with arbitrary insertion-order pages, so a
+        // ticket with 4 relevant pages shipped with 26 pages of noise that diluted
+        // grounding. We now send only what matched — fewer, cleaner — and report
+        // the count so the host can warn when relevance is thin (feeds F21).
+        const topResults = bm25.search(queryText, MAX_PAGES_TO_SEND).filter(r => r.score > 0);
+        console.log(`[LOAD GRAPH] 🎯 BM25 relevant pages: ${topResults.length} (top "${topResults[0]?.url}" score ${topResults[0]?.score?.toFixed(2)})`);
 
         const allPages = embeddingData.knowledgeGraph.pages;
         const filteredPages = {};
@@ -310,21 +315,17 @@ async function handleLoadEmbeddings(data) {
           if (allPages[url]) filteredPages[url] = GraphFilter.stripPageData(allPages[url]);
         }
 
-        // Pad to MAX_PAGES_TO_SEND with un-matched pages if BM25 returned fewer
-        if (Object.keys(filteredPages).length < MAX_PAGES_TO_SEND) {
-          const remaining = Object.keys(allPages)
-            .filter(u => !filteredPages[u])
-            .slice(0, MAX_PAGES_TO_SEND - Object.keys(filteredPages).length);
-          for (const url of remaining) {
-            filteredPages[url] = GraphFilter.stripPageData(allPages[url]);
-          }
-        }
-
+        const relevantCount = Object.keys(filteredPages).length;
         knowledgeGraphToSend = {
           ...embeddingData.knowledgeGraph,
           pages: filteredPages,
           filteredForTransfer: true,
-          transferPageCount: Object.keys(filteredPages).length,
+          transferPageCount: relevantCount,
+          relevantPageCount: relevantCount,
+          // F21: surface thin/absent relevance so the UI can tell the user the
+          // suite was generated against little or no ticket-relevant crawl data.
+          lowRelevance: relevantCount < 3,
+          noRelevantPages: relevantCount === 0,
           filterMethod: 'bm25',
           filterQuery: queryText.slice(0, 120),
         };
@@ -358,6 +359,21 @@ async function handleLoadEmbeddings(data) {
       wasFiltered = true;
     }
 
+    // F19: compute knowledge-graph staleness so the UI can warn that tests are
+    // being grounded against a crawl that may no longer match the live app. TTL
+    // is configurable (kgStalenessDays, default 14). crawledAt was previously
+    // only displayed, never compared to now.
+    const staleAfterDays = Number(data.kgStalenessDays) > 0 ? Number(data.kgStalenessDays) : 14;
+    let stalenessDays = null, stale = false;
+    if (embeddingData.crawledAt) {
+      const ageMs = Date.now() - new Date(embeddingData.crawledAt).getTime();
+      if (Number.isFinite(ageMs) && ageMs >= 0) {
+        stalenessDays = Math.floor(ageMs / 86400000);
+        stale = stalenessDays > staleAfterDays;
+      }
+    }
+    if (stale) console.log(`[LOAD GRAPH] ⚠️ Knowledge graph is ${stalenessDays}d old (> ${staleAfterDays}d) — may not match the live app`);
+
     // Send filtered knowledge graph to content script
     // ContextAnalysisAgent will run in orchestrator (every time tests are generated)
     console.log(`[LOAD GRAPH] 📨 Sending filtered knowledge graph to content script`);
@@ -369,6 +385,9 @@ async function handleLoadEmbeddings(data) {
       result: {
         appUrl: embeddingData.appUrl,
         crawledAt: embeddingData.crawledAt,
+        stalenessDays,           // F19
+        stale,                   // F19
+        staleAfterDays,          // F19
         pageCount: fullPageCount,
         transferPageCount: wasFiltered ? MAX_PAGES_TO_SEND : fullPageCount,
         knowledgeGraph: knowledgeGraphToSend, // Send full filtered graph (will be analyzed by orchestrator)

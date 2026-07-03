@@ -1644,6 +1644,36 @@ class TestRailIntegration {
   }
 
   /**
+   * F14: fetch existing test cases for this project so generation can dedupe
+   * against them (avoid re-proposing what the team already maintains). Returns
+   * [{ id, title }]. Best-effort: returns [] on any error or missing config.
+   * Handles both the paginated ({cases:[...]}) and legacy (array) responses.
+   */
+  async getCases(suiteId) {
+    if (!this.baseUrl || !this.projectId) return [];
+    try {
+      let url = `${this.baseUrl}/index.php?/api/v2/get_cases/${this.projectId}`;
+      if (suiteId) url += `&suite_id=${suiteId}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const response = await fetch(url, { method: 'GET', headers: this.getAuthHeaders(), signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        console.warn(`⚠️ TestRail get_cases failed: HTTP ${response.status}`);
+        return [];
+      }
+      const data = await response.json();
+      const cases = Array.isArray(data) ? data : (Array.isArray(data.cases) ? data.cases : []);
+      return cases
+        .map(c => ({ id: c.id ? `C${c.id}` : '', title: c.title || '', description: c.custom_preconds || '' }))
+        .filter(c => c.title);
+    } catch (e) {
+      console.warn('⚠️ TestRail get_cases error:', e.message);
+      return [];
+    }
+  }
+
+  /**
    * Test connection to TestRail with simple API call
    * Uses direct fetch (no retries, no circuit breaker) to avoid counting as multiple auth attempts
    */

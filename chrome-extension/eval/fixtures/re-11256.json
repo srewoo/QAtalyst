@@ -1,0 +1,48 @@
+{
+  "key": "RE-11256",
+  "ticket": {
+    "summary": "Multi-Chat / Multi-Thread: View List of Chat Sessions",
+    "description": "**Story:**\nAs a Seller Copilot User, I want to view a list of my chat sessions in a left-hand navigation panel.\n\n**Description:**\nWhen a user opens the Seller Copilot interface, a sidebar shows a chronological list of chat sessions.\n\n**Case 1:** User already has an active chat prior to this feature\n* Chat name should be created behind the scene using the first question - trimmed question\n* When they access chat history only one recent chat and that highlighted as active.\n\n**Case 2:** First time user or old chat session is deleted\n* By default user lands in New chat.\n* In history pane, it shows an empty state with an option to start a new chat.\n\nGood to have: On posting a follow up question, the chat should move up the list immediately.\n\n**Acceptance Criteria:**\n* The left-hand navigation panel is visible by default when the Copilot interface is opened.\n* The panel displays a list of chat sessions, each showing its name and last activity.\n* The current active chat session is visually highlighted in the list.\n* The chat session list is responsive on various mobile screen sizes.\n\n**Grooming notes:**\n* Upon rename, the chat should move to the top of the list.\n* Pagination of chat list (~20).\n* On hover, full chat name should be visible.\n\n**Mobile UI**\n* On click of hamburger icon, mobile sends an open.sidebar event."
+  },
+  "knowledgeGraph": {
+    "appUrl": "https://copilot.example.com",
+    "pages": [
+      {
+        "url": "https://copilot.example.com/copilot",
+        "title": "Seller Copilot",
+        "features": [
+          { "type": "button", "text": "New Chat" },
+          { "type": "button", "text": "Rename" },
+          { "type": "button", "text": "Delete" },
+          { "type": "button", "text": "Collapse" },
+          { "type": "form", "inputs": [{ "name": "chatName" }] }
+        ],
+        "apis": [
+          { "method": "GET", "endpoint": "/api/chat/sessions" },
+          { "method": "PATCH", "endpoint": "/api/chat/sessions/{id}" }
+        ]
+      }
+    ]
+  },
+  "generatedSuite": [
+    { "category": "Positive", "title": "Sidebar shows chronological chat session list", "steps": ["Open https://copilot.example.com/copilot", "Observe the sidebar"], "expected_result": "The GET /api/chat/sessions list is shown with each session name and last activity" },
+    { "category": "Positive", "title": "Active chat session is highlighted", "steps": ["Open https://copilot.example.com/copilot", "Click \"New Chat\" then select an existing session"], "expected_result": "The active chat session is visually highlighted in the list" },
+    { "category": "Positive", "title": "Migration names existing chat from first question", "steps": ["Open https://copilot.example.com/copilot as a user with a pre-existing chat"], "expected_result": "The chat name is created from the trimmed first question and only one recent chat is highlighted as active" },
+    { "category": "Negative", "title": "First-time user sees empty state with new chat option", "steps": ["Open https://copilot.example.com/copilot as a first-time user", "Click \"New Chat\""], "expected_result": "An empty state with an option to start a new chat is shown" },
+    { "category": "Edge", "title": "Chat list paginates after 20 sessions", "steps": ["Open https://copilot.example.com/copilot with 21 sessions", "Scroll the chat session list to trigger GET /api/chat/sessions"], "expected_result": "Additional sessions load via infinite scroll after the first 20" },
+    { "category": "Edge", "title": "Full chat name visible on hover", "steps": ["Open https://copilot.example.com/copilot", "Hover over a truncated chat session name"], "expected_result": "A tooltip shows the full chat name" },
+    { "category": "Edge", "title": "Chat session list responsive on mobile", "steps": ["Open https://copilot.example.com/copilot in a mobile viewport"], "expected_result": "The chat session list is responsive and usable on small screens" },
+    { "category": "Regression", "title": "Rename moves chat to top of list", "steps": ["Click \"Rename\" on a chat", "Confirm the new name"], "expected_result": "PATCH /api/chat/sessions/{id} succeeds and the renamed chat moves to the top with the new name", "historicalReference": "", "rationale": "Guards chat ordering and rename update logic" },
+    { "category": "Regression", "title": "Follow-up question moves chat up the list", "steps": ["Open https://copilot.example.com/copilot", "Post a follow up question in a non-top chat"], "expected_result": "The chat moves up the list immediately reflecting recent activity", "historicalReference": "", "rationale": "Guards recent-activity reordering" }
+  ],
+  "expertSuite": [
+    { "title": "Sidebar displays chronological chat session list with name and last activity" },
+    { "title": "Active session highlighted" },
+    { "title": "Existing chat migrated: name from first question, single active chat" },
+    { "title": "First-time user empty state with start-new-chat option" },
+    { "title": "Pagination after 20 sessions" },
+    { "title": "Hover shows full chat name" },
+    { "title": "Responsive on mobile" },
+    { "title": "Rename moves chat to top" }
+  ]
+}

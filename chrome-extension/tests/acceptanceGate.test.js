@@ -62,6 +62,37 @@ describe('AcceptanceGate dedup', () => {
     }]);
     expect(r.accepted.length).toBe(1);
   });
+
+  test('F14: rejects a test already covered by the existing suite', () => {
+    const existingTests = [{
+      id: 'C500', title: 'Successful login with correct credentials',
+      description: 'User signs in with valid username and password',
+      steps: ['Enter a valid value in the username field', 'Enter a valid value in the password field', 'Click "Sign In"'],
+      expected_result: 'The user is logged in'
+    }];
+    const g = gate({ existingTests });
+    const r = g.admit([{
+      id: 'TC-1', title: 'Valid login succeeds',
+      steps: ['Type a valid value in the username field', 'Type a valid value in the password field', 'Click "Sign In"'],
+      expected_result: 'User is logged in'
+    }]);
+    expect(r.accepted.length).toBe(0);
+    expect(g.stats.duplicateExisting).toBeGreaterThanOrEqual(1);
+    expect(g.rejected.some(x => /existing suite/.test(x.reason))).toBe(true);
+  });
+
+  test('F14: existing-suite tests are never emitted as generated', () => {
+    const existingTests = [{ id: 'C1', title: 'Some old case', steps: ['Click "Sign In"'], expected_result: 'ok' }];
+    const g = gate({ existingTests });
+    const r = g.admit([{
+      id: 'TC-9', title: 'Account locks after 5 failed attempts',
+      steps: ['Enter a value in the username field', 'Enter a wrong value in the password field'],
+      expected_result: 'Account is locked'
+    }]);
+    // the new distinct test is accepted; the existing case is not in the accepted set
+    expect(r.accepted.length).toBe(1);
+    expect(g.getAccepted().some(t => t.id === 'C1')).toBe(false);
+  });
 });
 
 describe('AcceptanceGate grounding', () => {

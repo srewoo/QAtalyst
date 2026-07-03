@@ -75,7 +75,12 @@ class KnowledgeGraphMerger {
    * Merge two knowledge graphs
    */
   async mergeTwoGraphs(graph1, graph2) {
+    // F33: spread both graphs first so top-level collections (routes, sitemap,
+    // errorPatterns, top-level apis/forms, etc.) aren't dropped, then override
+    // with the explicitly-merged fields below.
     const merged = {
+      ...graph1,
+      ...graph2,
       appUrl: graph1.appUrl, // Keep primary URL
       alternateUrls: [graph1.appUrl, graph2.appUrl],
       pages: {},
@@ -276,7 +281,14 @@ class KnowledgeGraphMerger {
    * Merge two pages intelligently
    */
   mergePages(page1, page2, context) {
+    // F33: previously returned ONLY {depth, metadata, features, apis, sources},
+    // silently dropping every other page field (textContent, forms, buttons,
+    // tables, lists, errorPatterns, network schema…). Spread both pages first so
+    // unknown/extra fields survive, then override with the intelligently-merged
+    // ones. page2's own fields win ties before the explicit merges below.
     const merged = {
+      ...page1,
+      ...page2,
       depth: Math.min(page1.depth || 0, page2.depth || 0),
       metadata: this.mergeMetadata(page1.metadata, page2.metadata, context),
       features: this.mergeFeatures(page1.features, page2.features, context),

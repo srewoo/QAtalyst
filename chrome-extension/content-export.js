@@ -14,6 +14,22 @@
   'use strict';
 
   /**
+   * Render any test-case field to a readable string. The LLM sometimes returns
+   * test_data (or preconditions) as an object/array; naive interpolation printed
+   * "[object Object]" in every export. Objects are JSON-stringified, arrays are
+   * joined, primitives pass through.
+   */
+  function toDisplayString(v) {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    if (Array.isArray(v)) return v.map(toDisplayString).join('; ');
+    if (typeof v === 'object') {
+      try { return JSON.stringify(v); } catch (_) { return String(v); }
+    }
+    return String(v);
+  }
+
+  /**
    * Build the full CSV document (header row + one row per test case) for a list
    * of test cases. Fields are wrapped in double-quotes and embedded quotes are
    * escaped by doubling, so commas / quotes / newlines inside fields are safe.
@@ -23,24 +39,25 @@
    * @returns {string} CSV text
    */
   function buildTestCasesCSV(testCases) {
-    const headers = ['ID', 'Title', 'Category', 'Priority', 'Description', 'Expected Result'];
+    // F27: carry regression provenance into the export. Source + Historical
+    // Reference + Rationale columns let a reviewer see which past bug a
+    // regression test guards against; blank for non-regression tests.
+    const headers = ['ID', 'Title', 'Category', 'Priority', 'Description', 'Expected Result', 'Source', 'Historical Reference', 'Rationale'];
+    const q = (v) => `"${toDisplayString(v).replace(/"/g, '""')}"`;
 
     const rows = (testCases || []).map(tc => {
-      const id = tc.id || '';
-      const title = (tc.title || '').replace(/"/g, '""'); // Escape quotes
-      const category = tc.category || '';
-      const priority = tc.priority || '';
-      const description = (tc.description || '').replace(/"/g, '""'); // Escape quotes
-      const expectedResult = (tc.expected_result || tc.expectedResult || '').replace(/"/g, '""'); // Escape quotes
-
-      // Wrap fields in quotes to handle commas and newlines
+      const isRegression = /regress/i.test(tc.category || '') || (tc._proposedFor && /regress/i.test(tc._proposedFor.category || ''));
+      const source = tc.source || (isRegression ? 'regression' : '');
       return [
-        `"${id}"`,
-        `"${title}"`,
-        `"${category}"`,
-        `"${priority}"`,
-        `"${description}"`,
-        `"${expectedResult}"`
+        q(tc.id || ''),
+        q(tc.title || ''),
+        q(tc.category || ''),
+        q(tc.priority || ''),
+        q(tc.description || ''),
+        q(tc.expected_result || tc.expectedResult || ''),
+        q(source),
+        q(tc.historicalReference || ''),
+        q(tc.rationale || '')
       ].join(',');
     });
 
@@ -85,23 +102,31 @@
       clipboardText += `Title: ${tc.title}\n`;
       clipboardText += `Category: ${tc.category}\n`;
       clipboardText += `Priority: ${tc.priority}\n`;
-      clipboardText += `Description: ${tc.description || 'N/A'}\n`;
+      clipboardText += `Description: ${toDisplayString(tc.description) || 'N/A'}\n`;
 
       if (tc.preconditions) {
-        clipboardText += `Preconditions: ${tc.preconditions}\n`;
+        clipboardText += `Preconditions: ${toDisplayString(tc.preconditions)}\n`;
       }
 
       if (tc.steps && tc.steps.length > 0) {
         clipboardText += `Steps:\n`;
         tc.steps.forEach((step, stepIdx) => {
-          clipboardText += `  ${stepIdx + 1}. ${step}\n`;
+          clipboardText += `  ${stepIdx + 1}. ${toDisplayString(step)}\n`;
         });
       }
 
-      clipboardText += `Expected Result: ${tc.expected_result || tc.expectedResult || 'N/A'}\n`;
+      clipboardText += `Expected Result: ${toDisplayString(tc.expected_result || tc.expectedResult) || 'N/A'}\n`;
 
       if (tc.test_data) {
-        clipboardText += `Test Data: ${tc.test_data}\n`;
+        clipboardText += `Test Data: ${toDisplayString(tc.test_data)}\n`;
+      }
+
+      // F27: regression provenance, when present.
+      if (tc.historicalReference) {
+        clipboardText += `Historical Reference: ${tc.historicalReference}\n`;
+      }
+      if (tc.rationale) {
+        clipboardText += `Rationale: ${tc.rationale}\n`;
       }
 
       clipboardText += '\n';

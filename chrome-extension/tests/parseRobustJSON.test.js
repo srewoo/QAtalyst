@@ -18,6 +18,18 @@ describe('parseRobustJSON', () => {
       expect(parseRobustJSON('[1,2,3]')).toEqual([1, 2, 3]);
     });
 
+    test('F16: strips a ```json markdown fence before parsing', () => {
+      expect(parseRobustJSON('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+      expect(parseRobustJSON('```\n[1,2]\n```')).toEqual([1, 2]);
+    });
+
+    test('F16: recovers complete test cases from a truncated {testCases:[...]} wrapper', () => {
+      const truncated = '{"testCases":[{"id":"TC-1","title":"a"},{"id":"TC-2","title":"b"},{"id":"TC-3","tit';
+      const out = parseRobustJSON(truncated);
+      expect(out.testCases.length).toBe(2);
+      expect(out.testCases[1].id).toBe('TC-2');
+    });
+
     test('parses nested objects', () => {
       const input = JSON.stringify({ testCases: [{ id: 'TC-001', title: 'Login test' }] });
       expect(parseRobustJSON(input)).toEqual({ testCases: [{ id: 'TC-001', title: 'Login test' }] });
