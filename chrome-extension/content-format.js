@@ -319,6 +319,20 @@
 
     // ── cases that are NOT ready to execute as-is ──
     const cases = Array.isArray(data.testCases) ? data.testCases : [];
+    // F06: specification-level cases are VALID — they test behaviour the ticket
+    // requires but the build does not have yet. They are reported separately so
+    // nobody mistakes "not implemented yet" for "wrong".
+    const specLevel = cases.filter(tc => tc._grounding === 'specification');
+    if (specLevel.length) {
+      sections.push(`
+        <div class="quality-block">
+          <h5>🚧 ${specLevel.length} case(s) test behaviour that is not built yet</h5>
+          <p class="quality-note">These reference controls the ticket asks for but the crawl has not seen. They are valid specification-level tests — executable once the feature ships.</p>
+          <details><summary>Which controls are still missing</summary><ul>${
+            specLevel.map(t => `<li>${esc(t.title)} — ${esc((t._pendingImplementation || []).join('; '))}</li>`).join('')}</ul></details>
+        </div>`);
+    }
+
     const needsReview = cases.filter(tc =>
       tc._grounding === 'unresolved' || tc._grounding === 'unverified' ||
       // F11: 'unknown' and 'unjudged' are not approvals — the requirement did not

@@ -39,6 +39,12 @@ class GroundedVerifier {
    */
   constructor(knowledgeGraph, options = {}) {
     this.knowledgeGraph = knowledgeGraph || null;
+    // F06: entities the TICKET explicitly names. A crawl records what the app
+    // does TODAY; a ticket describes what it must do NEXT. Without this the
+    // verifier rejected every test for a new feature as a hallucination — on the
+    // most common kind of ticket there is, and precisely when the crawl was
+    // richest, because a richer crawl made grounding "applicable".
+    this.requirementVocab = GroundedVerifier.buildRequirementVocab(options.ticketData);
     this.minGroundingScore = options.minGroundingScore ?? 0.5;
     this.fuzzyThreshold = options.fuzzyThreshold ?? 0.82;
     this.behaviorCheck = options.behaviorCheck !== false;
@@ -103,6 +109,47 @@ class GroundedVerifier {
     }
     if (out.warnings.length) out.penalty = Math.max(0.55, Math.pow(0.85, out.warnings.length));
     return out;
+  }
+
+  /**
+   * F06: the concrete entities a ticket asks for — quoted labels, "the X button",
+   * field names. Used to tell an unimplemented REQUIREMENT apart from an invented
+   * one. Deliberately narrow: only explicitly named controls count, so ordinary
+   * prose cannot license arbitrary references.
+   */
+  static buildRequirementVocab(ticketData) {
+    const vocab = new Set();
+    if (!ticketData) return vocab;
+    const text = [ticketData.summary, ticketData.title, ticketData.description,
+      ticketData.acceptanceCriteria, ticketData.acceptance_criteria]
+      .filter(Boolean).join('\n');
+    if (!text) return vocab;
+
+    const add = (v) => { const t = norm(v); if (t && t.length > 1) vocab.add(t); };
+
+    // "Publish", 'Save draft' — quoted labels are the strongest signal.
+    for (const m of text.matchAll(/["'“”‘’]([^"'“”‘’\n]{2,40})["'“”‘’]/g)) add(m[1]);
+    // the Publish button / a Save link / the Export action
+    for (const m of text.matchAll(/\b(?:the|a|an)\s+([A-Za-z][\w \-]{1,30}?)\s+(?:button|link|action|tab|menu|toggle|checkbox|field|input)\b/gi)) add(m[1]);
+    // "Add a Publish button" / "add an Archive action"
+    for (const m of text.matchAll(/\b(?:add|introduce|create|implement|new)\s+(?:a|an|the)?\s*([A-Za-z][\w \-]{1,30}?)\s+(?:button|link|action|tab|menu|toggle|field|endpoint|screen|page)\b/gi)) add(m[1]);
+    // API endpoints named in the ticket.
+    for (const m of text.matchAll(/(\/(?:api|rest|v\d)\/[\w\-/{}]+)/gi)) add(m[1]);
+
+    return vocab;
+  }
+
+  /** Is this reference something the TICKET asks for, even if the app lacks it? */
+  requiredByTicket(label) {
+    const v = norm(label);
+    if (!v || !this.requirementVocab || !this.requirementVocab.size) return false;
+    if (this.requirementVocab.has(v)) return true;
+    // "Publish" matches a required "Publish article" and vice versa.
+    for (const req of this.requirementVocab) {
+      if (req === v) return true;
+      if (req.length > 3 && v.length > 3 && (req.includes(v) || v.includes(req))) return true;
+    }
+    return false;
   }
 
   /** Build a normalized index of real application entities from either KG shape. */
@@ -211,6 +258,9 @@ class GroundedVerifier {
     const repairs = {};
     let referenced = 0;
     let grounded = 0;
+    // F06: references the ticket explicitly asks for but the crawl has not seen.
+    // These are NOT hallucinations — they are behaviour that does not exist yet.
+    const pendingImplementation = [];
 
     // --- selectors (the strongest grounding signal) ---
     for (const sel of refs.selectors) {
@@ -229,6 +279,9 @@ class GroundedVerifier {
       referenced++;
       if (this.index.fields.has(field)) {
         grounded++;
+      } else if (this.requiredByTicket(field)) {
+        grounded++;
+        pendingImplementation.push(`Field "${field}" is required by the ticket but not present in the crawl — not implemented yet`);
       } else {
         const fix = this.nearest(field, [...this.index.fields]);
         if (fix) { repairs[`field:${field}`] = fix; grounded++; }
@@ -241,6 +294,12 @@ class GroundedVerifier {
       referenced++;
       if (this.index.buttons.has(btn) || this.tokenSubsetOfAny(btn, this.index.buttons)) {
         grounded++;
+      } else if (this.requiredByTicket(btn)) {
+        // F06: the ticket asks for this control and the app does not have it yet.
+        // That is the definition of a feature being built — rejecting it made the
+        // tool useless on new-feature tickets.
+        grounded++;
+        pendingImplementation.push(`"${btn}" is required by the ticket but was not found in the crawl — it is not implemented yet`);
       } else {
         const fix = this.nearest(btn, [...this.index.buttons]);
         if (fix) { repairs[`button:${btn}`] = fix; grounded++; }
@@ -252,7 +311,10 @@ class GroundedVerifier {
     for (const api of refs.apis) {
       referenced++;
       if (this.apiExists(api)) grounded++;
-      else issues.push(`API "${api}" not observed in crawled network traffic`);
+      else if (this.requiredByTicket(api)) {
+        grounded++;
+        pendingImplementation.push(`API "${api}" is specified by the ticket but was not observed — not implemented yet`);
+      } else issues.push(`API "${api}" not observed in crawled network traffic`);
     }
 
     // --- routes ---
@@ -304,9 +366,18 @@ class GroundedVerifier {
       verdict = 'reject';
     }
 
+    // F06: a suite whose references are all either observed OR required by the
+    // ticket is valid — but it is a SPECIFICATION-level suite, verifiable only
+    // once the feature ships. Saying so is the whole point: it is neither
+    // "verified against the app" nor "invented".
+    if (pendingImplementation.length && verdict !== 'reject') {
+      verdict = issues.length ? 'unresolved' : 'specification';
+    }
+
     return {
       verdict, score: round2(score), references: refs, issues, repairs,
       behaviorWarnings: behavior.warnings,
+      pendingImplementation,
       // True only when nothing is left dangling after repairs are applied.
       fullyResolved: issues.length === 0
     };

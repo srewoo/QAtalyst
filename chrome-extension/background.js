@@ -42,6 +42,7 @@ importScripts('export-ledger.js');
 importScripts('readiness.js');
 importScripts('review-memory.js');
 importScripts('settings-schema.js');
+importScripts('contract-import.js');
 importScripts('agent-tools.js');
 importScripts('agent-loop.js');
 
@@ -2424,7 +2425,7 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
   }
 
   // ── Build the grounding + relevance + dedup gate ──
-  const verifier = new GroundedVerifier(knowledgeGraph);
+  const verifier = new GroundedVerifier(knowledgeGraph, { ticketData: enrichedTicketData });
   const coverageMapper = knowledgeGraph ? new CoverageMapper(knowledgeGraph) : null;
   const adaptive = deriveAdaptiveThresholds(enrichedTicketData, knowledgeGraph, settings);
   console.log(`[Agentic] adaptive thresholds → dedup ${adaptive.dedupThreshold}, relevance ${adaptive.relevanceThreshold}`);
@@ -2498,6 +2499,9 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
     // F23: the user's reviewed analysis/scope, so their corrections and
     // exclusions actually shape the suite.
     reviewedContext: data.reviewedContext || null,
+    // §14: imported evidence a crawl cannot provide — API contracts, the role and
+    // state matrix, what changed in the PR, and which paths fail in production.
+    importedEvidence: buildImportedEvidence(data.imports),
     ticketData: enrichedTicketData,
     knowledgeGraph,
     bm25,
@@ -2788,6 +2792,67 @@ function recomputeFinalCoverage(testCases, { coverageMapper, ticketData, previou
 
   out.measuredFrom = cases.length;
   return out;
+}
+
+/**
+ * §14: normalize whatever evidence files the user supplied into the obligations
+ * a generator can act on.
+ *
+ * A crawl observes one session of one build. It cannot state an endpoint's
+ * contract, enumerate the roles, describe states nobody clicked into, or say
+ * which paths fail in production — so each of those previously became either an
+ * invented assertion or a missing test. All of these are FILE imports: no
+ * account connection is required for any of them (§14.1).
+ */
+function buildImportedEvidence(imports) {
+  if (!imports || typeof imports !== 'object') return null;
+  const out = { obligations: [], sources: [], failures: [] };
+
+  const add = (label, result, obligationsFn) => {
+    if (!result) return;
+    if (!result.ok) {
+      // An unreadable import is reported, never treated as "nothing to add".
+      out.failures.push({ source: label, error: result.error });
+      return;
+    }
+    out.sources.push({ source: label, evidence: result.evidence || null });
+    if (obligationsFn) out.obligations.push(...obligationsFn(result));
+  };
+
+  try {
+    if (imports.openapi) {
+      add('OpenAPI contract', importOpenApi(imports.openapi),
+        r => contractObligations(r.operations).map(o => ({ ...o, source: 'contract' })));
+    }
+    if (imports.projectProfile) {
+      add('Role/state profile', importProjectProfile(imports.projectProfile), r => [
+        ...permissionObligations(r.profile).map(o => ({ ...o, kind: 'permission', source: 'profile' })),
+        ...stateObligations(r.profile).map(o => ({ ...o, kind: 'state_transition', source: 'profile' }))
+      ]);
+    }
+    if (imports.changeContext) {
+      const r = importChangeContext(imports.changeContext);
+      add('Change context', r, () => impactedAreas(r.files).slice(0, 10)
+        .map(a => ({ kind: 'impacted_area', area: a.area, churn: a.churn, source: 'diff',
+                     note: `${a.area} changed (${a.files} file(s))${a.configChanged ? ', including configuration' : ''}` })));
+    }
+    if (imports.executionResults) {
+      const r = importExecutionResults(imports.executionResults);
+      add('Execution results', r, () => (r.results || []).filter(x => /fail/.test(x.status) || x.flaky)
+        .slice(0, 20).map(x => ({ kind: x.flaky ? 'flaky_test' : 'failing_test', note: x.title, source: 'execution' })));
+    }
+    if (imports.runtimeErrors) {
+      const r = importRuntimeErrors(imports.runtimeErrors);
+      add('Runtime errors', r, () => (r.errors || []).slice(0, 15)
+        // Observed failures suggest RISK; they never establish intended behaviour.
+        .map(e => ({ kind: 'observed_failure', note: `${e.message}${e.operation ? ` (${e.operation})` : ''}`,
+                     occurrences: e.count, source: 'runtime', trust: 'risk_only' })));
+    }
+  } catch (e) {
+    out.failures.push({ source: 'imports', error: e.message });
+  }
+
+  return (out.obligations.length || out.sources.length || out.failures.length) ? out : null;
 }
 
 /** Map a planner event to the progress shape the content UI expects (agent/step/total/status/count). */

@@ -258,6 +258,7 @@ class AgentToolRegistry {
       '<ticket_data>',
       this.ticketContext(),
       this.reviewedContext(),
+      this.importedEvidenceContext(),
       regressionCtx,
       // F09: requirement evidence from linked documents now reaches the
       // GENERATOR, not only the planner's next decision prompt.
@@ -376,6 +377,33 @@ class AgentToolRegistry {
       'honour its exclusions and clarifications; where it conflicts with the ticket text above, the TICKET wins):'];
     if (rc.analysis) parts.push(`ANALYSIS${rc.analysisReviewed ? ' (edited by the user)' : ''}:\n${rc.analysis}`);
     if (rc.scope) parts.push(`TEST SCOPE${rc.scopeReviewed ? ' (edited by the user)' : ''}:\n${rc.scope}`);
+    return parts.join('\n');
+  }
+
+  /**
+   * §14: contract, role/state, change and runtime evidence a crawl cannot supply.
+   * These are FACTS — a documented limit, a declared permission, an observed
+   * failure — so the generator can assert them instead of guessing. Each is
+   * labelled with its trust level, because a diff and a production error are
+   * evidence of what IS, never of what SHOULD be.
+   */
+  importedEvidenceContext() {
+    const ev = this.ctx.importedEvidence;
+    if (!ev || !ev.obligations || !ev.obligations.length) return '';
+
+    const byKind = {};
+    for (const o of ev.obligations) (byKind[o.kind || o.source] ||= []).push(o);
+
+    const parts = ['IMPORTED EVIDENCE (facts from contracts, profiles and observed runs —',
+      'assert these directly; do NOT invent limits or status codes beyond them):'];
+    for (const [kind, items] of Object.entries(byKind)) {
+      parts.push(`${kind.toUpperCase().replace(/_/g, ' ')}:`);
+      for (const o of items.slice(0, 20)) parts.push(`- ${o.note}`);
+    }
+    if (ev.failures && ev.failures.length) {
+      parts.push('NOTE: some imported evidence could not be read: ' +
+        ev.failures.map(f => `${f.source} (${f.error})`).join('; '));
+    }
     return parts.join('\n');
   }
 

@@ -433,3 +433,77 @@ describe('F10 — ticket relevance is not decided by the crawl', () => {
     }
   });
 });
+
+describe('F06 / §10 row 8 — a new feature is not an invented one', () => {
+  // The crawl is of the CURRENT build; the ticket describes the NEXT one.
+  const KG = normalizeGenerationContext({
+    pages: [{ url: 'https://app/editor', title: 'Editor',
+      features: [{ type: 'button', text: 'Save', selector: '#save' }], apis: [] }]
+  });
+  const TICKET = {
+    summary: 'Add a Publish button to the article editor',
+    description: 'Editors can click the "Publish" button to make an article live.',
+    acceptanceCriteria: '- Clicking "Publish" makes the article live'
+  };
+
+  test('a control the ticket requires but the crawl lacks is specification-level, not rejected', () => {
+    const g = new GroundedVerifier(KG, { ticketData: TICKET }).verify({
+      title: 'Publish an article',
+      steps: ['Open the editor', 'Click the "Publish" button'],
+      expected_result: 'The article is live'
+    });
+    // Pre-fix this was rejected as a hallucination — on the most common kind of
+    // ticket there is, and precisely when the crawl was richest.
+    expect(g.verdict).toBe('specification');
+    expect(g.pendingImplementation.join(' ')).toMatch(/not implemented yet/);
+  });
+
+  test('a control nothing asks for is still rejected', () => {
+    const g = new GroundedVerifier(KG, { ticketData: TICKET }).verify({
+      title: 'Teleport the article',
+      steps: ['Click the "Teleport" button'],
+      expected_result: 'The article is teleported'
+    });
+    expect(g.verdict).toBe('reject');
+  });
+
+  test('the gate admits it with an explicit implementation status', () => {
+    const gate = new AcceptanceGate({
+      knowledgeGraph: KG, ticketData: TICKET,
+      deps: { GroundedVerifier, SemanticDuplicateDetector }, relevanceThreshold: 0
+    });
+    const { accepted } = gate.admit([{
+      title: 'Publish an article',
+      steps: ['Open the editor', 'Click the "Publish" button'],
+      expected_result: 'The article is live'
+    }]);
+    expect(accepted).toHaveLength(1);
+    // Neither "verified against the app" nor discarded.
+    expect(accepted[0]._grounding).toBe('specification');
+    expect(accepted[0]._pendingImplementation).toBeTruthy();
+  });
+
+  test('an already-built control is still verified, not downgraded', () => {
+    const gate = new AcceptanceGate({
+      knowledgeGraph: KG, ticketData: TICKET,
+      deps: { GroundedVerifier, SemanticDuplicateDetector }, relevanceThreshold: 0
+    });
+    const { accepted } = gate.admit([{
+      title: 'Save a draft',
+      steps: ['Click the "Save" button'],
+      expected_result: 'The draft is saved'
+    }]);
+    expect(accepted[0]._grounding).toBe('verified');
+  });
+
+  test('a ticket-required API endpoint is treated the same way', () => {
+    const g = new GroundedVerifier(KG, {
+      ticketData: { summary: 'Add publishing', description: 'POST /api/articles/publish makes it live.' }
+    }).verify({
+      title: 'Publish via API',
+      steps: ['Send POST /api/articles/publish'],
+      expected_result: 'The article is live'
+    });
+    expect(['specification', 'grounded']).toContain(g.verdict);
+  });
+});

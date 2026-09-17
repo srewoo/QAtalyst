@@ -59,7 +59,13 @@ class AcceptanceGate {
     this.dedupThreshold = cfg.dedupThreshold ?? 0.68;
     this.relevanceThreshold = cfg.relevanceThreshold ?? 0.25;
 
-    this.verifier = GV ? new GV(cfg.knowledgeGraph, { minGroundingScore: cfg.minGroundingScore }) : null;
+    // F06: the verifier needs the TICKET as well as the crawl, so a control the
+    // ticket asks for but the app does not have yet is recognised as
+    // not-built-yet rather than rejected as invented.
+    this.verifier = GV ? new GV(cfg.knowledgeGraph, {
+      minGroundingScore: cfg.minGroundingScore,
+      ticketData: cfg.ticketData
+    }) : null;
     this.dedup = SDD ? new SDD(this.dedupThreshold) : null;
 
     this.referenceVocab = this.buildReferenceVocab(cfg.ticketData, cfg.knowledgeGraph);
@@ -137,6 +143,13 @@ class AcceptanceGate {
         // stamping it so was how hallucinated controls reached exportable output.
         if (verdict === 'not_applicable' || g.unverified) {
           test._grounding = 'unverified';
+        } else if (verdict === 'specification') {
+          // F06: requirement-backed, not yet implemented. A valid case that can
+          // only be executed once the feature ships — distinct both from a
+          // verified case and from an invented one.
+          test._grounding = 'specification';
+          test._pendingImplementation = g.pendingImplementation;
+          this.stats.specification = (this.stats.specification || 0) + 1;
         } else if (verdict === 'unresolved' || (issues && issues.length)) {
           test._grounding = 'unresolved';
           test._groundingIssues = issues;
