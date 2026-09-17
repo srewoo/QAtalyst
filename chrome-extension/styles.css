@@ -1508,3 +1508,31 @@
 @media (prefers-reduced-motion: reduce) {
   .qatalyst-panel .gen-spinner { animation: none; }
 }
+
+/* A stalled run must look different from a working one. */
+.qatalyst-panel .qatalyst-generating.gen-stalled {
+  border-color: #fbbf24;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  color: #92400e;
+}
+.qatalyst-panel .gen-stall-warning {
+  margin-top: 8px;
+  padding: 8px;
+  background: #fef3c7;
+  border-left: 3px solid #f59e0b;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #92400e;
+}
+/* Cancel is available at any point, not only once a run looks stuck. */
+.qatalyst-panel .gen-cancel {
+  margin-top: 10px;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #475569;
+  cursor: pointer;
+}
+.qatalyst-panel .gen-cancel:hover { background: #f1f5f9; border-color: #94a3b8; }

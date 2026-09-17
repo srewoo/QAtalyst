@@ -144,3 +144,77 @@ describe('wiring', () => {
     expect(SRC).toContain('originalLabel');
   });
 });
+
+describe('a run can never hang silently', () => {
+  test('a quiet run is reported as possibly stalled', () => {
+    GenerationStatus.start();
+    // Simulate two minutes of silence.
+    GenerationStatus._lastEventAt = Date.now() - 3 * 60 * 1000;
+    GenerationStatus._render();
+    const warning = document.querySelector('[data-testid="generation-stalled"]');
+    expect(warning).toBeTruthy();
+    expect(warning.textContent).toMatch(/No progress for 3 minute/);
+  });
+
+  test('a stalled run is NOT auto-cancelled — a slow local model is still working', () => {
+    GenerationStatus.start();
+    GenerationStatus._lastEventAt = Date.now() - 5 * 60 * 1000;
+    GenerationStatus._render();
+    // Killing real work would be worse than waiting; we warn, we do not stop.
+    expect(GenerationStatus.isActive()).toBe(true);
+  });
+
+  test('a progress event clears the stall warning', () => {
+    GenerationStatus.start();
+    GenerationStatus._lastEventAt = Date.now() - 5 * 60 * 1000;
+    GenerationStatus._render();
+    expect(document.querySelector('[data-testid="generation-stalled"]')).toBeTruthy();
+    GenerationStatus.update({ phase: 'Planner' });
+    expect(document.querySelector('[data-testid="generation-stalled"]')).toBeNull();
+  });
+
+  test('Stop is offered from the start, not only once it looks stuck', () => {
+    GenerationStatus.start();
+    expect(document.querySelector('[data-testid="generation-cancel"]')).toBeTruthy();
+  });
+
+  test('a late event cannot resurrect a finished run', () => {
+    GenerationStatus.start();
+    GenerationStatus.stop();
+    GenerationStatus.update({ phase: 'ghost' });
+    // update() used to call start() when there was no state, restarting the
+    // spinner for a run that had already ended. stop() deliberately leaves the
+    // last frame in the DOM — the caller replaces it with results or an error —
+    // so what matters is that nothing RE-renders.
+    expect(GenerationStatus.isActive()).toBe(false);
+    const panel = document.querySelector('[data-testid="generation-status"]');
+    if (panel) expect(panel.textContent).not.toContain('ghost');
+  });
+});
+
+describe('wiring: the request itself is bounded', () => {
+  test('the agentic request is wrapped in a timeout', () => {
+    // chrome.runtime.sendMessage has no timeout: a terminated service worker
+    // never fires the callback, and the promise stays pending forever.
+    expect(SRC).toContain('withGenerationTimeout');
+    const call = SRC.indexOf('withGenerationTimeout(new Promise');
+    expect(call).toBeGreaterThan(-1);
+  });
+
+  test('the timeout explains what to check rather than just failing', () => {
+    expect(SRC).toMatch(/service worker may have been terminated/);
+    expect(SRC).toMatch(/chrome:\/\/extensions/);
+  });
+
+  test('cancel stops both the agentic run and any active stream', () => {
+    const fn = SRC.slice(SRC.indexOf('async function cancelGeneration()'));
+    expect(fn.slice(0, 1200)).toContain('stopMultiAgentGeneration');
+    expect(fn.slice(0, 1200)).toContain('stopGeneration');
+  });
+
+  test('the mining handler reads the field the worker actually sends', () => {
+    // The worker sends {progress}, not {status} — reading the wrong one made the
+    // panel show "Mining complete" from the first event.
+    expect(SRC).toContain('request.progress || request.status');
+  });
+});

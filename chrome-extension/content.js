@@ -75,7 +75,10 @@
       handleContextQualityAssessment(request.assessment);
     }
     if (request.action === 'historicalMiningProgress') {
-      handleHistoricalMiningProgress(request.status);
+      // The worker sends `progress`, not `status`. Reading the wrong field made
+      // this always undefined, so the panel rendered "✅ Mining complete" from the
+      // very first event — mining looked finished before it had started.
+      handleHistoricalMiningProgress(request.progress || request.status);
     }
     if (request.type === 'UPLOAD_PROGRESS') {
       handleUploadProgress(request.progress);
@@ -804,10 +807,17 @@
   const GenerationStatus = {
     _timer: null,
     _startedAt: 0,
+    _lastEventAt: 0,
     _state: null,
+
+    // A run that goes quiet for this long is reported as possibly stalled. It is
+    // NOT cancelled automatically — a local model on a big ticket can genuinely
+    // be this slow, and killing real work would be worse than waiting.
+    STALL_WARN_MS: 120000,
 
     start(label = 'Generating test cases…') {
       this._startedAt = Date.now();
+      this._lastEventAt = Date.now();
       this._state = { label, phase: 'Starting', detail: '', step: null, total: null, count: null, done: [] };
       this._render();
       clearInterval(this._timer);
@@ -816,7 +826,8 @@
     },
 
     update(patch = {}) {
-      if (!this._state) this.start();
+      if (!this._state) return; // never resurrect a finished run from a late event
+      this._lastEventAt = Date.now();
       // A finished phase is remembered, so progress reads as a trail rather than
       // a single line that keeps being overwritten.
       if (patch.phase && patch.phase !== this._state.phase && this._state.phase) {
@@ -826,10 +837,16 @@
       this._render();
     },
 
+    /** Silence since the last progress event — the signal that something is wrong. */
+    _stalledMs() {
+      return this._lastEventAt ? Date.now() - this._lastEventAt : 0;
+    },
+
     stop() {
       clearInterval(this._timer);
       this._timer = null;
       this._state = null;
+      this._lastEventAt = 0;
     },
 
     isActive() { return !!this._state; },
@@ -846,8 +863,14 @@
       const pct = (Number.isFinite(st.step) && Number.isFinite(st.total) && st.total > 0)
         ? Math.min(100, Math.round((st.step / st.total) * 100)) : null;
 
+      // A run with no news for minutes must SAY so. Silently spinning forever is
+      // what made a stalled run indistinguishable from a slow one.
+      const stalledMs = this._stalledMs();
+      const stalled = stalledMs > this.STALL_WARN_MS;
+      const stalledMin = Math.floor(stalledMs / 60000);
+
       container.innerHTML = `
-        <div class="qatalyst-generating" data-testid="generation-status">
+        <div class="qatalyst-generating${stalled ? ' gen-stalled' : ''}" data-testid="generation-status">
           <div class="gen-head">
             <span class="gen-spinner" aria-hidden="true"></span>
             <strong>${escapeHtml(st.label)}</strong>
@@ -858,10 +881,100 @@
           ${pct !== null ? `<div class="gen-bar"><div class="gen-fill" style="width:${pct}%"></div></div>` : ''}
           ${Number.isFinite(st.count) ? `<div class="gen-count">${st.count} test case(s) accepted so far</div>` : ''}
           ${st.done.length ? `<div class="gen-done">${st.done.slice(-4).map(d => `✓ ${escapeHtml(d)}`).join(' &nbsp; ')}</div>` : ''}
+          ${stalled ? `
+            <div class="gen-stall-warning" data-testid="generation-stalled">
+              ⚠️ No progress for ${stalledMin} minute(s). The run may have stalled — or a local/slow model may still be working.
+              Check the service-worker console for errors, or stop and try again.
+            </div>` : ''}
           <div class="gen-note">This can take a few minutes on a large ticket. You can keep working — results appear here when ready.</div>
+          <button type="button" class="gen-cancel" data-testid="generation-cancel">Stop generation</button>
         </div>`;
+
+      // Cancel must be reachable at ANY point, not only once a run looks stuck.
+      const cancelBtn = container.querySelector('[data-testid="generation-cancel"]');
+      if (cancelBtn) cancelBtn.addEventListener('click', () => cancelGeneration());
     }
   };
+
+  /**
+   * Stop a running generation and hand the panel back to the user.
+   *
+   * There was no way out of a run at all: no cancel, and no client-side timeout,
+   * so if the worker died or never replied the sendMessage callback simply never
+   * fired and the panel waited forever.
+   */
+  /**
+   * Bound a worker request in wall-clock time.
+   *
+   * `chrome.runtime.sendMessage` gives no timeout: if the service worker is
+   * terminated mid-run, or throws before responding, the callback never fires and
+   * the awaiting promise stays pending for the life of the page. That is how a
+   * run could sit "Generating…" for fifteen minutes with nothing to click.
+   *
+   * The timeout is generous and progress-aware — it is a backstop against a DEAD
+   * worker, not a limit on slow generation, so it only fires when the run has
+   * also gone silent.
+   */
+  function withGenerationTimeout(promise, { hardMs = 45 * 60 * 1000 } = {}) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const done = (fn) => (v) => { if (!settled) { settled = true; clearInterval(poll); fn(v); } };
+
+      const poll = setInterval(() => {
+        if (settled) return;
+        const elapsed = Date.now() - GenerationStatus._startedAt;
+        // Only give up when the run is BOTH silent and long — a local model can
+        // legitimately take many minutes between planner steps.
+        const silentTooLong = GenerationStatus._stalledMs() > 10 * 60 * 1000;
+        if (elapsed > hardMs || silentTooLong) {
+          settled = true;
+          clearInterval(poll);
+          reject(new Error(
+            silentTooLong
+              ? 'Generation stopped responding — no progress for over 10 minutes. The extension service worker may have been terminated. Check chrome://extensions → QAtalyst → service worker for errors, then try again.'
+              : 'Generation exceeded the maximum run time and was abandoned.'
+          ));
+        }
+      }, 5000);
+
+      promise.then(done(resolve), done(reject));
+    });
+  }
+
+  async function cancelGeneration() {
+    try {
+      await chrome.runtime.sendMessage({ action: 'stopMultiAgentGeneration' });
+    } catch (e) {
+      console.warn('[QAtalyst] cancel request failed:', e.message);
+    }
+    try {
+      if (currentStreamingRequestId) {
+        await chrome.runtime.sendMessage({ action: 'stopGeneration', requestId: currentStreamingRequestId });
+      }
+    } catch (_) {}
+
+    suppressAgentProgress = true;
+    GenerationStatus.stop();
+    isStreaming = false;
+    currentStreamingRequestId = null;
+
+    const container = document.getElementById('results-container');
+    if (container) {
+      container.innerHTML = '';
+      const msg = document.createElement('div');
+      msg.className = 'qatalyst-warning-box';
+      msg.dataset.testid = 'generation-cancelled';
+      msg.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px;margin:10px 0;color:#856404;';
+      msg.textContent = 'Generation stopped. Any partial results were discarded — run it again when ready.';
+      container.appendChild(msg);
+    }
+    const btn = document.getElementById('test-cases-btn');
+    if (btn) {
+      btn.disabled = false;
+      if (btn.dataset.originalLabel) btn.innerHTML = btn.dataset.originalLabel;
+    }
+    setActivityIndicator(false);
+  }
 
   function handleAgentProgress(progress) {
     if (suppressAgentProgress) return;
@@ -1024,7 +1137,10 @@
     resultsContainer.innerHTML = enhancementHTML;
   }
 
-  function handleHistoricalMiningProgress(status) {
+  function handleHistoricalMiningProgress(progress) {
+    // Accept both the {phase} object the worker sends and a bare status string.
+    const phase = (progress && typeof progress === 'object') ? progress.phase : progress;
+    const status = (phase === 'done' || phase === 'complete') ? 'complete' : 'analyzing';
     const resultsContainer = document.getElementById('results-container');
     if (!resultsContainer) return;
 
@@ -2378,7 +2494,7 @@
         GenerationStatus.update({ phase: 'Planning grounded test coverage', detail: 'reading the ticket and crawl evidence' });
 
         console.log('📤 Sending message to background script...');
-        const response = await new Promise((resolve, reject) => {
+        const response = await withGenerationTimeout(new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: genAction,
             data: {
@@ -2414,7 +2530,7 @@
               resolve(response);
             }
           });
-        });
+        }));
 
         // Render final results and stop accepting progress updates so a late
         // "done" message cannot overwrite the test-case list.
