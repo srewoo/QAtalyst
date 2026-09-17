@@ -512,6 +512,14 @@ function updateModelCapabilityHint() {
   }
 
   const notes = [];
+  // A local model on the agentic path is the single most common cause of a run
+  // that looks hung. Say so at SELECTION time, not after a ten-minute wait.
+  if (provider === 'ollama' && typeof providerTuning === 'function' && typeof estimateRuntime === 'function') {
+    const settingsNow = { testCount: Number(document.getElementById('testCount')?.value) || 30,
+                          maxTokens: Number(tokensInput?.value) || 4096 };
+    const t = providerTuning('ollama', settingsNow);
+    notes.push(`Local models are much slower than hosted ones: the planner will use ${t.maxSteps} steps with larger batches, expected to take ${estimateRuntime('ollama', t).label}. Turn off multi-agent mode in Test Case Settings for a single faster call.`);
+  }
   if (!caps.supportsTemperature) {
     notes.push(`${model} is a reasoning model: it uses its own temperature, so the value above has no effect.`);
   }

@@ -2444,6 +2444,21 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
 
   const progress = (event) => safeSendMessageToTab(tabId, { action: 'agentProgress', progress: agenticProgressView(event) });
 
+  // Set expectations BEFORE the wait, not after it. A run that will take ten
+  // minutes is fine; a run that takes ten minutes without saying so is not.
+  try {
+    const t = (typeof providerTuning === 'function') ? providerTuning(settings.llmProvider, settings) : null;
+    if (t && typeof estimateRuntime === 'function') {
+      safeSendMessageToTab(tabId, {
+        action: 'agentProgress',
+        progress: {
+          agent: 'Planner', status: 'running', step: 0, total: t.maxSteps,
+          description: `${t.maxSteps} planning steps — expected to take ${estimateRuntime(settings.llmProvider, t).label}`
+        }
+      });
+    }
+  } catch (_) {}
+
   // ── F14: optionally dedupe against the existing TestRail suite ──
   // When enabled + TestRail configured, pull existing case titles so the gate
   // rejects generated tests that merely duplicate what the team already has.
@@ -2539,7 +2554,22 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
 
   // F17: the tools call the provider with these settings, so the run's abort
   // signal must ride along — otherwise cancel only stops the NEXT planner step.
-  const abortableSettings = { ...settings, _abortSignal: abort.controller.signal };
+  // Match the planner to what this provider can realistically sustain.
+  const tuning = (typeof providerTuning === 'function')
+    ? providerTuning(settings.llmProvider, settings)
+    : { maxSteps: Math.min(40, Math.ceil((settings.testCount || 30) * 0.9) + 6),
+        maxNoProgress: 4, batchSize: 5, maxOutputTokens: settings.maxTokens, local: false, note: null };
+  if (tuning.note) {
+    console.log(`[Agentic] ${tuning.note}`);
+    degradations.push(tuning.note);
+  }
+
+  const abortableSettings = {
+    ...settings,
+    // A local model does not need — and is slowed by — a 16k output allowance.
+    maxTokens: tuning.maxOutputTokens || settings.maxTokens,
+    _abortSignal: abort.controller.signal
+  };
 
   const tools = new AgentToolRegistry({
     callAI,
@@ -2577,9 +2607,14 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
     isCancelled: () => abort.cancelled,
     budget: {
       maxTests,
-      maxSteps: Math.min(40, Math.ceil(maxTests * 0.9) + 6),
+      // Provider-aware: the planner makes one SEQUENTIAL call per step, so a
+      // step budget tuned for a hosted model (33 calls) becomes 30-60 minutes
+      // against a local 7B model. Local providers get a short loop with larger
+      // batches — the same suite in a handful of calls instead of dozens.
+      maxSteps: tuning.maxSteps,
       coverageTarget: clampInt(settings.coverageTarget || 80, 40, 100),
-      maxNoProgress: 4
+      maxNoProgress: tuning.maxNoProgress,
+      batchSize: tuning.batchSize
     }
   });
 

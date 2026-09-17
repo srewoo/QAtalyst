@@ -207,3 +207,52 @@ describe('reasoning models get the right parameters', () => {
     expect(modelCapabilities('gpt-4.1', 'openai').supportsJsonMode).toBe(true);
   });
 });
+
+describe('provider-aware planner tuning', () => {
+  const { providerTuning, estimateRuntime } = require('../model-registry.js');
+
+  test('a local provider gets far fewer sequential calls', () => {
+    const hosted = providerTuning('openai', { testCount: 30 });
+    const local = providerTuning('ollama', { testCount: 30 });
+    // The planner makes ONE call per step. 33 steps against a 7B local model is
+    // 11-66 minutes, which is indistinguishable from a hang.
+    expect(hosted.maxSteps).toBeGreaterThan(30);
+    expect(local.maxSteps).toBeLessThanOrEqual(10);
+  });
+
+  test('a local provider compensates with larger batches', () => {
+    // Fewer, bigger requests is the right trade when per-call latency dominates.
+    expect(providerTuning('ollama', {}).batchSize)
+      .toBeGreaterThan(providerTuning('openai', {}).batchSize);
+  });
+
+  test('a local provider gives up sooner on an unproductive loop', () => {
+    // Each wasted step costs minutes, not seconds.
+    expect(providerTuning('ollama', {}).maxNoProgress)
+      .toBeLessThan(providerTuning('openai', {}).maxNoProgress);
+  });
+
+  test('a local model is not asked for a 16k output allowance', () => {
+    const local = providerTuning('ollama', { maxTokens: 16000 });
+    expect(local.maxOutputTokens).toBeLessThanOrEqual(4096);
+    // Hosted providers keep the user's setting.
+    expect(providerTuning('openai', { maxTokens: 16000 }).maxOutputTokens).toBe(16000);
+  });
+
+  test('local tuning is explained rather than applied silently', () => {
+    expect(providerTuning('ollama', {}).note).toMatch(/local/i);
+    expect(providerTuning('openai', {}).note).toBeNull();
+  });
+
+  test('the runtime estimate distinguishes fast from slow providers', () => {
+    const hosted = estimateRuntime('openai', providerTuning('openai', { testCount: 30 }));
+    const local = estimateRuntime('ollama', providerTuning('ollama', { testCount: 30 }));
+    expect(local.seconds).toBeGreaterThan(hosted.seconds);
+    expect(local.label).toMatch(/minute/);
+  });
+
+  test('a smaller test count shortens the local loop further', () => {
+    expect(providerTuning('ollama', { testCount: 8 }).maxSteps)
+      .toBeLessThan(providerTuning('ollama', { testCount: 40 }).maxSteps);
+  });
+});

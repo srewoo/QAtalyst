@@ -226,8 +226,64 @@ function applyModelParams(body, settings, provider) {
   return { body, adjustments, caps };
 }
 
+/**
+ * Tune the agentic planner to what a provider can realistically sustain.
+ *
+ * The planner makes ONE SEQUENTIAL LLM CALL PER STEP, and the step budget is
+ * derived from the test count: 30 tests → 33 steps. Against a hosted model at
+ * ~3s per call that is under two minutes. Against a 7B model running locally at
+ * 20-120s per call it is 11 to 66 minutes — which is not a hang, but is
+ * indistinguishable from one, and nobody waits that long.
+ *
+ * So local providers get a much shorter loop with LARGER batches: the same suite
+ * in a handful of calls instead of dozens. Fewer, bigger requests is the right
+ * trade when per-call latency dominates.
+ */
+function providerTuning(provider, settings = {}) {
+  const local = provider === 'ollama';
+  const requestedTests = Number(settings.testCount) || 30;
+
+  if (!local) {
+    return {
+      local: false,
+      maxSteps: Math.min(40, Math.ceil(requestedTests * 0.9) + 6),
+      maxNoProgress: 4,
+      batchSize: 5,
+      maxOutputTokens: settings.maxTokens || 16000,
+      note: null
+    };
+  }
+
+  return {
+    local: true,
+    // A handful of calls, not dozens.
+    maxSteps: Math.min(10, Math.ceil(requestedTests / 4) + 3),
+    // Give up sooner on a loop that is not producing — each wasted step is minutes.
+    maxNoProgress: 2,
+    // Ask for more per call, since the call itself is what costs.
+    batchSize: 8,
+    // 16k output tokens on a small local model is far more than a test batch
+    // needs and enlarges the context it must allocate.
+    maxOutputTokens: Math.min(settings.maxTokens || 4096, 4096),
+    note: 'Local model: using a shorter planning loop with larger batches. Generation is still slower than a hosted provider.'
+  };
+}
+
+/** A rough, honest estimate so the UI can set expectations before the wait. */
+function estimateRuntime(provider, tuning) {
+  const perCallSeconds = provider === 'ollama' ? 45 : 4; // local models vary hugely
+  const calls = tuning.maxSteps + 2; // planner steps + final critique/coverage
+  const seconds = calls * perCallSeconds;
+  return {
+    seconds,
+    label: seconds < 90 ? 'under two minutes'
+      : seconds < 600 ? `roughly ${Math.round(seconds / 60)} minutes`
+      : `${Math.round(seconds / 60)}+ minutes`
+  };
+}
+
 const api = { discoverModels, discoverOpenAI, discoverClaude, discoverGemini, discoverOllama, NON_CHAT,
-              modelCapabilities, applyModelParams };
+              modelCapabilities, applyModelParams, providerTuning, estimateRuntime };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 if (typeof self !== 'undefined') Object.assign(self, api);
 if (typeof window !== 'undefined') Object.assign(window, api);

@@ -297,6 +297,9 @@ async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RE
     }
 
     const endpoint = openAiCompatibleEndpoint(settings);
+    // Per-call timing: when a run feels stuck, the console should show whether
+    // it is one slow model call or many.
+    const __t0 = Date.now();
     const response = await fetch(endpoint.url, {
       method: 'POST',
       headers: endpoint.headers,
@@ -305,6 +308,12 @@ async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RE
     });
     
     clearTimeout(timeoutId);
+    const __ms = Date.now() - __t0;
+    if (__ms > 15000) {
+      console.warn(`⏱️ [AI Call] ${settings.llmProvider}/${settings.llmModel} took ${(__ms / 1000).toFixed(1)}s — the agentic planner makes one call per step, so this multiplies.`);
+    } else {
+      console.log(`⏱️ [AI Call] ${settings.llmModel} responded in ${(__ms / 1000).toFixed(1)}s`);
+    }
 
     // Handle rate limiting (429) with retry
     if (response.status === 429 && retries > 0) {

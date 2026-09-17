@@ -57,7 +57,10 @@ class PlannerAgent {
       // stop, so a ticket with three real obligations could not finish with three
       // strong tests — it had to keep generating until it hit the floor, which is
       // exactly how filler gets made. A count is a ceiling; the floor is 1.
-      minTests: b.minTests ?? 1
+      minTests: b.minTests ?? 1,
+      // How many tests to request per proposal call. Larger batches mean fewer
+      // sequential round-trips, which is what dominates on a slow/local model.
+      batchSize: b.batchSize ?? 5
     };
 
     this.targets = this.allocateCounts(this.distribution.weights, this.budget.maxTests);
@@ -97,7 +100,7 @@ class PlannerAgent {
             tool: 'propose_tests',
             input: {
               category: this.categoryForObligation(),
-              count: Math.min(4, this.remainingBudget()),
+              count: Math.min(this.budget.batchSize, this.remainingBudget()),
               focus: `Acceptance criterion: ${outstanding[0]}`
             }
           });
@@ -195,7 +198,7 @@ class PlannerAgent {
       if (gap) {
         return {
           tool: 'propose_tests',
-          input: { category: this.categoryForObligation(), count: Math.min(4, ac.total - ac.covered, room),
+          input: { category: this.categoryForObligation(), count: Math.min(this.budget.batchSize, ac.total - ac.covered, room),
                    focus: `Acceptance criterion: ${gap}` },
           thought: `cover AC (${ac.covered}/${ac.total})`
         };
@@ -214,7 +217,7 @@ class PlannerAgent {
     }
     const featureGap = this.gapFocus();
     if (pick && deficit > 0 && room > 0 && featureGap) {
-      return { tool: 'propose_tests', input: { category: pick, count: Math.min(5, deficit, room), focus: featureGap },
+      return { tool: 'propose_tests', input: { category: pick, count: Math.min(this.budget.batchSize, deficit, room), focus: featureGap },
                thought: `untested area: ${pick} (${deficit} short)` };
     }
 
@@ -277,7 +280,7 @@ class PlannerAgent {
     }
     for (const cat of cats.slice(0, 4)) {
       if (this.isCancelled() || this.remainingBudget() <= 0) break;
-      const obs = await safeAsync(() => this.tools.execute('propose_tests', { category: cat, count: 5, focus: '' }), null);
+      const obs = await safeAsync(() => this.tools.execute('propose_tests', { category: cat, count: this.budget.batchSize, focus: '' }), null);
       // Rescue is still bound by the ceiling.
       if (obs && Array.isArray(obs.tests)) this.gate.admit(obs.tests.slice(0, this.remainingBudget()));
     }
