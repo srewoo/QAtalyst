@@ -36,6 +36,27 @@ const activeStreams = (typeof self !== 'undefined') ? (self.activeStreams = self
  * in one helper means local models get every fix the OpenAI path gets, instead of
  * becoming a second implementation that drifts.
  */
+/** Is the shared capability helper loaded? (It lives in model-registry.js.) */
+function applyModelParamsAvailable() {
+  return typeof applyModelParams === 'function';
+}
+
+/**
+ * Add temperature/token parameters to a request body using the model's real
+ * capabilities. Falls back to the chat-model shape when model-registry.js is not
+ * loaded (e.g. a unit test importing this module standalone).
+ */
+function withModelParams(body, settings) {
+  if (applyModelParamsAvailable()) {
+    const { adjustments } = applyModelParams(body, settings, settings.llmProvider);
+    if (adjustments.length) console.warn('[AI Stream] model parameter adjustments:', adjustments.join(' '));
+    return body;
+  }
+  body.temperature = settings.temperature ?? APP_CONFIG.DEFAULT_TEMPERATURE;
+  body.max_tokens = settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS;
+  return body;
+}
+
 function openAiCompatibleEndpoint(settings) {
   if (settings.llmProvider === 'ollama') {
     const base = (settings.ollamaBaseUrl || 'http://localhost:11434').replace(/\/+$/, '');
@@ -247,16 +268,31 @@ async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RE
 
     const requestBody = {
       model: settings.llmModel || 'gpt-4.1',
-      messages: messages,
-      // `?? 0.7` (not `|| 0.7`) so an explicit temperature of 0 is honored
-      // rather than silently bumped to 0.7 — matters for structured JSON gen (F9).
-      temperature: settings.temperature ?? 0.7,
-      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
+      messages: messages
     };
 
-    // Enable JSON mode when all user content is text (test generation agents)
+    // Reasoning models (o-series, GPT-5) reject `max_tokens` and any non-default
+    // `temperature` outright — a 400, not a warning — and they spend part of the
+    // output budget thinking. applyModelParams sets the right parameter names and
+    // guarantees enough headroom; `?? 0.7` inside it keeps an explicit 0 honored
+    // for chat models, which matters for structured JSON generation (F9).
+    const applied = (typeof applyModelParams === 'function')
+      ? applyModelParams(requestBody, settings, settings.llmProvider)
+      : { adjustments: [], caps: { supportsJsonMode: true } };
+    if (applied.adjustments.length) {
+      console.warn('[AI Call] model parameter adjustments:', applied.adjustments.join(' '));
+    }
+    if (!applyModelParamsAvailable()) {
+      requestBody.temperature = settings.temperature ?? 0.7;
+      requestBody.max_tokens = settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS;
+    }
+
+
+    // Enable JSON mode when all user content is text (test generation agents).
+    // Some reasoning models do not support response_format; the prompt already
+    // asks for raw JSON and parseRobustJSON tolerates the difference.
     const hasImages = userContent.some(p => p.type === 'image_url');
-    if (!hasImages && settings._jsonMode) {
+    if (!hasImages && settings._jsonMode && applied.caps.supportsJsonMode !== false) {
       requestBody.response_format = { type: 'json_object' };
     }
 
@@ -825,13 +861,12 @@ async function callOpenAIStream(systemMessage, userContent, settings, onChunk, r
     const response = await fetch(streamEndpoint.url, {
       method: 'POST',
       headers: streamEndpoint.headers,
-      body: JSON.stringify({
-        model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.openai,
-        messages: messages,
-        stream: true,
-        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
-        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
-      }),
+      // Same capability handling as the non-streaming path, so a reasoning model
+      // selected from the discovered list streams instead of 400-ing.
+      body: JSON.stringify(withModelParams(
+        { model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.openai, messages, stream: true },
+        settings
+      )),
       signal: controller.signal
     });
 

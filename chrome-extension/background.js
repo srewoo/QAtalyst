@@ -43,6 +43,8 @@ importScripts('readiness.js');
 importScripts('review-memory.js');
 importScripts('settings-schema.js');
 importScripts('contract-import.js');
+// Model capabilities (reasoning vs chat parameter shapes) + discovery helpers.
+importScripts('model-registry.js');
 importScripts('agent-tools.js');
 importScripts('agent-loop.js');
 
@@ -785,7 +787,7 @@ async function handleTestIntegration(data) {
  * - Gemini:  GET /v1beta/models (no tokens used)
  * - Bedrock: InvokeModel with max_tokens=1 (minimal cost, confirms auth + model access)
  */
-async function handleTestAIConnection({ provider, model, apiKey, bedrockAccessKeyId, bedrockSecretKey, bedrockSessionToken, bedrockRegion }) {
+async function handleTestAIConnection({ provider, model, apiKey, ollamaBaseUrl, bedrockAccessKeyId, bedrockSecretKey, bedrockSessionToken, bedrockRegion }) {
   switch (provider) {
     case 'openai':
       return testOpenAIConnection(apiKey);
@@ -793,10 +795,56 @@ async function handleTestAIConnection({ provider, model, apiKey, bedrockAccessKe
       return testClaudeConnection(apiKey);
     case 'gemini':
       return testGeminiConnection(apiKey);
+    case 'ollama':
+      return testOllamaConnection({ model, ollamaBaseUrl });
     case 'bedrock':
       return testBedrockConnection({ model, bedrockAccessKeyId, bedrockSecretKey, bedrockSessionToken, bedrockRegion });
     default:
       return { success: false, message: `Unknown provider: ${provider}` };
+  }
+}
+
+/**
+ * Ollama: confirm the daemon is reachable AND that the selected model is pulled.
+ * Reaching the daemon is not enough — generation fails just as hard when the tag
+ * is missing, and that failure is far more confusing at generation time.
+ */
+async function testOllamaConnection({ model, ollamaBaseUrl }) {
+  const base = (ollamaBaseUrl || 'http://localhost:11434').replace(/\/+$/, '');
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let res;
+    try {
+      res = await fetch(`${base}/api/tags`, { signal: controller.signal });
+    } finally { clearTimeout(timer); }
+
+    if (!res.ok) {
+      return { success: false, message: `Ollama responded with HTTP ${res.status} at ${base}` };
+    }
+    const data = await res.json();
+    const tags = (data.models || []).map(m => m.name);
+    if (!tags.length) {
+      return { success: false, message: `Ollama is running at ${base} but no models are installed. Run: ollama pull llama3.1` };
+    }
+    if (model && !tags.includes(model)) {
+      return {
+        success: false,
+        message: `Ollama is running, but "${model}" is not installed. Available: ${tags.slice(0, 5).join(', ')}${tags.length > 5 ? '…' : ''}. Run: ollama pull ${model}`
+      };
+    }
+    return {
+      success: true,
+      message: `Connected to Ollama at ${base}. ${model ? `Model "${model}" is ready.` : `${tags.length} model(s) installed.`} No data leaves your machine.`
+    };
+  } catch (error) {
+    const hint = /abort/i.test(error.message)
+      ? 'it did not respond in time'
+      : 'it may not be running, or it is blocking this extension';
+    return {
+      success: false,
+      message: `Could not reach Ollama at ${base} — ${hint}. Start it with: OLLAMA_ORIGINS=chrome-extension://* ollama serve`
+    };
   }
 }
 

@@ -144,3 +144,66 @@ describe('provider labels and validation', () => {
     expect(() => validateSettings({ llmProvider: 'openai', llmModel: 'gpt-4.1' })).toThrow();
   });
 });
+
+describe('reasoning models get the right parameters', () => {
+  const { modelCapabilities, applyModelParams } = require('../model-registry.js');
+
+  test('o-series and GPT-5 are recognised as reasoning models', () => {
+    for (const m of ['o1', 'o3', 'o4-mini', 'gpt-5.2', 'gpt-5.2-mini']) {
+      expect(modelCapabilities(m, 'openai').reasoning).toBe(true);
+    }
+  });
+
+  test('chat models are not', () => {
+    for (const m of ['gpt-4.1', 'gpt-4-turbo', 'ft:gpt-4.1:acme:x']) {
+      expect(modelCapabilities(m, 'openai').reasoning).toBe(false);
+    }
+    expect(modelCapabilities('claude-sonnet-4-6', 'claude').reasoning).toBe(false);
+    expect(modelCapabilities('llama3.1:8b', 'ollama').reasoning).toBe(false);
+  });
+
+  test('a reasoning model gets max_completion_tokens, never max_tokens', () => {
+    const { body } = applyModelParams({}, { llmModel: 'o3', maxTokens: 20000 }, 'openai');
+    // Sending max_tokens to an o-series model is a hard 400.
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.max_completion_tokens).toBe(20000);
+  });
+
+  test('a chat model keeps max_tokens and temperature', () => {
+    const { body } = applyModelParams({}, { llmModel: 'gpt-4.1', maxTokens: 8000, temperature: 0.3 }, 'openai');
+    expect(body.max_tokens).toBe(8000);
+    expect(body.temperature).toBe(0.3);
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
+
+  test('temperature is OMITTED for reasoning models, and the override is reported', () => {
+    const { body, adjustments } = applyModelParams({}, { llmModel: 'o3', temperature: 0.2, maxTokens: 20000 }, 'openai');
+    expect(body.temperature).toBeUndefined();
+    // Silently ignoring the user's setting is its own bug — say so.
+    expect(adjustments.join(' ')).toMatch(/reasoning model/);
+  });
+
+  test('an explicit temperature of 0 survives for chat models', () => {
+    // `?? 0.7` not `|| 0.7` — 0 is a deliberate choice for structured JSON.
+    const { body } = applyModelParams({}, { llmModel: 'gpt-4.1', temperature: 0, maxTokens: 4000 }, 'openai');
+    expect(body.temperature).toBe(0);
+  });
+
+  test('the output budget is raised so reasoning cannot consume the whole answer', () => {
+    const { body, adjustments } = applyModelParams({}, { llmModel: 'o4-mini', maxTokens: 2000 }, 'openai');
+    // A 2000-token budget can be spent entirely on reasoning, returning nothing.
+    expect(body.max_completion_tokens).toBeGreaterThanOrEqual(16000);
+    expect(adjustments.join(' ')).toMatch(/budget raised/);
+  });
+
+  test('a generous budget is left alone', () => {
+    const { body, adjustments } = applyModelParams({}, { llmModel: 'o3', maxTokens: 32000 }, 'openai');
+    expect(body.max_completion_tokens).toBe(32000);
+    expect(adjustments.join(' ')).not.toMatch(/budget raised/);
+  });
+
+  test('JSON mode is not requested from models that reject it', () => {
+    expect(modelCapabilities('o3', 'openai').supportsJsonMode).toBe(false);
+    expect(modelCapabilities('gpt-4.1', 'openai').supportsJsonMode).toBe(true);
+  });
+});

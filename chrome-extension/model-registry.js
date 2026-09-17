@@ -151,7 +151,83 @@ async function discoverModels(provider, settings, fallback = []) {
   }
 }
 
-const api = { discoverModels, discoverOpenAI, discoverClaude, discoverGemini, discoverOllama, NON_CHAT };
+// ───────────────────── model capabilities ─────────────────────
+
+/**
+ * What does this model actually accept?
+ *
+ * Reasoning models are not drop-in replacements for chat models, and sending
+ * them chat-model parameters is a hard 400:
+ *   - OpenAI's o-series and GPT-5 reasoning models reject `max_tokens`; the
+ *     parameter is `max_completion_tokens`.
+ *   - They reject any `temperature` other than the default.
+ *   - They spend REASONING tokens out of the same output budget, so a budget
+ *     sized for a chat model can be consumed entirely by reasoning, returning an
+ *     empty completion that looks like the model simply failed.
+ *
+ * This matters more now that the model list is discovered rather than hardcoded:
+ * the dropdown surfaces every model an account can reach, reasoning ones
+ * included, so a user can select one that the old request shape cannot call.
+ */
+function modelCapabilities(model, provider) {
+  const id = String(model || '').toLowerCase();
+
+  // o1/o3/o4-mini… and the GPT-5 reasoning family.
+  const openaiReasoning = (provider === 'openai' || !provider) &&
+    (/^o\d/.test(id) || /^gpt-5/.test(id) || /(^|[-_])reasoning([-_]|$)/.test(id));
+
+  // Anthropic extended thinking also pins temperature.
+  const claudeThinking = provider === 'claude' && /thinking/.test(id);
+
+  const reasoning = openaiReasoning || claudeThinking;
+
+  return {
+    reasoning,
+    // The parameter name differs — sending the wrong one is a 400, not a warning.
+    tokenParam: openaiReasoning ? 'max_completion_tokens' : 'max_tokens',
+    // Reasoning models accept only their default temperature.
+    supportsTemperature: !reasoning,
+    // Reasoning tokens come out of the output budget, so leave real headroom.
+    // Below this, the model can spend the entire budget thinking and return
+    // nothing, which reads as a failure with no error.
+    minOutputTokens: reasoning ? 16000 : 0,
+    // JSON mode is unavailable on some reasoning models; the caller falls back
+    // to prompt-level instruction, which the parser already tolerates.
+    supportsJsonMode: !openaiReasoning
+  };
+}
+
+/**
+ * Apply temperature/token settings to a request body correctly for this model.
+ * One helper, so every provider path gets the same treatment instead of each
+ * repeating `temperature: x, max_tokens: y` and breaking on reasoning models.
+ *
+ * @returns {{body, adjustments: string[]}} adjustments are user-visible reasons
+ */
+function applyModelParams(body, settings, provider) {
+  const caps = modelCapabilities(settings.llmModel, provider || settings.llmProvider);
+  const adjustments = [];
+  const requested = settings.maxTokens || 4000;
+
+  if (caps.supportsTemperature) {
+    body.temperature = settings.temperature ?? 0.7;
+  } else if (settings.temperature != null && settings.temperature !== 1) {
+    // Omit rather than send a value the model rejects outright.
+    adjustments.push(`${settings.llmModel} is a reasoning model and uses its own temperature — your setting of ${settings.temperature} was not applied.`);
+  }
+
+  let tokens = requested;
+  if (caps.minOutputTokens && requested < caps.minOutputTokens) {
+    tokens = caps.minOutputTokens;
+    adjustments.push(`Output budget raised from ${requested} to ${tokens} — reasoning models spend part of the budget thinking, and a smaller budget can return an empty result.`);
+  }
+  body[caps.tokenParam] = tokens;
+
+  return { body, adjustments, caps };
+}
+
+const api = { discoverModels, discoverOpenAI, discoverClaude, discoverGemini, discoverOllama, NON_CHAT,
+              modelCapabilities, applyModelParams };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 if (typeof self !== 'undefined') Object.assign(self, api);
 if (typeof window !== 'undefined') Object.assign(window, api);

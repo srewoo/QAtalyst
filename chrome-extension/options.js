@@ -487,6 +487,43 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 });
 
+/**
+ * Reasoning models ignore temperature and need a larger output budget. Saying so
+ * next to the controls is better than silently overriding the user's value and
+ * letting them wonder why their setting had no effect.
+ */
+function updateModelCapabilityHint() {
+  const model = document.getElementById('llmModel').value;
+  const provider = document.getElementById('llmProvider').value;
+  const tempInput = document.getElementById('temperature');
+  const tokensInput = document.getElementById('maxTokens');
+  let hint = document.getElementById('modelCapabilityHint');
+
+  if (typeof modelCapabilities !== 'function' || !model) return;
+  const caps = modelCapabilities(model, provider);
+
+  if (!hint) {
+    hint = document.createElement('p');
+    hint.id = 'modelCapabilityHint';
+    hint.className = 'help-text';
+    hint.dataset.testid = 'model-capability-hint';
+    hint.style.cssText = 'margin-top:6px;color:#974f0c;';
+    (tempInput?.parentElement || document.body).appendChild(hint);
+  }
+
+  const notes = [];
+  if (!caps.supportsTemperature) {
+    notes.push(`${model} is a reasoning model: it uses its own temperature, so the value above has no effect.`);
+  }
+  if (caps.minOutputTokens && Number(tokensInput?.value || 0) < caps.minOutputTokens) {
+    notes.push(`It also spends part of the output budget thinking — requests will use at least ${caps.minOutputTokens} max tokens so the answer is not cut off.`);
+  }
+  hint.textContent = notes.join(' ');
+  hint.style.display = notes.length ? 'block' : 'none';
+}
+
+document.getElementById('llmModel').addEventListener('change', updateModelCapabilityHint);
+
 // Provider change handler
 document.getElementById('llmProvider').addEventListener('change', (e) => {
   updateModelOptions(e.target.value);
@@ -571,6 +608,7 @@ async function refreshModels({ silent = false } = {}) {
   if (previous && result.models.some(m => m.id === previous)) modelSelect.value = previous;
 
   if (btn) btn.textContent = '↻ Refresh model list';
+  updateModelCapabilityHint();
   if (result.source === 'discovered') {
     setHint(`✅ ${result.models.length} model(s) available to your ${provider === 'ollama' ? 'local Ollama' : 'account'}.`);
   } else if (!result.models.length) {
@@ -643,6 +681,7 @@ document.getElementById('testConnectionBtn').addEventListener('click', async () 
     provider,
     model,
     apiKey: document.getElementById('apiKey').value.trim(),
+    ollamaBaseUrl: (document.getElementById('ollamaBaseUrl') || {}).value || 'http://localhost:11434',
     bedrockAccessKeyId: document.getElementById('bedrockAccessKeyId').value.trim(),
     bedrockSecretKey: document.getElementById('bedrockSecretKey').value.trim(),
     bedrockSessionToken: document.getElementById('bedrockSessionToken').value.trim(),
@@ -660,7 +699,8 @@ document.getElementById('testConnectionBtn').addEventListener('click', async () 
       showTestResult(result, false, 'Temporary credentials (ASIA...) require a Session Token. Please enter it above.');
       return;
     }
-  } else {
+  } else if (provider !== 'ollama') {
+    // Ollama is local — it has no API key, so demanding one would block the test.
     if (!credentials.apiKey) {
       showTestResult(result, false, 'Please enter your API key.');
       return;
