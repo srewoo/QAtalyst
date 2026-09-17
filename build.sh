@@ -59,21 +59,25 @@ echo -e "${BLUE}► Packaging extension...${NC}"
 # Change to extension directory
 cd "$EXTENSION_DIR"
 
-# Create zip file excluding:
-# - .DS_Store (macOS)
-# - .git* (git files)
-# - node_modules (dependencies)
-# - README.md (docs)
-# - *.log (log files)
-# - .env* (environment files)
+# F22: ONE exclusion list for packaging.
+#
+# build.sh and `npm run zip` used to carry different lists, and this one shipped
+# tests/, e2e/, eval/ and utils/ to the Chrome Web Store — development files in a
+# production package, and a package that differed depending on which command you
+# happened to run. `npm run zip` now delegates here, so there is one build.
 zip -r "$OUTPUT_FILE" . \
     -x "*.DS_Store" \
     -x "*.git*" \
     -x "node_modules/*" \
-    -x "README.md" \
     -x "*.log" \
     -x ".env*" \
     -x "*.md" \
+    -x "tests/*" -x "*/tests/*" \
+    -x "e2e/*" -x "*/e2e/*" \
+    -x "eval/*" -x "*/eval/*" \
+    -x "utils/*" -x "*/utils/*" \
+    -x "coverage/*" \
+    -x "privacy.html" \
     > /dev/null 2>&1
 
 # Check if zip was created successfully
@@ -81,6 +85,51 @@ if [ ! -f "$OUTPUT_FILE" ]; then
     echo -e "${RED}✗ Error: Failed to create zip file!${NC}"
     exit 1
 fi
+
+# F22: verify the package instead of trusting the exclusion list. A silent
+# packaging regression ships development files to users.
+echo -e "${BLUE}► Verifying package contents...${NC}"
+CONTENTS=$(unzip -Z1 "$OUTPUT_FILE")
+
+# Must NOT contain development files.
+if echo "$CONTENTS" | grep -qE '(^|/)(tests|e2e|eval|utils|coverage)/'; then
+    echo -e "${RED}✗ Error: package contains development directories:${NC}"
+    echo "$CONTENTS" | grep -E '(^|/)(tests|e2e|eval|utils|coverage)/' | head -10
+    rm -f "$OUTPUT_FILE"
+    exit 1
+fi
+
+# Must contain everything the manifest and service worker actually load.
+REQUIRED=$(python3 - "$MANIFEST_FILE" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+files = {m.get("background", {}).get("service_worker", "")}
+for cs in m.get("content_scripts", []):
+    files.update(cs.get("js", []))
+    files.update(cs.get("css", []))
+files.add("manifest.json")
+print("\n".join(sorted(f for f in files if f)))
+PY
+)
+MISSING=""
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    echo "$CONTENTS" | grep -qxF "$f" || MISSING="$MISSING $f"
+done <<< "$REQUIRED"
+
+# The service worker's importScripts() dependencies are not in the manifest —
+# check them too, since a missing one breaks the extension at runtime only.
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    echo "$CONTENTS" | grep -qxF "$f" || MISSING="$MISSING $f"
+done <<< "$(grep -oE "importScripts\('[^']+'\)" "$EXTENSION_DIR/background.js" | sed "s/importScripts('//;s/')//")"
+
+if [ -n "$MISSING" ]; then
+    echo -e "${RED}✗ Error: package is missing required files:${NC}$MISSING"
+    rm -f "$OUTPUT_FILE"
+    exit 1
+fi
+echo -e "${GREEN}✓ Package verified: no development files, all loaded scripts present${NC}"
 
 # Get file size
 FILE_SIZE=$(du -h "$OUTPUT_FILE" | cut -f1)

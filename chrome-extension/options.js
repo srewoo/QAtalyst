@@ -188,6 +188,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'coverageTarget',
     'testCount',
     'enableHistoricalMining',
+    'dedupeAgainstExistingSuite',
     'historicalMaxResults',
     'historicalJqlFilters',
     'jiraBaseUrl',
@@ -318,6 +319,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Historical Mining
   document.getElementById('enableHistoricalMining').checked = settings.enableHistoricalMining || false;
+  // F14: this setting existed in the worker but had no control and was never
+  // loaded, so existing-suite deduplication could never actually run.
+  document.getElementById('dedupeAgainstExistingSuite').checked = settings.dedupeAgainstExistingSuite || false;
   document.getElementById('historicalMaxResults').value = settings.historicalMaxResults || 20;
   document.getElementById('historicalJqlFilters').value = settings.historicalJqlFilters || '';
   document.getElementById('jiraBaseUrl').value = settings.jiraBaseUrl || '';
@@ -597,6 +601,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
 
     // Historical Mining
     enableHistoricalMining: document.getElementById('enableHistoricalMining').checked,
+    dedupeAgainstExistingSuite: document.getElementById('dedupeAgainstExistingSuite').checked,
     historicalMaxResults: parseInt(document.getElementById('historicalMaxResults').value),
     historicalJqlFilters: document.getElementById('historicalJqlFilters').value.trim(),
     jiraBaseUrl: document.getElementById('jiraBaseUrl').value.trim(),

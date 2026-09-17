@@ -45,6 +45,8 @@
       ],
       "js": [
         "graph-filter.js",
+        "dynamic-distribution.js",
+        "semantic-duplicate-detector.js",
         "config.js",
         "logger.js",
         "security.js",

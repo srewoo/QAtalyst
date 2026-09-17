@@ -89,7 +89,13 @@ class StorageManager {
           crawledAt: embeddingData.crawledAt
         },
         knowledgeGraph: embeddingData.knowledgeGraph,
-        crawledAt: Date.now(),
+        // F19: preserve the ORIGINAL observation time when one is supplied (e.g.
+        // an imported graph, or a graph built from batches saved earlier). Only
+        // fall back to now when the evidence genuinely has no recorded origin.
+        crawledAt: embeddingData.crawledAt
+          || (embeddingData.knowledgeGraph && embeddingData.knowledgeGraph.crawledAt)
+          || Date.now(),
+        savedAt: Date.now(),
         version: '11.0.0'
       };
 
@@ -142,7 +148,18 @@ class StorageManager {
           lastUpdated: Date.now()
         };
 
-        existingData.crawledAt = Date.now();
+        // F19: `crawledAt` is when the APP WAS OBSERVED, not when we wrote the
+        // record. Stamping it on every save made an imported months-old graph
+        // look freshly crawled, which silently defeated the staleness warning —
+        // tests were grounded against stale evidence and presented as current.
+        // Save time is recorded separately.
+        existingData.savedAt = Date.now();
+        if (incrementalData.crawledAt) {
+          // A real new observation moves the observation time forward.
+          existingData.crawledAt = incrementalData.crawledAt;
+        } else if (!existingData.crawledAt) {
+          existingData.crawledAt = Date.now();
+        }
 
         // Save updated data
         const putRequest = store.put(existingData);

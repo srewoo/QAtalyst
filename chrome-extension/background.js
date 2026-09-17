@@ -35,6 +35,13 @@ importScripts('coverage-mapper.js');
 importScripts('grounded-verifier.js');
 importScripts('dynamic-distribution.js');
 importScripts('acceptance-gate.js');
+importScripts('test-case-finalizer.js');
+importScripts('document-extractor.js');
+importScripts('requirement-model.js');
+importScripts('export-ledger.js');
+importScripts('readiness.js');
+importScripts('review-memory.js');
+importScripts('settings-schema.js');
 importScripts('agent-tools.js');
 importScripts('agent-loop.js');
 
@@ -367,71 +374,31 @@ async function fetchAndExtractDocument(url, fileName, jiraEmail, jiraApiToken) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const contentType = response.headers.get('content-type') || '';
-    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    const buffer = await response.arrayBuffer();
 
-    // Plain-text formats — read directly as text
-    if (['txt', 'md', 'csv', 'log', 'json', 'xml', 'yaml', 'yml'].includes(ext) ||
-        contentType.includes('text/')) {
-      const text = await response.text();
-      return { success: true, text: text.slice(0, 20000), fileName, type: 'text' };
-    }
+    // F24: real extraction (document-extractor.js). The old inline implementation
+    // regex-scanned RAW PDF bytes for `(text)Tj`, which matches nothing once the
+    // content streams are FlateDecode-compressed — i.e. on essentially every real
+    // PDF — and then declared the file "scanned". DOCX was rejected outright.
+    const result = await extractDocument(buffer, fileName, contentType);
 
-    // PDF — extract text from raw bytes using regex (no external lib needed)
-    if (ext === 'pdf' || contentType.includes('pdf')) {
-      const arrayBuffer = await response.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      const raw = new TextDecoder('latin1').decode(bytes);
-
-      // Extract text from PDF stream objects using simple pattern matching
-      // Works for most non-scanned PDFs that have embedded text streams
-      const textChunks = [];
-      const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
-      let match;
-      while ((match = streamRegex.exec(raw)) !== null) {
-        const streamContent = match[1];
-        // Extract text operators: (text)Tj / [(text)]TJ / BT...ET blocks
-        const textOps = streamContent.match(/\(([^)\\]|\\.)*\)\s*Tj|\[(([^[\]\\]|\\.)*)\]\s*TJ/g) || [];
-        for (const op of textOps) {
-          // Decode escaped PDF string literals
-          const inner = op.replace(/^\[?\s*|\s*\]?\s*TJ$|\s*Tj$/g, '');
-          const decoded = inner.replace(/\(([^)\\]|\\.)*\)/g, m => {
-            return m.slice(1, -1)
-              .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
-              .replace(/\\\\/g, '\\').replace(/\\(.)/g, '$1');
-          }).replace(/\s+/g, ' ');
-          if (decoded.trim().length > 1) textChunks.push(decoded.trim());
-        }
-      }
-
-      const extracted = textChunks.join(' ').replace(/\s+/g, ' ').trim();
-      if (extracted.length > 50) {
-        return { success: true, text: extracted.slice(0, 20000), fileName, type: 'pdf' };
-      }
-      // Scanned/image-only PDF — no embedded text streams found.
-      // Return the raw bytes as base64 so a vision-capable LLM can read it.
-      console.warn(`⚠️ [Background] ${fileName}: no text streams found, returning as base64 for vision LLM`);
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-      return {
-        success: true,
-        text: '',          // no text to inject as markdown
-        base64,            // caller may pass this as an image part to a vision model
-        mimeType: 'application/pdf',
-        isScannedPdf: true,
-        fileName,
-        type: 'scanned-pdf'
-      };
-    }
-
-    // DOCX — extract from XML content inside zip (basic extraction)
-    if (ext === 'docx' || contentType.includes('officedocument')) {
-      // We can't unzip in a service worker without a library, so note it
-      return { success: false, error: 'DOCX files require a zip parser. Consider converting to PDF or TXT.', fileName };
-    }
-
-    return { success: false, error: `Unsupported document type: ${ext}`, fileName };
+    // Every outcome is reported, including the ones with no text, so the caller
+    // can tell the user which attachment could not be read and why.
+    return {
+      success: result.status === 'extracted',
+      status: result.status,
+      text: result.text || '',
+      note: result.note || '',
+      base64: result.base64,
+      mimeType: result.mimeType,
+      isScannedPdf: result.status === 'no_text_layer' && result.type === 'pdf',
+      fileName,
+      type: result.type,
+      error: result.status === 'extracted' ? undefined : (result.note || result.status)
+    };
   } catch (error) {
     console.warn(`⚠️ [Background] Document extraction failed: ${error.message}`);
-    return { success: false, error: error.message, fileName };
+    return { success: false, status: 'fetch_failed', error: error.message, fileName, text: '' };
   }
 }
 
@@ -500,8 +467,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const tabId = sender.tab.id;
     sendResponse({ started: true }); // release channel immediately
     handleAnalyzeRequirementsStream(request.data, tabId)
-      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'analyze', result }))
-      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'analyze', error: error.message }));
+      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'analyze', ticketKey: request.data?.ticketKey, result }))
+      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'analyze', ticketKey: request.data?.ticketKey, error: error.message }));
     return false;
   }
 
@@ -510,8 +477,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const tabId = sender.tab.id;
     sendResponse({ started: true });
     handleGenerateTestScopeStream(request.data, tabId)
-      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'scope', result }))
-      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'scope', error: error.message }));
+      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'scope', ticketKey: request.data?.ticketKey, result }))
+      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'scope', ticketKey: request.data?.ticketKey, error: error.message }));
     return false;
   }
 
@@ -520,8 +487,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const tabId = sender.tab.id;
     sendResponse({ started: true });
     handleGenerateTestCasesStream(request.data, tabId)
-      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'testcases', result }))
-      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'testcases', error: error.message }));
+      .then(result => safeSendMessageToTab(tabId, { action: 'streamComplete', streamType: 'testcases', ticketKey: request.data?.ticketKey, result }))
+      .catch(error => safeSendMessageToTab(tabId, { action: 'streamError', streamType: 'testcases', ticketKey: request.data?.ticketKey, error: error.message }));
     return false;
   }
   
@@ -533,7 +500,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'stopMultiAgentGeneration') {
     let stopped = false;
-    for (const abort of activeAgenticAborts) { abort.cancelled = true; stopped = true; }
+    for (const abort of activeAgenticAborts) {
+      abort.cancelled = true;
+      // F17: cancellation was a boolean checked BETWEEN planner iterations, so a
+      // cancel during a long provider call waited for that call (and its retries)
+      // to finish before taking effect. Abort the in-flight request too.
+      try { abort.controller && abort.controller.abort(); } catch (_) {}
+      stopped = true;
+    }
     sendResponse(stopped ? { success: true } : { success: false, message: 'No active generation' });
     return true;
   }
@@ -668,6 +642,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     handleExportEmbeddings(request.data)
       .then(sendResponse)
       .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+
+  // F17: let the panel recover a partial suite from an interrupted or cancelled run.
+  if (request.action === 'getRecoverableRuns') {
+    listRecoverableRuns(request.data && request.data.ticketKey)
+      .then(runs => sendResponse({ success: true, runs }))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  if (request.action === 'discardRecoverableRun') {
+    const key = request.data && request.data.key;
+    if (!key || !String(key).startsWith('agentic_ckpt_')) {
+      sendResponse({ success: false, error: 'invalid checkpoint key' });
+      return false;
+    }
+    chrome.storage.session.remove(key)
+      .then(() => sendResponse({ success: true }))
+      .catch(e => sendResponse({ success: false, error: e.message }));
     return true;
   }
 
@@ -1444,17 +1438,37 @@ async function getCrawlDataFromStorage() {
 
 // Shared helper: Fetch and merge external content (Confluence, Figma, Google Docs)
 async function enrichTicketWithExternalContent(ticketData, settings) {
-  if (!settings.confluenceUrl && !settings.figmaToken && !settings.googleApiKey) {
+  // F25: this returned early unless SOME credential was configured — but the
+  // Google Docs adapter fetches PUBLIC documents through the export endpoint with
+  // no key at all. A ticket whose only linked spec was a public Google Doc was
+  // therefore never enriched, gated on credentials it did not need.
+  const hasAnyCredential = !!(settings.confluenceUrl || settings.figmaToken || settings.googleApiKey);
+  const mayFetchPublicDocs = typeof GoogleDocsIntegration !== 'undefined';
+  if (!hasAnyCredential && !mayFetchPublicDocs) {
     return { enrichedTicketData: ticketData, externalContent: null, externalSources: null };
   }
 
   const integrationManager = new IntegrationManager(settings);
   const externalContent = await integrationManager.fetchAllLinkedContent(ticketData);
 
+  // F25: count what was actually USABLE, not merely attempted. Failed Confluence
+  // entries stay in the returned list (with content:null and an error) so the
+  // failure can be reported — but counting them as "3 Confluence sources" told
+  // the user they had context they did not have.
+  const usable = (arr) => (arr || []).filter(x => x && !x.error && (x.content || x.text || x.images));
+  const failed = (arr) => (arr || []).filter(x => x && x.error);
+
   const externalSources = {
-    confluence: externalContent.confluence.length,
-    figma: externalContent.figma.length,
-    googleDocs: externalContent.googleDocs.length
+    confluence: usable(externalContent.confluence).length,
+    figma: usable(externalContent.figma).length,
+    googleDocs: usable(externalContent.googleDocs).length,
+    // Per-source failures, preserved through the worker response so the panel can
+    // distinguish "no linked docs" from "we could not read your linked docs".
+    failures: [
+      ...failed(externalContent.confluence).map(x => ({ type: 'confluence', url: x.url, error: x.error })),
+      ...failed(externalContent.figma).map(x => ({ type: 'figma', url: x.url, error: x.error })),
+      ...failed(externalContent.googleDocs).map(x => ({ type: 'googleDocs', url: x.url, error: x.error }))
+    ]
   };
 
   // Build linkedPages from fetched content
@@ -1713,8 +1727,15 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
       throw new Error('Could not parse test cases from AI response');
     }
     
-    const testCases = JSON.parse(jsonMatch[0]);
-    
+    const parsedCases = JSON.parse(jsonMatch[0]);
+
+    // F03: every route validates. This path used to return raw model output,
+    // so relevance and uniqueness silently depended on the multi-agent toggle.
+    const final = await finalizeGenerated(parsedCases, {
+      ticketData: enrichedTicketData, appContext: data.appContext, settings
+    });
+    const testCases = final.testCases;
+
     // Count categories
     const stats = {
       totalCount: testCases.length,
@@ -1722,10 +1743,14 @@ Return test cases as JSON array: [{"id":"TC-POS-001","title":"...","category":"P
       negativeCount: testCases.filter(tc => tc.category === 'Negative').length,
       edgeCaseCount: testCases.filter(tc => tc.category === 'Edge').length
     };
-    
+
     return {
       testCases,
       ...stats,
+      rejected: final.rejected,
+      preservedDistinctions: final.preservedDistinctions,
+      qualityStats: final.stats,
+      degradations: final.degradations,
       externalSources: currentExternalSources
     };
   } catch (error) {
@@ -2032,16 +2057,45 @@ Provide detailed test scope covering all aspects.`;
  * crawledContext string so it can be injected into single-agent prompts.
  * This bridges the gap between the two different crawl data formats.
  */
-function formatAppContextAsCrawledContext(appContext) {
+/**
+ * F03: the single finalization call site for the non-agentic routes. Normalizes
+ * the app context the same way the agentic path does, then runs schema
+ * validation + the acceptance gate so all four routes reach the same decision on
+ * the same candidates.
+ */
+async function finalizeGenerated(parsedCases, { ticketData, appContext, settings, existingTests } = {}) {
+  const knowledgeGraph = normalizeGenerationContext(appContext);
+  const adaptive = deriveAdaptiveThresholds(ticketData, knowledgeGraph, settings || {});
+  return finalizeTestCases(parsedCases, {
+    ticketData,
+    knowledgeGraph,
+    existingTests,
+    deps: { AcceptanceGate, GroundedVerifier, SemanticDuplicateDetector },
+    dedupThreshold: adaptive.dedupThreshold,
+    relevanceThreshold: adaptive.relevanceThreshold,
+    // F03: the assertion critic runs on EVERY route now, not just the agentic
+    // one — an inverted expected result was previously caught only when the
+    // multi-agent toggle happened to be on.
+    critique: (settings && settings.enableAssertionCritic === false) || typeof critiqueAssertions !== 'function'
+      ? undefined
+      : (cases) => critiqueAssertions(cases, ticketData, callAI, settings || {})
+  });
+}
+
+function formatAppContextAsCrawledContext(rawAppContext) {
+  // F01: accept the UI wrapper as well as a raw/aggregated graph. Previously the
+  // wrapper fell straight through and produced "0 pages / no forms / no APIs",
+  // i.e. a crawl-context header with no crawl context in it.
+  const appContext = normalizeGenerationContext(rawAppContext);
   if (!appContext) return '';
   const lines = [
     `\n\n## 🌐 Application Context (from Crawled Data)`,
     `**App:** ${appContext.appUrl || 'Unknown'}`,
-    `**Total Pages Crawled:** ${appContext.totalPages || 0}`,
+    `**Total Pages Crawled:** ${appContext.totalPages || appContext.pageCount || 0}`,
   ];
 
-  // Top relevant pages
-  const pages = appContext.pages || [];
+  // Top relevant pages (pages is a URL-keyed map after normalization)
+  const pages = Object.values(appContext.pages || {});
   if (pages.length > 0) {
     lines.push(`\n### Relevant Pages (${pages.length})`);
     pages.slice(0, 10).forEach(p => {
@@ -2051,8 +2105,12 @@ function formatAppContextAsCrawledContext(appContext) {
     });
   }
 
-  // Forms
-  const forms = appContext.forms || [];
+  // Forms — aggregated list when present, otherwise collected off the pages
+  // (the raw crawl shape has no top-level .forms/.apis at all).
+  const pageFeatures = pages.flatMap(p => Array.isArray(p.features) ? p.features : []);
+  const forms = (appContext.forms && appContext.forms.length)
+    ? appContext.forms
+    : pageFeatures.filter(f => f && f.type === 'form');
   if (forms.length > 0) {
     lines.push(`\n### Key Forms (${forms.length})`);
     forms.slice(0, 8).forEach(f => {
@@ -2062,12 +2120,25 @@ function formatAppContextAsCrawledContext(appContext) {
   }
 
   // APIs
-  const apis = appContext.apis || [];
+  const apis = (appContext.apis && appContext.apis.length)
+    ? appContext.apis
+    : pages.flatMap(p => Array.isArray(p.apis) ? p.apis : []);
   if (apis.length > 0) {
     lines.push(`\n### API Endpoints (${apis.length})`);
     apis.slice(0, 12).forEach(a => {
       lines.push(`- ${a.method || 'GET'} ${a.url || a.endpoint || ''}`);
     });
+  }
+
+  // Buttons / links — dropped entirely before F02; a button-only feature had no
+  // representation in the prompt and so could never be grounded.
+  const buttons = [...new Set(
+    pageFeatures.filter(f => f && (f.type === 'button' || f.type === 'link'))
+      .map(f => f.text || f.label).filter(Boolean)
+  )];
+  if (buttons.length > 0) {
+    lines.push(`\n### Key Actions (${buttons.length})`);
+    lines.push(buttons.slice(0, 25).map(b => `- ${b}`).join('\n'));
   }
 
   return lines.join('\n');
@@ -2218,13 +2289,28 @@ ${crawledContext}
     try { JSON.parse(testCasesResponse); } catch (_) { truncated = true; }
   }
 
+  // F03: what was streamed to the panel is a DRAFT. The suite is not final until
+  // it has been schema-validated and passed the acceptance gate — the same gate
+  // the agentic route uses — so streaming no longer buys a lower quality bar.
+  const final = await finalizeGenerated(testCases, {
+    ticketData: enrichedTicketData, appContext: data.appContext, settings
+  });
+  testCases = final.testCases;
+
   const stats = {
     total: testCases.length,
     byCategory: testCases.reduce((acc, tc) => { acc[tc.category] = (acc[tc.category] || 0) + 1; return acc; }, {}),
     byPriority: testCases.reduce((acc, tc) => { acc[tc.priority] = (acc[tc.priority] || 0) + 1; return acc; }, {})
   };
 
-  return { testCases, ...stats, truncated, externalSources: currentExternalSources, requestId };
+  return {
+    testCases, ...stats, truncated,
+    rejected: final.rejected,
+    preservedDistinctions: final.preservedDistinctions,
+    qualityStats: final.stats,
+    degradations: final.degradations,
+    externalSources: currentExternalSources, requestId
+  };
 }
 
 // Multi-agent test generation handler
@@ -2246,7 +2332,12 @@ ${crawledContext}
 async function handleGenerateTestCasesAgentic(data, tabId) {
   validateSettings(data.settings);
   const { ticketData, settings } = data;
-  const knowledgeGraph = data.appContext || null;
+  // F01: `data.appContext` is the content script's WRAPPER
+  // ({appUrl, knowledgeGraph, hasContext, …}). Assigning it straight to
+  // knowledgeGraph gave the verifier/coverage/BM25 an object with no top-level
+  // pages/forms/apis — an empty entity index — while still being truthy, so the
+  // "no crawl data" degradation never fired either. Normalize at the boundary.
+  const knowledgeGraph = normalizeGenerationContext(data.appContext);
 
   // F21: collect degradations so the result can tell the user when the suite was
   // produced with reduced context (no crawl, failed enrichment, thin/stale
@@ -2256,18 +2347,46 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
     degradations.push('No crawl data for this app — tests could not be grounded against real UI and are flagged unverified. Crawl the app for higher-quality tests.');
   } else if (knowledgeGraph.stale) {
     degradations.push(`Crawl data is ${knowledgeGraph.stalenessDays}d old (> ${knowledgeGraph.staleAfterDays}d) — it may no longer match the live app. Consider re-crawling.`);
+  } else if (knowledgeGraph.explorationGaps && knowledgeGraph.explorationGaps.some(g => g.kind === 'budget_cutoff')) {
+    // F19: pages the crawl never reached are gaps in the evidence, not proof the
+    // app lacks those screens.
+    const gap = knowledgeGraph.explorationGaps.find(g => g.kind === 'budget_cutoff');
+    degradations.push(`The crawl stopped before visiting ${gap.remaining} discovered page(s) — features on them could not be grounded.`);
   } else if (knowledgeGraph.noRelevantPages) {
     degradations.push('No crawled pages matched this ticket — grounding is effectively ticket-only. Verify the right app was crawled.');
   } else if (knowledgeGraph.lowRelevance) {
     degradations.push('Few crawled pages matched this ticket — grounding context is thin.');
   }
 
+  // F24: an attachment that could not be read is missing evidence, and the user
+  // must be told — a spec nobody could parse is not the same as no spec.
+  for (const u of ((ticketData && ticketData.unreadableAttachments) || []).slice(0, 5)) {
+    degradations.push(`Attachment "${u.fileName}" could not be read (${u.reason}) — any requirement it contains is missing from these tests.`);
+  }
+
   // Enrich with external content (Confluence/Figma/Docs) when not pre-supplied.
+  //
+  // F09: this used to skip enrichment whenever `data.externalSources` was
+  // truthy — but the content script sends the ANALYSIS step's source COUNTS
+  // ({confluence: 3, figma: 1}), not the fetched content. So running Analysis
+  // first made generation skip fetching every linked document and build the
+  // suite from the bare ticket, while the UI still showed "Confluence ✅".
+  // Only pre-supplied CONTENT may skip the fetch.
   let enrichedTicketData = ticketData;
-  if (!data.externalSources) {
+  const preSuppliedContent = data.enrichedTicketData || data.externalContent;
+  if (preSuppliedContent) {
+    enrichedTicketData = data.enrichedTicketData || ticketData;
+  }
+  if (!preSuppliedContent) {
     try {
       const enrichResult = await enrichTicketWithExternalContent(ticketData, settings);
       enrichedTicketData = enrichResult.enrichedTicketData || ticketData;
+      // F25: a per-source failure must be visible, not averaged away into a
+      // success. "3 Confluence pages" when two 403'd is a false claim of context.
+      const failures = (enrichResult.externalSources && enrichResult.externalSources.failures) || [];
+      for (const f of failures.slice(0, 6)) {
+        degradations.push(`A linked ${f.type} source could not be read (${f.error || 'fetch failed'}) — any requirement it contains is missing from these tests.`);
+      }
     } catch (e) {
       console.warn('[Agentic] external enrichment skipped:', e.message);
       degradations.push(`External content (Confluence/Figma/Docs) could not be fetched: ${e.message}. Tests were generated from the ticket alone.`);
@@ -2284,10 +2403,24 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
     try {
       const tr = new TestRailIntegration(settings);
       if (typeof tr.getCases === 'function') {
-        existingTests = await tr.getCases(settings.testrailSuiteId) || [];
+        const res = await tr.getCases(settings.testrailSuiteId);
+        // getCases now reports {cases, ok, error}; tolerate the old array shape.
+        const cases = Array.isArray(res) ? res : (res && res.cases) || [];
+        const ok = Array.isArray(res) ? true : !!(res && res.ok);
+        existingTests = cases;
         console.log(`[Agentic] dedupe vs existing suite: loaded ${existingTests.length} TestRail case(s)`);
+        // F14: a failed import must never read as "the team has no tests".
+        // Uniqueness was only checked within this run — say so.
+        if (!ok) {
+          degradations.push(`The existing TestRail suite could not be fully loaded (${(res && res.error) || 'unknown error'}) — only ${existingTests.length} case(s) were compared against, so a generated test may duplicate one already in the suite.`);
+        }
       }
-    } catch (e) { console.warn('[Agentic] existing-suite fetch skipped:', e.message); }
+    } catch (e) {
+      console.warn('[Agentic] existing-suite fetch skipped:', e.message);
+      degradations.push(`The existing TestRail suite could not be loaded (${e.message}) — uniqueness was checked only within this run.`);
+    }
+  } else if (settings.dedupeAgainstExistingSuite) {
+    degradations.push('Deduplication against the existing suite is enabled but TestRail is not configured — uniqueness was checked only within this run.');
   }
 
   // ── Build the grounding + relevance + dedup gate ──
@@ -2331,7 +2464,7 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
     if (jiraSearch) {
       try {
         safeSendMessageToTab(tabId, { action: 'historicalMiningProgress', progress: { phase: 'search', message: 'Mining historical bugs…' } });
-        const jql = buildHistoricalJql(enrichedTicketData);
+        const jql = buildHistoricalJql(enrichedTicketData, settings);
         if (jql) historicalIssues = await jiraSearch(jql) || [];
         safeSendMessageToTab(tabId, { action: 'historicalMiningProgress', progress: { phase: 'done', found: historicalIssues.length } });
         console.log(`[Agentic] historical mining: ${historicalIssues.length} related issue(s) via JQL`);
@@ -2345,9 +2478,26 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
   // ── Tool registry wiring existing capabilities ──
   // NOTE: inspect_element grounds against the crawled knowledge graph, NOT the
   // active Jira tab (the tab is the ticket page, not the app under test).
+
+  // F17: every run needs its own identity. Epic Mode drives several concurrent
+  // children through the SAME tab, and the checkpoint key was `agentic_ckpt_<tabId>`
+  // — so children overwrote each other's snapshot, and whichever finished first
+  // deleted it in its `finally`. Interrupting one child could not recover it, and
+  // a stale result could be applied to the wrong ticket.
+  const runId = `${ticketData && ticketData.key ? ticketData.key : 'run'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const abort = { cancelled: false, runId, controller: new AbortController() };
+  activeAgenticAborts.add(abort);
+
+  // F17: the tools call the provider with these settings, so the run's abort
+  // signal must ride along — otherwise cancel only stops the NEXT planner step.
+  const abortableSettings = { ...settings, _abortSignal: abort.controller.signal };
+
   const tools = new AgentToolRegistry({
     callAI,
-    settings,
+    settings: abortableSettings,
+    // F23: the user's reviewed analysis/scope, so their corrections and
+    // exclusions actually shape the suite.
+    reviewedContext: data.reviewedContext || null,
     ticketData: enrichedTicketData,
     knowledgeGraph,
     bm25,
@@ -2365,11 +2515,9 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
 
   // ── Budget: derive from the test-count slider ──
   const maxTests = clampInt(settings.testCount || settings.maxTestCases || 30, 8, 100);
-  const abort = { cancelled: false };
-  activeAgenticAborts.add(abort);
 
   const planner = new PlannerAgent({
-    callAI, settings, tools, gate,
+    callAI, settings: abortableSettings, tools, gate,
     ticketData: enrichedTicketData,
     distribution,
     allocateCounts: (self.DynamicDistribution && self.DynamicDistribution.allocateCounts) || undefined,
@@ -2389,15 +2537,25 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
   // the whole in-memory suite. Calling an async extension API resets the 30s idle
   // timer, and we snapshot accepted tests to session storage each tick so a
   // termination leaves a recoverable partial suite instead of nothing.
-  const ckptKey = `agentic_ckpt_${tabId}`;
+  const ckptKey = `agentic_ckpt_${runId}`;
   const keepAlive = setInterval(() => {
     try { chrome.runtime.getPlatformInfo(() => {}); } catch (_) {}
     try {
-      chrome.storage.session.set({ [ckptKey]: { tests: gate.getAccepted(), ts: Date.now(), ticketKey: ticketData && ticketData.key } });
+      chrome.storage.session.set({ [ckptKey]: {
+        runId, tabId,
+        tests: gate.getAccepted(),
+        ts: Date.now(),
+        ticketKey: ticketData && ticketData.key,
+        // F17: the ticket revision this suite was built from, so a resumed run
+        // can tell whether the ticket has changed underneath it.
+        ticketRevision: (ticketData && (ticketData.updated || ticketData.version)) || null,
+        stage: 'planning'
+      } });
     } catch (_) {}
     // Also nudge the content script so its UI heartbeat/lastSeen stays fresh.
     safeSendMessageToTab(tabId, { action: 'keepAlive', timestamp: Date.now() });
   }, 5000);
+  let completedCleanly = false;
   try {
     const result = await planner.run();
 
@@ -2427,12 +2585,62 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
         const critique = await critiqueAssertions(result.testCases, enrichedTicketData, callAI, settings);
         if (critique.ran) {
           result.testCases = critique.tests;
-          if (critique.flagged > 0) {
+          const v = critique.byVerdict || {};
+          if (v.contradictory) {
             const verb = settings.assertionCriticStrict ? 'removed' : 'flagged for review';
-            degradations.push(`${critique.flagged} test(s) had a questionable expected result (possibly inverted or unverifiable) and were ${verb} by the assertion critic.`);
+            degradations.push(`${v.contradictory} test(s) assert an outcome that contradicts the ticket or their own steps — ${verb}.`);
           }
+          if (v.unverifiable) degradations.push(`${v.unverifiable} test(s) have an expected result that is not observable — nothing concrete to assert.`);
+          if (v.unknown) degradations.push(`${v.unknown} test(s) assert behaviour the ticket does not settle — confirm the expected result before executing.`);
+          // F11: an incomplete verdict batch is missing information, not approval.
+          if (critique.unjudged) degradations.push(`${critique.unjudged} test(s) received no verdict from the assertion critic — their expected results are unchecked.`);
+        } else {
+          // F11: critic unavailability must be VISIBLE. Returning the tests
+          // unchanged after a failed critique returns UNCHECKED tests, and
+          // silence there reads to the user as verification.
+          degradations.push(`Expected results were not reviewed by the assertion critic (${critique.unavailableReason || 'unavailable'}) — inverted or unsupported outcomes may be present.`);
         }
-      } catch (e) { console.warn('[Agentic] assertion critic skipped:', e.message); }
+      } catch (e) {
+        console.warn('[Agentic] assertion critic skipped:', e.message);
+        degradations.push(`Expected results were not reviewed by the assertion critic (${e.message}) — inverted or unsupported outcomes may be present.`);
+      }
+    }
+
+    // F08: coverage must describe the suite that is actually RETURNED. The
+    // planner measured it before the critic ran, so in strict mode the reported
+    // coverage still counted cases that had since been removed — and the
+    // "produced nothing" check above was never repeated.
+    result.coverage = recomputeFinalCoverage(result.testCases, {
+      coverageMapper, ticketData: enrichedTicketData, previous: result.coverage
+    });
+    if (!result.testCases.length) {
+      return { error: 'All generated test cases were removed by the assertion critic (their expected results could not be supported by the ticket). No suite was produced.' };
+    }
+
+    // §15.3: label each case honestly — specification_only / manual_ready /
+    // automation_ready — instead of presenting everything as ready to run.
+    if (typeof assessExecutability === 'function') {
+      for (const tc of result.testCases) {
+        const r = assessExecutability(tc);
+        tc._executability = r.level;
+        if (r.blockers.length) tc._executionBlockers = r.blockers;
+        if (r.missing.length) tc._executionGaps = r.missing;
+      }
+      const notReady = result.testCases.filter(t => t._executability === 'specification_only').length;
+      const needsSetup = result.testCases.filter(t => t._executability === 'manual_ready').length;
+      if (notReady) degradations.push(`${notReady} case(s) cannot be executed as written — they are missing a role, starting state or test data.`);
+      if (needsSetup) degradations.push(`${needsSetup} case(s) need a fixture or fault-injection hook before they can run.`);
+    }
+
+    // §15.6: ask about the facts that DECIDE an expected result, rather than
+    // inventing a specific the ticket never stated.
+    if (typeof clarificationQuestions === 'function' && result.coverage?.requirements) {
+      const questions = clarificationQuestions(result.coverage.requirements, result.testCases);
+      if (questions.length) {
+        result.clarifications = questions.slice(0, 8);
+        result.unresolved = unresolvedLedger(result.coverage.requirements, questions);
+        degradations.push(`${questions.length} question(s) must be answered before the expected results for some cases can be confirmed.`);
+      }
     }
 
     // F21: if the AC coverage loop left criteria uncovered, say so explicitly.
@@ -2441,12 +2649,32 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
       degradations.push(`${acCov.total - acCov.covered} of ${acCov.total} acceptance criteria are not clearly covered by a generated test — review the uncovered items.`);
     }
 
-    return {
+    // F12: an incomplete run must say so. A suite that stopped because it ran out
+    // of budget or stalled is not the same artifact as one that covered every
+    // known obligation, and both used to be returned identically.
+    if (result.stopReason && result.stopReason !== 'complete') {
+      const why = {
+        budget_exhausted: `Generation stopped at the ${settings.testCount || 'configured'}-test budget — there may be uncovered obligations left.`,
+        no_novel_scenarios: 'Generation stopped early: recent rounds produced no new distinct scenarios.',
+        cancelled: 'Generation was cancelled — this suite is partial.',
+        steps_exhausted: 'Generation used its full planning budget before covering every obligation.'
+      }[result.stopReason];
+      if (why) degradations.push(why);
+    }
+
+    const payload = {
       success: true,
       mode: 'agentic',
       testCases: result.testCases,
+      stopReason: result.stopReason,
       coverage: result.coverage,
       acCoverage: acCov || null,
+      // F07: predicate-level coverage + the requirement inventory the ids refer to.
+      requirementCoverage: result.coverage?.requirementCoverage || null,
+      requirements: result.coverage?.requirements || null,
+      // §15.6: open questions and the obligations that depend on them.
+      clarifications: result.clarifications || null,
+      unresolved: result.unresolved || null,
       degradations, // F21: reduced-context warnings for the UI to surface
       distribution: result.distribution,
       statistics: {
@@ -2455,15 +2683,111 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
         rejectedCount: (result.rejected || []).length,
         rejectionBreakdown: rejectionBreakdown(result.rejected)
       },
-      rejected: (result.rejected || []).slice(0, 50).map(r => ({ title: r.test?.title, stage: r.stage, reason: r.reason }))
+      rejected: (result.rejected || []).slice(0, 50).map(r => ({ title: r.test?.title, stage: r.stage, reason: r.reason })),
+      // F15: surface why similar cases were kept apart, alongside why others were removed.
+      preservedDistinctions: result.preservedDistinctions || []
     };
+    completedCleanly = true;
+    return payload;
   } finally {
     clearInterval(keepAlive);
     activeAgenticAborts.delete(abort);
-    // Run finished (success, empty, or threw) → clear the checkpoint so a later
-    // run doesn't mistake it for an interrupted one.
-    try { chrome.storage.session.remove(ckptKey); } catch (_) {}
+    // F17: only a run that DELIVERED its suite clears its checkpoint. The old
+    // `finally` deleted it on every exit — including the cancel and crash paths
+    // the checkpoint existed for — so nothing was ever recoverable, and a
+    // concurrent epic child could delete a sibling's snapshot on its way out.
+    if (completedCleanly) {
+      try { chrome.storage.session.remove(ckptKey); } catch (_) {}
+    } else {
+      try {
+        chrome.storage.session.set({ [ckptKey]: {
+          runId, tabId,
+          tests: gate.getAccepted(),
+          ts: Date.now(),
+          ticketKey: ticketData && ticketData.key,
+          stage: abort.cancelled ? 'cancelled' : 'interrupted',
+          recoverable: gate.getAccepted().length > 0
+        } });
+      } catch (_) {}
+    }
   }
+}
+
+/**
+ * F17: read back any recoverable partial suites for a ticket. Checkpoints were
+ * written on a timer and deleted on every exit, and nothing ever read them — the
+ * whole mechanism was decorative. Scoped by ticket so one interrupted epic child
+ * can be recovered without touching its siblings.
+ */
+async function listRecoverableRuns(ticketKey) {
+  try {
+    const all = await chrome.storage.session.get(null);
+    return Object.entries(all || {})
+      .filter(([k, v]) => k.startsWith('agentic_ckpt_') && v && v.recoverable &&
+                          (!ticketKey || v.ticketKey === ticketKey))
+      .map(([key, v]) => ({
+        key, runId: v.runId, ticketKey: v.ticketKey, stage: v.stage,
+        ts: v.ts, testCount: (v.tests || []).length, tests: v.tests || []
+      }))
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  } catch (e) {
+    console.warn('[Agentic] checkpoint scan failed:', e.message);
+    return [];
+  }
+}
+
+/**
+ * F08: recompute requirement + feature coverage from the FINAL retained suite,
+ * after every removal, repair or edit. Coverage that describes a different set of
+ * tests than the one being returned is worse than no coverage number at all —
+ * it is a claim the output cannot support.
+ *
+ * Requirement coverage is measured from the ticket and therefore works with no
+ * crawl graph; feature coverage is simply absent in that case, not "0%".
+ */
+function recomputeFinalCoverage(testCases, { coverageMapper, ticketData, previous } = {}) {
+  const out = { ...(previous || {}) };
+  const cases = Array.isArray(testCases) ? testCases : [];
+
+  try {
+    const acItems = typeof CoverageMapper.extractRequirementItems === 'function'
+      ? CoverageMapper.extractRequirementItems(ticketData || {})
+      : [];
+    if (acItems.length) {
+      out.acCoverage = CoverageMapper.mapAcceptanceCriteria(cases, acItems);
+
+      // F07: predicate coverage alongside the lexical measure. This is the one
+      // that requires the test to PERFORM the operation, as the right actor, and
+      // assert the right modality — and that refuses to let one branch of a
+      // compound AC stand in for the rest.
+      if (typeof buildRequirements === 'function' &&
+          typeof CoverageMapper.mapRequirementPredicates === 'function') {
+        const reqs = buildRequirements(acItems, { ticketKey: ticketData && ticketData.key });
+        out.requirements = reqs;
+        out.requirementCoverage = CoverageMapper.mapRequirementPredicates(cases, reqs, {
+          requirementModel: { mandatoryRequirements, groupCompound }
+        });
+        // F15: stamp each case with the requirement ids it covers, so an export
+        // can cite provenance instead of shipping an unattributed test.
+        for (const d of out.requirementCoverage.details || []) {
+          if (!d.covered || !d.coveredBy) continue;
+          const tc = cases.find(c => (c.id || c.title) === d.coveredBy);
+          if (tc) (tc.requirementIds = tc.requirementIds || []).push(d.id);
+        }
+      }
+    }
+  } catch (e) { console.warn('[Agentic] AC coverage recompute skipped:', e.message); }
+
+  try {
+    if (coverageMapper) {
+      const cov = coverageMapper.mapCoverage(cases);
+      out.overall = cov.overall;
+      out.forms = cov.forms; out.apis = cov.apis; out.buttons = cov.buttons; out.pages = cov.pages;
+    }
+  } catch (e) { console.warn('[Agentic] feature coverage recompute skipped:', e.message); }
+
+  out.measuredFrom = cases.length;
+  return out;
 }
 
 /** Map a planner event to the progress shape the content UI expects (agent/step/total/status/count). */
@@ -2540,7 +2864,10 @@ function makeAgenticConfluenceFetch(settings) {
 async function handleRegenerateWithReview(data) {
   validateSettings(data.settings);
 
-  const { type, originalContent, userReview, settings } = data;
+  // F03: regeneration must receive the ORIGINAL ticket and evidence, not only
+  // the previous output text plus a review comment. Without them the regenerated
+  // suite cannot be checked for relevance or grounding against anything.
+  const { type, originalContent, userReview, settings, ticketData, appContext } = data;
 
   // Construct prompts based on type
   let systemMessage = '';
@@ -2597,16 +2924,20 @@ Generate test cases in this EXACT JSON format:
   ]
 }`;
 
+    const ticketBlock = ticketData
+      ? `\nThe test cases must stay grounded in this ticket:\n---\n${formatTicketContextForPrompt(ticketData)}\n---\n`
+      : '';
+
     userMessage = `Here are the original test cases you generated:
 
 ---
 ${originalContent}
 ---
-
+${ticketBlock}
 The user provided this feedback:
 "${userReview}"
 
-Please regenerate the test cases incorporating the user's feedback. Return the result as a JSON object with a "testCases" array. You can add new test cases, modify existing ones, or remove inadequate ones based on the feedback.`;
+Please regenerate the test cases incorporating the user's feedback. Return the result as a JSON object with a "testCases" array. You can add new test cases, modify existing ones, or remove inadequate ones based on the feedback. Do not introduce duplicates of cases that are already present, and do not assert behaviour the ticket does not support.`;
   } else {
     throw new Error(`Unknown regeneration type: ${type}`);
   }
@@ -2632,7 +2963,16 @@ Please regenerate the test cases incorporating the user's feedback. Return the r
         throw new Error('testCases is not an array');
       }
 
-      return { improvedTestCases };
+      // F03: an edit is not a licence to bypass the gate. Editing a previously
+      // clean suite could otherwise reintroduce duplicates and unsupported cases.
+      const final = await finalizeGenerated(improvedTestCases, { ticketData, appContext, settings });
+      return {
+        improvedTestCases: final.testCases,
+        rejected: final.rejected,
+        preservedDistinctions: final.preservedDistinctions,
+        qualityStats: final.stats,
+        degradations: final.degradations
+      };
     } catch (error) {
       throw new Error(`Failed to parse improved test cases: ${error.message}`);
     }

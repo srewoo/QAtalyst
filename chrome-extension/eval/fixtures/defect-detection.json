@@ -1,0 +1,97 @@
+{
+  "key": "DEF-DETECT",
+  "_comment": "§15.4 — a controlled benchmark that asks whether a suite would CATCH a defect, not whether it looks similar to a reference. Each defect names the observable symptom a test must assert to detect it. A suite that merely mentions the feature earns no credit; only an assertion that would differ between the correct and defective versions counts.",
+  "ticket": {
+    "summary": "Invoice management: permissions, upload limits and ordering",
+    "description": "Acceptance Criteria:\n- An owner can delete an invoice\n- A viewer cannot delete an invoice\n- Uploads up to and including 100 KB are accepted\n- Uploads above 100 KB are rejected with a size error\n- Invoices are listed newest first\n- Submitting the form twice must create only one invoice\n- A draft invoice becomes 'issued' when submitted, and cannot return to draft"
+  },
+  "defects": [
+    {
+      "id": "D1-inverted-permission",
+      "description": "The role check is inverted: viewers can delete, owners cannot.",
+      "detectedBy": {
+        "mustReference": ["viewer", "delete"],
+        "mustAssert": "denied|cannot|forbidden|not deleted|remains|403|blocked"
+      }
+    },
+    {
+      "id": "D2-off-by-one-limit",
+      "description": "The limit check uses > 99 KB instead of > 100 KB, so a 100 KB upload is wrongly rejected.",
+      "detectedBy": {
+        "mustReference": ["100"],
+        "mustAssert": "accept|succeed|allowed|uploaded"
+      }
+    },
+    {
+      "id": "D3-missing-persistence",
+      "description": "The invoice is shown as created but never written to the database; it disappears on reload.",
+      "detectedBy": {
+        "mustReference": ["reload|refresh|revisit|return to|persist"],
+        "mustAssert": "still|persist|remains|present after"
+      }
+    },
+    {
+      "id": "D4-wrong-sort-order",
+      "description": "Invoices are listed oldest first.",
+      "detectedBy": {
+        "mustReference": ["order|sort|newest|oldest|first"],
+        "mustAssert": "newest first|most recent|descending|top of the list"
+      }
+    },
+    {
+      "id": "D5-duplicate-submission",
+      "description": "Double-submitting the form creates two invoices.",
+      "detectedBy": {
+        "mustReference": ["twice|double|again|resubmit|duplicate"],
+        "mustAssert": "only one|single|one invoice|not duplicated|exactly one"
+      }
+    },
+    {
+      "id": "D6-bad-state-transition",
+      "description": "An issued invoice can be moved back to draft.",
+      "detectedBy": {
+        "mustReference": ["draft", "issued"],
+        "mustAssert": "cannot|not allowed|rejected|blocked|remains issued"
+      }
+    }
+  ],
+  "generatedSuite": [
+    { "id": "TC-001", "title": "Owner deletes an invoice", "category": "Positive", "priority": "P0",
+      "preconditions": "Logged in as an owner; an invoice exists",
+      "steps": ["Log in as owner", "Open the invoice list", "Click Delete on the invoice"],
+      "expected_result": "The invoice is deleted and no longer appears in the list" },
+    { "id": "TC-002", "title": "Viewer cannot delete an invoice", "category": "Negative", "priority": "P0",
+      "preconditions": "Logged in as a viewer; an invoice exists",
+      "steps": ["Log in as viewer", "Open the invoice list", "Attempt to delete the invoice"],
+      "expected_result": "Deletion is denied and the invoice remains in the list" },
+    { "id": "TC-003", "title": "Upload at the 100 KB limit is accepted", "category": "Edge", "priority": "P1",
+      "preconditions": "Logged in as an owner",
+      "steps": ["Open the upload dialog", "Upload a file of exactly 100 KB"],
+      "expected_result": "The upload is accepted and the file appears in the attachment list" },
+    { "id": "TC-004", "title": "Upload above the 100 KB limit is rejected", "category": "Edge", "priority": "P1",
+      "preconditions": "Logged in as an owner",
+      "steps": ["Open the upload dialog", "Upload a file of 101 KB"],
+      "expected_result": "The upload is rejected with a size error" },
+    { "id": "TC-005", "title": "A created invoice persists across a reload", "category": "Functional", "priority": "P0",
+      "preconditions": "Logged in as an owner",
+      "steps": ["Create an invoice", "Reload the invoice list page"],
+      "expected_result": "The invoice is still present after the reload" },
+    { "id": "TC-006", "title": "Invoices are listed newest first", "category": "Functional", "priority": "P1",
+      "preconditions": "At least two invoices exist with different creation dates",
+      "steps": ["Open the invoice list", "Compare the order of the first two rows"],
+      "expected_result": "The most recently created invoice appears at the top of the list" },
+    { "id": "TC-007", "title": "Submitting the form twice creates only one invoice", "category": "Negative", "priority": "P0",
+      "preconditions": "Logged in as an owner; the invoice form is filled in",
+      "steps": ["Click Submit", "Click Submit again before the page updates"],
+      "expected_result": "Exactly one invoice is created" },
+    { "id": "TC-008", "title": "An issued invoice cannot return to draft", "category": "Negative", "priority": "P1",
+      "preconditions": "An invoice is in the 'issued' state",
+      "steps": ["Open the issued invoice", "Attempt to set its status back to draft"],
+      "expected_result": "The change is rejected and the invoice remains issued" }
+  ],
+  "vagueSuite": [
+    { "id": "V-001", "title": "Invoice permissions work correctly", "steps": ["Check permissions"], "expected_result": "Permissions work correctly" },
+    { "id": "V-002", "title": "Upload works", "steps": ["Upload a file"], "expected_result": "The upload works as expected" },
+    { "id": "V-003", "title": "The invoice list displays", "steps": ["Open the list"], "expected_result": "The list is displayed" }
+  ]
+}

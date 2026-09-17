@@ -955,56 +955,13 @@
 }
 
 /* Evolution Progress Styles */
-.evolution-progress-container {
-  background: linear-gradient(135deg, #faf5ff 0%, #f3e8ff 100%);
-  border-radius: 8px;
-  padding: 20px;
-  margin: 10px 0;
-  border: 2px solid #a78bfa;
-}
 
-.evolution-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
 
-.evolution-header h3 {
-  margin: 0;
-  color: #7c3aed;
-  font-size: 16px;
-  font-weight: 600;
-}
 
-.evolution-status {
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 600;
-}
 
-.evolution-status.evolving {
-  background: #fef3c7;
-  color: #d97706;
-}
 
-.evolution-status.completed {
-  background: #d1fae5;
-  color: #059669;
-}
 
-.evolution-info {
-  display: flex;
-  gap: 24px;
-  margin-bottom: 16px;
-}
 
-.evolution-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
 
 .stat-label {
   font-size: 12px;
@@ -1018,64 +975,16 @@
   font-weight: 700;
 }
 
-.evolution-progress-bar {
-  width: 100%;
-  height: 10px;
-  background: #e9d5ff;
-  border-radius: 5px;
-  overflow: hidden;
-  margin-bottom: 12px;
-}
 
-.evolution-progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #7c3aed 0%, #a78bfa 50%, #c4b5fd 100%);
-  transition: width 0.5s ease;
-  border-radius: 5px;
-  animation: shimmer 2s infinite;
-}
 
 @keyframes shimmer {
   0% { background-position: -100% 0; }
   100% { background-position: 200% 0; }
 }
 
-.evolution-desc {
-  font-size: 13px;
-  color: #64748b;
-  text-align: center;
-  font-style: italic;
-}
 
 /* Evolution Status Badges */
-.evolution-pending-badge {
-  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-  border: 2px solid #f59e0b;
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin: 12px 0;
-  font-size: 14px;
-  color: #92400e;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  animation: pulse 2s ease-in-out infinite;
-}
 
-.evolution-complete-badge {
-  background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
-  border: 2px solid #10b981;
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin: 12px 0;
-  font-size: 14px;
-  color: #065f46;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 
 /* Historical Insights Section */
 .historical-insights-section {
@@ -1461,4 +1370,72 @@
   .test-stats {
     gap: 6px;
   }
+}
+
+/* ── F15: visible quality status ───────────────────────────────────────────
+   The pipeline computes degradations, requirement coverage, rejection reasons
+   and per-case grounding warnings; before F15 none of it was rendered. */
+.qatalyst-panel .quality-status {
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qatalyst-panel .quality-block {
+  border: 1px solid #dfe1e6;
+  border-left: 3px solid #6b778c;
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: #f4f5f7;
+  font-size: 12px;
+}
+.qatalyst-panel .quality-block.quality-warn {
+  border-left-color: #ff991f;
+  background: #fffae6;
+}
+.qatalyst-panel .quality-block.quality-ok {
+  border-left-color: #36b37e;
+  background: #e3fcef;
+}
+.qatalyst-panel .quality-block h5 {
+  margin: 0 0 4px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #172b4d;
+}
+.qatalyst-panel .quality-block ul {
+  margin: 4px 0 0 0;
+  padding-left: 18px;
+}
+.qatalyst-panel .quality-block li { margin: 2px 0; line-height: 1.4; }
+.qatalyst-panel .quality-block summary { cursor: pointer; color: #0052cc; margin-top: 4px; }
+.qatalyst-panel .quality-note { margin: 4px 0 0 0; color: #5e6c84; }
+.qatalyst-panel .quality-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.qatalyst-panel .quality-chip {
+  background: #dfe1e6;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: #42526e;
+}
+
+/* Per-case review markers */
+.qatalyst-panel .test-case.needs-review { border-left: 3px solid #ff991f; }
+.qatalyst-panel .tc-quality-badge {
+  background: #ff991f;
+  color: #fff;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.qatalyst-panel .tc-quality-badge.unresolved { background: #de350b; }
+.qatalyst-panel .tc-warnings { margin: 4px 0; }
+.qatalyst-panel .tc-warning {
+  font-size: 11px;
+  color: #974f0c;
+  background: #fffae6;
+  border-radius: 3px;
+  padding: 3px 6px;
+  margin-top: 2px;
 }

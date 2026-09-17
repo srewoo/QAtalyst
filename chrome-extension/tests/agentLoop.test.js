@@ -187,3 +187,71 @@ describe('PlannerAgent agentic loop', () => {
     expect(result.transcript.some(t => t.source === 'llm')).toBe(true);
   });
 });
+
+describe('F12 — planning is driven by obligations, not category quotas', () => {
+  const { evidenceYield } = require('../agent-loop.js');
+
+  test('a batch cannot overshoot the remaining test budget', async () => {
+    // Propose 12 at a time against a budget of 5.
+    const bigBatchAI = async (system) => {
+      if (system.includes('generating GROUNDED')) {
+        return JSON.stringify(Array.from({ length: 12 }, (_, i) => ({
+          title: `Login scenario ${i} with distinct outcome ${i}`,
+          category: 'Positive', priority: 'P1',
+          steps: ['Enter a valid value in the username field', `Click "Sign In" attempt ${i}`],
+          expected_result: `Outcome ${i} is observed on /login`
+        })));
+      }
+      return 'rambling';
+    };
+    const planner = buildPlanner(bigBatchAI, { maxTests: 5, maxSteps: 6 });
+    const result = await planner.run();
+    // Pre-fix the whole batch was admitted, blowing straight past the cap.
+    expect(result.testCases.length).toBeLessThanOrEqual(5);
+  });
+
+  test('evidence gathering counts as progress, not as a stall', () => {
+    // Four useful retrieval calls used to trip the no-progress guard and end the
+    // run — exactly while the planner was grounding itself.
+    expect(evidenceYield('bm25_search', { results: [{ url: 'x' }] })).toBeGreaterThan(0);
+    expect(evidenceYield('inspect_element', { found: true })).toBeGreaterThan(0);
+    expect(evidenceYield('query_jira', { issues: [{ key: 'A-1' }] })).toBeGreaterThan(0);
+    expect(evidenceYield('run_coverage_check', { criticalGaps: [{ type: 'ac' }] })).toBeGreaterThan(0);
+    // A call that returned nothing useful still counts against the streak.
+    expect(evidenceYield('bm25_search', { results: [] })).toBe(0);
+    expect(evidenceYield('run_coverage_check', { criticalGaps: [] })).toBe(0);
+    expect(evidenceYield('propose_tests', { tests: [] })).toBe(0);
+  });
+
+  test('a simple ticket can finish small — the count is a ceiling, not a quota', async () => {
+    const planner = buildPlanner(makeFakeAI(), { maxTests: 30 });
+    // Pre-fix minTests defaulted to half of maxTests (15), so the coverage-target
+    // stop could not fire until filler had been generated to reach the floor.
+    expect(planner.budget.minTests).toBe(1);
+  });
+
+  test('every run reports an explicit stop reason', async () => {
+    const result = await buildPlanner(makeFakeAI(), { maxTests: 4, maxSteps: 10 }).run();
+    expect(result.stopReason).toBeTruthy();
+    expect(['complete', 'budget_exhausted', 'no_novel_scenarios', 'cancelled', 'steps_exhausted'])
+      .toContain(result.stopReason);
+  });
+
+  test('rescue does not resurrect disabled categories', async () => {
+    const asked = [];
+    const ai = async (system) => {
+      if (system.includes('generating GROUNDED')) {
+        const m = system.match(/exactly (\d+) (\w+) test cases/);
+        if (m) asked.push(m[2]);
+        return '[]'; // never produce anything → forces rescue
+      }
+      return 'rambling';
+    };
+    const planner = buildPlanner(ai, { maxTests: 6, maxSteps: 3 });
+    // Only Security is enabled for this run.
+    planner.targets = { Security: 6 };
+    await planner.run();
+    // Pre-fix rescue fell back to a hardcoded ['Positive','Negative','Edge'].
+    expect(asked.every(c => c === 'Security')).toBe(true);
+  });
+});

@@ -557,6 +557,17 @@
       </div>
 
       <div class="section">
+        <h2>🔁 Deduplicate Against Your Existing Suite</h2>
+        <p>Before proposing a test, check whether your test-management suite already covers it. Requires TestRail to be configured below.</p>
+
+        <div class="checkbox-group">
+          <input type="checkbox" id="dedupeAgainstExistingSuite" data-testid="dedupe-against-existing-suite">
+          <label for="dedupeAgainstExistingSuite">Check generated tests against the existing TestRail suite</label>
+        </div>
+        <p class="help-text">Generated tests that duplicate a case your team already maintains are rejected with a link to the existing case. If the suite cannot be read, QAtalyst says so rather than assuming you have no tests.</p>
+      </div>
+
+      <div class="section">
         <h2>🧠 Historical Test Case Mining (Intelligent Learning)</h2>
         <p>Learn from past bugs to generate better test cases. Searches Jira history for similar issues and prevents recurring bugs.</p>
 

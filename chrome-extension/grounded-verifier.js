@@ -290,17 +290,26 @@ class GroundedVerifier {
       } else {
         verdict = 'grounded'; // legacy lenient mode: judged by relevance gate downstream
       }
-    } else if (Object.keys(repairs).length > 0 && score >= this.minGroundingScore) {
-      verdict = 'needs_repair';
     } else if (score >= this.minGroundingScore && issues.length === 0) {
-      verdict = 'grounded';
+      // Every reference resolved (possibly via a repair) — genuinely grounded.
+      verdict = Object.keys(repairs).length > 0 ? 'needs_repair' : 'grounded';
     } else if (score >= this.minGroundingScore) {
-      verdict = 'needs_repair';
+      // F06: score is high enough, but `issues` still lists references that
+      // resolved to NOTHING and for which no repair exists. This used to be
+      // reported as 'needs_repair' with an empty `repairs` map, and the gate
+      // then "applied" that no-op repair and stamped the test `verified`.
+      // Call it what it is: partially grounded, with unresolved references.
+      verdict = 'unresolved';
     } else {
       verdict = 'reject';
     }
 
-    return { verdict, score: round2(score), references: refs, issues, repairs, behaviorWarnings: behavior.warnings };
+    return {
+      verdict, score: round2(score), references: refs, issues, repairs,
+      behaviorWarnings: behavior.warnings,
+      // True only when nothing is left dangling after repairs are applied.
+      fullyResolved: issues.length === 0
+    };
   }
 
   /** Apply proposed repairs to a test case in place-safe manner (returns a new object). */

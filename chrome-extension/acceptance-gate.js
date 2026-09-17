@@ -64,13 +64,15 @@ class AcceptanceGate {
 
     this.referenceVocab = this.buildReferenceVocab(cfg.ticketData, cfg.knowledgeGraph);
     this.relevanceApplicable = this.referenceVocab.size > 0;
+    // F10: app entities scored separately — they classify, they do not admit.
+    this.appVocab = this.buildAppVocab(cfg.knowledgeGraph);
 
     // Build the reference EMBEDDING once: an L2-normalized vector over the same
     // concept vocabulary used for the overlap path. Used when Embeddings is
     // available; otherwise we fall back to the concept-overlap score below.
     this.embeddings = EMB && typeof EMB.embed === 'function' ? EMB : null;
     this.referenceVector = (this.embeddings && this.relevanceApplicable)
-      ? this.embeddings.embed(Array.from(this.referenceVocab.keys()).join(' '))
+      ? this.embeddings.embed(this.weightedReferenceText(this.referenceVocab))
       : null;
 
     // F14: an existing test suite (e.g. fetched from TestRail) to dedupe AGAINST
@@ -83,6 +85,10 @@ class AcceptanceGate {
 
     this.accepted = [];        // tests admitted so far
     this.rejected = [];        // { test, stage, reason }
+    // F05: pairs that scored as near-duplicates but were kept apart by a proven
+    // distinction. Exposed so a reviewer can audit every merge decision.
+    this.preservedDistinctions = [];
+    this.deps = cfg.deps || {};
     this.stats = { grounding: 0, relevance: 0, duplicate: 0, duplicateExisting: 0, repaired: 0, accepted: 0 };
   }
 
@@ -103,16 +109,41 @@ class AcceptanceGate {
           this.reject(candidate, 'grounding', g.issues.join('; ') || 'references non-existent app entities');
           continue;
         }
-        if (g.verdict === 'needs_repair') {
+        let verdict = g.verdict;
+        let issues = g.issues;
+        if (verdict === 'needs_repair') {
           test = this.verifier.applyRepairs(candidate, g.repairs);
           this.stats.repaired++;
+          // F06: a repair is a proposal, not a proof. Re-verify the REPAIRED
+          // test: fuzzy label substitution can resolve one reference and break
+          // another, and only a clean second pass justifies 'verified'.
+          const g2 = this.verifier.verify(test);
+          if (g2.verdict === 'reject') {
+            this.reject(candidate, 'grounding', g2.issues.join('; ') || 'repair did not resolve references');
+            continue;
+          }
+          verdict = g2.verdict;
+          issues = g2.issues;
+          test._groundingScore = g2.score;
+        } else {
+          test._groundingScore = g.score;
         }
-        test._groundingScore = g.score;
         // v13.2: make the no-KG hole visible. When grounding can't run (no crawl
         // data) the test is admitted but explicitly flagged 'unverified' rather
         // than treated as grounded, so the UI/consumer can mark it for manual
-        // verification. With a KG present, it's a real 'verified' result.
-        test._grounding = (g.verdict === 'not_applicable' || g.unverified) ? 'unverified' : 'verified';
+        // verification.
+        // F06: 'unresolved' means the test still names entities that exist
+        // nowhere in the crawl and that no repair could map. It is NOT verified —
+        // stamping it so was how hallucinated controls reached exportable output.
+        if (verdict === 'not_applicable' || g.unverified) {
+          test._grounding = 'unverified';
+        } else if (verdict === 'unresolved' || (issues && issues.length)) {
+          test._grounding = 'unresolved';
+          test._groundingIssues = issues;
+          this.stats.unresolved = (this.stats.unresolved || 0) + 1;
+        } else {
+          test._grounding = 'verified';
+        }
         // Surface hallucinated-behaviour warnings (auto-sync/email/polling with no
         // supporting API) so reviewers see them even when the test is admitted.
         if (g.behaviorWarnings && g.behaviorWarnings.length) {
@@ -125,8 +156,14 @@ class AcceptanceGate {
       if (this.relevanceApplicable) {
         const rel = this.relevanceScore(test);
         test._relevanceScore = round3(rel);
+        // F10: record the BASIS for keeping it, not just the score, so a reviewer
+        // can see whether a case covers the ticket or merely exists in the app.
+        test._relevanceBasis = this.classifyRelevance(test);
         if (rel < this.relevanceThreshold) {
-          this.reject(candidate, 'relevance', `off-topic (relevance ${rel.toFixed(3)} < ${this.relevanceThreshold})`);
+          const why = test._relevanceBasis === 'app_only'
+            ? 'describes a real app feature unrelated to this ticket'
+            : 'off-topic';
+          this.reject(candidate, 'relevance', `${why} (relevance ${rel.toFixed(3)} < ${this.relevanceThreshold})`);
           continue;
         }
       }
@@ -147,7 +184,11 @@ class AcceptanceGate {
       newlyAccepted.push(test);
     }
     this.accepted.push(...newlyAccepted);
-    return { accepted: newlyAccepted, rejected: this.rejected, stats: { ...this.stats } };
+    return {
+      accepted: newlyAccepted, rejected: this.rejected,
+      preservedDistinctions: this.preservedDistinctions,
+      stats: { ...this.stats, preservedDistinctions: this.preservedDistinctions.length }
+    };
   }
 
   reject(test, stage, reason) {
@@ -201,6 +242,37 @@ class AcceptanceGate {
     return matchedWeight / Math.sqrt(seen.size);
   }
 
+  /**
+   * F10: WHY is this test in scope? A single relevance number cannot distinguish
+   * "this tests the ticket's feature" from "this is a regression test for a
+   * neighbouring feature the change touches" from "this is an unrelated app
+   * feature the crawl happened to include".
+   *
+   *   direct      — talks about the ticket's own subject matter
+   *   app_only    — names real app entities but nothing from the ticket. This is
+   *                 exactly the case that used to pass, because app entity names
+   *                 were mixed into the ticket vocabulary.
+   *   unsupported — grounded in neither
+   *
+   * ponytail: lexical scope classification, not an impact analysis. A genuine
+   * "impacted regression" verdict needs the change/diff context of fix2.md §14
+   * item 3; until then a regression test must still overlap the ticket to pass.
+   */
+  classifyRelevance(test) {
+    const text = [test.title, test.description, test.expected_result,
+      ...(Array.isArray(test.steps) ? test.steps : [])].filter(Boolean).join(' ');
+    const concepts = new Set(this.conceptTokens(text));
+    if (!concepts.size) return 'unsupported';
+    let ticketHits = 0, appHits = 0;
+    for (const c of concepts) {
+      if (this.referenceVocab.has(c)) ticketHits++;
+      else if (this.appVocab.has(c)) appHits++;
+    }
+    if (ticketHits > 0) return 'direct';
+    if (appHits > 0) return 'app_only';
+    return 'unsupported';
+  }
+
   /** Canonicalise text to concept tokens (delegates to TextSimilarity; falls back to plain tokens). */
   conceptTokens(text) {
     return TS ? TS.canonicalTokens(text) : tokenize(text);
@@ -218,14 +290,49 @@ class AcceptanceGate {
       add([ticketData.description, ticketData.acceptanceCriteria, ticketData.acceptance_criteria].filter(Boolean).join(' '), 0.7);
     }
     // App entity names from KG (forms/fields/buttons/routes/titles)
-    if (knowledgeGraph && this.verifier && this.verifier.index) {
-      const idx = this.verifier.index;
-      idx.fields.forEach(f => add(f, 0.5));
-      idx.buttons.forEach(b => add(b, 0.5));
-      idx.pageTitles.forEach(t => add(t, 0.4));
-      idx.routes.forEach(r => add(r.replace(/[/_-]/g, ' '), 0.3));
-    }
+    // F10: app entity names are deliberately NOT mixed in here any more.
+    // Relevance answers "is this test about THIS TICKET?"; whether the entities
+    // it names exist is a separate question the grounding check already answers.
+    // Merging them meant a test for a real but entirely unrelated feature scored
+    // relevant purely because the app's own button labels were in the vocabulary
+    // — the crawl was voting on scope.
     return vocab;
+  }
+
+  /**
+   * F10: the app's own entity names, kept SEPARATE from ticket relevance. Used
+   * only to classify why a test was retained, never to let it through the gate.
+   */
+  buildAppVocab(knowledgeGraph) {
+    const vocab = new Map();
+    if (!knowledgeGraph || !this.verifier || !this.verifier.index) return vocab;
+    const add = (text, weight) => {
+      for (const tok of this.conceptTokens(text)) {
+        vocab.set(tok, Math.max(vocab.get(tok) || 0, weight));
+      }
+    };
+    const idx = this.verifier.index;
+    idx.fields.forEach(f => add(f, 0.5));
+    idx.buttons.forEach(b => add(b, 0.5));
+    idx.pageTitles.forEach(t => add(t, 0.4));
+    idx.routes.forEach(r => add(r.replace(/[/_-]/g, ' '), 0.3));
+    return vocab;
+  }
+
+  /**
+   * F10: reference text for the embedding path, WEIGHTED. The vector was built
+   * from `vocab.keys().join(' ')`, which threw the weights away — so a route
+   * fragment (0.3) pulled exactly as hard as the ticket summary (1.0). A
+   * feature-hash TF embedding weights by term frequency, so repeat each token in
+   * proportion to its configured weight.
+   */
+  weightedReferenceText(vocab) {
+    const parts = [];
+    for (const [tok, w] of vocab) {
+      const reps = Math.max(1, Math.round(w * 3));
+      for (let i = 0; i < reps; i++) parts.push(tok);
+    }
+    return parts.join(' ');
   }
 
   // ───────────────────────── dedup ─────────────────────────
@@ -234,7 +341,45 @@ class AcceptanceGate {
   findDuplicate(test, existing) {
     for (const other of existing) {
       const sim = this.similarity(test, other);
-      if (sim >= this.dedupThreshold) return { against: other, sim };
+      if (sim < this.dedupThreshold) continue;
+      // F05: similarity may RETRIEVE a comparison candidate; it may not
+      // authorize a deletion. A proven distinction (opposite outcome, different
+      // operation, different actor, different boundary value) keeps both cases —
+      // silently dropping one of those was how the suite achieved a low
+      // duplicate rate while losing real obligations.
+      // F05 §7.3: classify the pair instead of answering merge-or-keep from a
+      // number. Only a proven exact duplicate or equivalent scenario may be
+      // collapsed; contradictory, parameter-variant, overlapping and uncertain
+      // pairs are all RETAINED — and recorded, so the call is auditable.
+      const Detector = this.deps && this.deps.SemanticDuplicateDetector;
+      if (Detector && typeof Detector.classifyPair === 'function') {
+        const verdict = Detector.classifyPair(test, other, {
+          detector: this.dedup, threshold: this.dedupThreshold,
+          // Pass the score the gate already computed, so the gate and the batch
+          // detector cannot disagree about the same pair.
+          similarity: sim
+        });
+        if (!verdict.merge) {
+          this.preservedDistinctions.push({
+            test: test.title, against: other.title || other.id,
+            sim: round3(sim), relation: verdict.relation, reason: verdict.reason
+          });
+          continue;
+        }
+        return { against: other, sim, relation: verdict.relation };
+      }
+
+      const distinct = this.dedup && typeof this.dedup.distinctionReason === 'function'
+        ? this.dedup.distinctionReason(test, other)
+        : null;
+      if (distinct) {
+        this.preservedDistinctions.push({
+          test: test.title, against: other.title || other.id,
+          sim: round3(sim), reason: distinct
+        });
+        continue;
+      }
+      return { against: other, sim };
     }
     return null;
   }

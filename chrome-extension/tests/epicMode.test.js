@@ -46,9 +46,22 @@ describe('buildEpicHeader + prepareChildTicketData (context management)', () => 
 describe('perChildTestCount', () => {
   test('splits the total across children within floor/ceiling', () => {
     expect(EpicMode.perChildTestCount(50, 5)).toBe(10);
-    expect(EpicMode.perChildTestCount(50, 20)).toBe(8);   // floored at min 8
     expect(EpicMode.perChildTestCount(200, 2)).toBe(25);  // capped at max 25
     expect(EpicMode.perChildTestCount(undefined, 3)).toBe(10); // default total 30
+  });
+
+  test('F13: the configured total is a real global bound', () => {
+    // Previously the min-8 floor won unconditionally, so a 20-story epic with a
+    // total of 50 generated at least 160 tests — the setting bounded nothing.
+    const perChild = EpicMode.perChildTestCount(50, 20);
+    expect(perChild * 20).toBeLessThanOrEqual(50 + 20); // within one-per-child rounding
+    expect(perChild).toBeGreaterThanOrEqual(1);
+  });
+
+  test('F13: the floor still applies when the budget can afford it', () => {
+    // 5 stories out of 100 → share 20, capped by max; a small share is lifted to
+    // the usable minimum only while the total allows it.
+    expect(EpicMode.perChildTestCount(40, 5)).toBe(8);
   });
 });
 
@@ -182,7 +195,7 @@ describe('generateEpicTestCases (orchestration)', () => {
     });
     expect(out.epicKey).toBe('EP-1');
     expect(out.results).toHaveLength(2);
-    expect(out.summary).toEqual({ stories: 2, failed: 0, totalTests: 4 });
+    expect(out.summary).toMatchObject({ stories: 2, failed: 0, totalTests: 4 });
     // Each child call received the epic header in its description.
     expect(seenDescs.every((d) => d.includes('Parent Epic [EP-1] Checkout'))).toBe(true);
   });
@@ -196,7 +209,7 @@ describe('generateEpicTestCases (orchestration)', () => {
         return { testCases: [{ id: 't1' }] };
       },
     });
-    expect(out.summary).toEqual({ stories: 1, failed: 1, totalTests: 1 });
+    expect(out.summary).toMatchObject({ stories: 1, failed: 1, totalTests: 1 });
     const failed = out.results.find((r) => r.child.key === 'EP-2');
     expect(failed.ok).toBe(false);
     expect(failed.error).toMatch(/rate limited/);
@@ -209,5 +222,69 @@ describe('generateEpicTestCases (orchestration)', () => {
     });
     expect(out.children).toEqual([]);
     expect(out.summary).toEqual({ stories: 0, failed: 0, totalTests: 0 });
+  });
+});
+
+describe('F13 — global epic consolidation', () => {
+  const SemanticDuplicateDetector = require('../semantic-duplicate-detector.js');
+  const DEPS = { Detector: SemanticDuplicateDetector };
+
+  const loginCase = (story) => ({
+    id: `${story}-1`, title: 'User logs in before starting', category: 'Functional',
+    steps: ['Open the login page', 'Enter valid credentials', 'Click Login'],
+    expected_result: 'The dashboard is displayed'
+  });
+
+  test('three stories needing the same prerequisite do not yield three tests', () => {
+    const out = EpicMode.consolidateEpicSuite([
+      { child: { key: 'EP-1' }, testCases: [loginCase('a')] },
+      { child: { key: 'EP-2' }, testCases: [loginCase('b')] },
+      { child: { key: 'EP-3' }, testCases: [loginCase('c')] }
+    ], DEPS);
+
+    // Pre-fix: children were gated independently and simply concatenated.
+    expect(out.testCases).toHaveLength(1);
+    expect(out.merged).toHaveLength(2);
+  });
+
+  test('a shared case keeps every story it covers', () => {
+    const out = EpicMode.consolidateEpicSuite([
+      { child: { key: 'EP-1' }, testCases: [loginCase('a')] },
+      { child: { key: 'EP-2' }, testCases: [loginCase('b')] }
+    ], DEPS);
+    // Coverage IS the link set — dropping it would silently uncover EP-2.
+    expect(out.testCases[0]._stories.sort()).toEqual(['EP-1', 'EP-2']);
+    expect(out.perChild.after['EP-1']).toBe(1);
+    expect(out.perChild.after['EP-2']).toBe(1);
+  });
+
+  test('different permissions across children survive consolidation', () => {
+    const out = EpicMode.consolidateEpicSuite([
+      { child: { key: 'EP-1' }, testCases: [{
+        title: 'Owner deletes the record', steps: ['Log in as Owner', 'Click Delete'],
+        expected_result: 'The record is deleted' }] },
+      { child: { key: 'EP-2' }, testCases: [{
+        title: 'Viewer deletes the record', steps: ['Log in as Viewer', 'Click Delete'],
+        expected_result: 'Deletion is denied' }] }
+    ], DEPS);
+    expect(out.testCases).toHaveLength(2);
+    expect(out.merged).toHaveLength(0);
+  });
+
+  test('per-child counts are reported before and after merging', () => {
+    const out = EpicMode.consolidateEpicSuite([
+      { child: { key: 'EP-1' }, testCases: [loginCase('a'), { title: 'Unique to EP-1', steps: ['Click Export'], expected_result: 'Exported' }] },
+      { child: { key: 'EP-2' }, testCases: [loginCase('b')] }
+    ], DEPS);
+    expect(out.perChild.before).toEqual({ 'EP-1': 2, 'EP-2': 1 });
+    // EP-2's coverage moved onto the shared case rather than disappearing.
+    expect(out.perChild.after['EP-2']).toBe(1);
+  });
+
+  test('degrades safely with no detector available', () => {
+    const out = EpicMode.consolidateEpicSuite(
+      [{ child: { key: 'EP-1' }, testCases: [loginCase('a')] }], { Detector: null });
+    expect(out.testCases).toHaveLength(1);
+    expect(out.merged).toEqual([]);
   });
 });

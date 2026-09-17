@@ -8,6 +8,9 @@
  * Levenshtein distance misses (e.g., "tap save button" ≈ "click save btn")
  */
 
+/** Evaluate a similarity call, treating any failure as "no evidence" (0). */
+function safeNum(fn) { try { const v = fn(); return Number.isFinite(v) ? v : 0; } catch (_) { return 0; } }
+
 class SemanticDuplicateDetector {
   constructor(threshold = 0.62) {
     this.threshold = threshold;
@@ -399,20 +402,11 @@ class SemanticDuplicateDetector {
       for (let j = i + 1; j < testCases.length; j++) {
         if (processed.has(j)) continue;
 
-        // Quick ID check
-        if (testCases[i].id && testCases[j].id && testCases[i].id === testCases[j].id) {
-          currentGroup.duplicates.push(j);
-          currentGroup.similarities.push({
-            index: j,
-            test: testCases[j],
-            lexicalSimilarity: 1.0,
-            semanticSimilarity: 1.0,
-            combinedSimilarity: 1.0,
-            type: 'exact-id'
-          });
-          processed.add(j);
-          continue;
-        }
+        // F04: a shared id is NOT proof of duplicate content. Models reuse ids
+        // ("TC-001") across entirely different scenarios, and this shortcut
+        // deleted the second one without ever comparing what it tested.
+        // Identity is the scenario, not the label — fall through to the real
+        // comparison below.
 
         // TF-IDF cosine similarity (vocabulary/term overlap after synonym normalization)
         const tfidfSim = this.cosineSimilarity(vectors[i], vectors[j]);
@@ -422,6 +416,18 @@ class SemanticDuplicateDetector {
 
         // Combined: equal weight — TF-IDF captures term overlap, heuristic captures structure
         const combinedSim = (tfidfSim * 0.5) + (heuristicSim * 0.5);
+
+        // F05: however similar the text, a proven distinction vetoes the merge.
+        const distinct = SemanticDuplicateDetector.distinctionReason(testCases[i], testCases[j]);
+        if (distinct) {
+          if (combinedSim >= this.threshold) {
+            (this.preservedDistinctions ||= []).push({
+              a: testCases[i].title, b: testCases[j].title,
+              similarity: Math.round(combinedSim * 100) / 100, reason: distinct
+            });
+          }
+          continue;
+        }
 
         if (combinedSim >= this.threshold) {
           currentGroup.duplicates.push(j);
@@ -446,6 +452,280 @@ class SemanticDuplicateDetector {
     return duplicateGroups;
   }
 
+  // ========== HARD DISTINCTION CHECKS (F05) ==========
+
+  /**
+   * Operations that are NOT each other, however similarly they are worded.
+   * "Export invoices" and "Archive invoices" share every token but the verb and
+   * scored 0.75 — above the 0.68 gate — so one was silently deleted.
+   */
+  static get OPERATION_CUES() {
+    return {
+      export: /\bexport(?:s|ed|ing)?|download(?:s|ed|ing)?\b/i,
+      archive: /\barchiv(?:e|es|ed|ing)\b/i,
+      delete: /\bdelete(?:s|d)?|remove(?:s|d)?|destroy|purge\b/i,
+      create: /\bcreate(?:s|d)?|add(?:s|ed)?|new\b/i,
+      update: /\bupdate(?:s|d)?|edit(?:s|ed)?|modif(?:y|ies|ied)|rename\b/i,
+      upload: /\bupload(?:s|ed|ing)?\b/i,
+      share: /\bshare(?:s|d)?|invite(?:s|d)?\b/i,
+      duplicate: /\bduplicat(?:e|es|ed)|clone|copy\b/i,
+      restore: /\brestore(?:s|d)?|undo|recover\b/i,
+      enable: /\benable(?:s|d)?|activat(?:e|es|ed)|turn on\b/i,
+      disable: /\bdisable(?:s|d)?|deactivat(?:e|es|ed)|turn off\b/i,
+      search: /\bsearch(?:es|ed)?|filter(?:s|ed)?|query\b/i,
+      sort: /\bsort(?:s|ed)?|order by|reorder\b/i
+    };
+  }
+
+  /** Role/actor names whose distinction changes the expected outcome. */
+  static get ACTOR_CUES() {
+    return /\b(admin(?:istrator)?s?|owner|viewer|editor|guest|anonymous|member|manager|superuser|non[- ]owner|unauthenticated|authenticated)\b/gi;
+  }
+
+  /** All numeric literals, with unit when one is attached (100kb ≠ 999kb). */
+  static numericSignature(text) {
+    const out = new Set();
+    const re = /(\d+(?:[.,]\d+)?)\s*(kb|mb|gb|bytes?|ms|s|sec(?:onds?)?|min(?:utes?)?|hours?|days?|%|characters?|chars?|items?|rows?|users?|files?)?/gi;
+    let m;
+    while ((m = re.exec(String(text || ''))) !== null) {
+      out.add(`${m[1].replace(',', '')}${(m[2] || '').toLowerCase()}`);
+    }
+    return out;
+  }
+
+  static opsIn(text) {
+    const found = new Set();
+    for (const [op, re] of Object.entries(SemanticDuplicateDetector.OPERATION_CUES)) {
+      if (re.test(text)) found.add(op);
+    }
+    return found;
+  }
+
+  static setsIn(text, re) {
+    return new Set((String(text || '').match(re) || []).map(v => v.toLowerCase().replace(/\s+/g, '-')));
+  }
+
+  /**
+   * F05: is this pair PROVABLY distinct? Text similarity may only RETRIEVE
+   * comparison candidates — it may never authorize a deletion on its own.
+   * Returns a human-readable reason when the two cases test different things,
+   * or null when nothing distinguishes them (i.e. a merge may be considered).
+   *
+   * Only asymmetric evidence counts: a dimension that is missing on either side
+   * is UNKNOWN, never a match. Every rule here is one-directional — it can only
+   * PREVENT a merge, so a false positive costs one redundant case, whereas the
+   * false negative it replaces silently destroyed a distinct obligation.
+   *
+   * ponytail: lexical cues over titles/steps/results, not a parsed scenario
+   * model. Upgrade path is the Scenario record in fix2.md §7.1 — this function
+   * is the seam where that swaps in.
+   */
+  distinctionReason(a, b) {
+    return SemanticDuplicateDetector.distinctionReason(a, b);
+  }
+
+  static distinctionReason(a, b) {
+    if (!a || !b) return null;
+    const textOf = (t) => [t.title, t.description, t.expected_result, t.test_data, t.testData,
+      ...(Array.isArray(t.steps) ? t.steps : [])].filter(Boolean).join(' ');
+    const ta = textOf(a), tb = textOf(b);
+    // The assertion, separately: polarity belongs to the claimed outcome.
+    const oa = [a.title, a.expected_result || a.expectedResult].filter(Boolean).join(' ');
+    const ob = [b.title, b.expected_result || b.expectedResult].filter(Boolean).join(' ');
+
+    // 1. Polarity — allow vs deny is never the same test.
+    const NEG = /\b(cannot|can't|must not|should not|shouldn't|is not|are not|does not|doesn't|never|unable|denied|deny|denies|forbidden|prohibited|rejected|blocked|prevented|unauthoriz(?:ed)?|invalid|fails?|failure|error|403|401)\b/i;
+    const pa = NEG.test(oa), pb = NEG.test(ob);
+    if (oa && ob && pa !== pb) {
+      return `opposite expected outcomes (${pa ? 'denied' : 'allowed'} vs ${pb ? 'denied' : 'allowed'})`;
+    }
+
+    // 2. Operation — export ≠ archive, create ≠ update, enable ≠ disable.
+    const opsA = SemanticDuplicateDetector.opsIn(ta), opsB = SemanticDuplicateDetector.opsIn(tb);
+    if (opsA.size && opsB.size) {
+      const shared = [...opsA].filter(o => opsB.has(o));
+      if (shared.length === 0) {
+        return `different operations (${[...opsA].join('/')} vs ${[...opsB].join('/')})`;
+      }
+    }
+
+    // 3. Actor / role — owner ≠ non-owner, viewer ≠ admin.
+    const acA = SemanticDuplicateDetector.setsIn(ta, SemanticDuplicateDetector.ACTOR_CUES);
+    const acB = SemanticDuplicateDetector.setsIn(tb, SemanticDuplicateDetector.ACTOR_CUES);
+    if (acA.size && acB.size && ![...acA].some(r => acB.has(r))) {
+      return `different actors (${[...acA].join('/')} vs ${[...acB].join('/')})`;
+    }
+
+    // 4. Boundary / input partition — 100KB, 100KB−1 and 999KB are three
+    //    obligations even when their titles are byte-identical.
+    const nA = SemanticDuplicateDetector.numericSignature(ta);
+    const nB = SemanticDuplicateDetector.numericSignature(tb);
+    if (nA.size && nB.size) {
+      const same = [...nA].every(v => nB.has(v)) && [...nB].every(v => nA.has(v));
+      if (!same) return `different input values / boundary positions (${[...nA].join(',')} vs ${[...nB].join(',')})`;
+    }
+
+    return null;
+  }
+
+  // ========== SCENARIO CLASSIFICATION (F05 §7.3) ==========
+
+
+  /**
+   * F05 §7.3: classify a PAIR rather than answering a yes/no "duplicate?".
+   *
+   * A single similarity number forces every pair into merge-or-keep, so the
+   * genuinely uncertain ones were resolved by whichever side of the threshold
+   * they fell — silently, and in the deleting direction. The classes are:
+   *
+   *   exact_duplicate   identical content fingerprint; safe to collapse
+   *   equivalent        same scenario, different words; safe to collapse
+   *   parameter_variant same obligation, different sample data; parameterisable
+   *   overlapping       shares steps but asserts something additional; KEEP both
+   *   contradictory     opposite expected outcomes; KEEP both, and flag
+   *   distinct          provably different obligation; KEEP both
+   *   uncertain         cannot tell; KEEP both and mark for review
+   *
+   * Only exact_duplicate and equivalent may be auto-collapsed. Everything else
+   * is retained, which is the asymmetry that matters: a redundant case costs a
+   * few minutes, a deleted obligation costs the coverage it was the only proof of.
+   */
+  static classifyPair(a, b, opts = {}) {
+    const threshold = opts.threshold ?? 0.75;
+    if (!a || !b) return { relation: 'uncertain', reason: 'missing candidate', merge: false };
+
+    // 1. Exact content fingerprint — ids and cosmetic wording are not identity.
+    const fa = SemanticDuplicateDetector.contentFingerprint(a);
+    const fb = SemanticDuplicateDetector.contentFingerprint(b);
+    if (fa && fa === fb) {
+      return { relation: 'exact_duplicate', reason: 'identical normalized content', merge: true, similarity: 1 };
+    }
+
+    // 2. Hard distinctions veto any merge, whatever the text similarity says.
+    const distinct = SemanticDuplicateDetector.distinctionReason(a, b);
+    if (distinct) {
+      // Order matters. Differing INPUTS legitimately produce differing outcomes —
+      // "100 KB is accepted" and "101 KB is rejected" is a boundary pair, not a
+      // contradiction. A contradiction is opposite outcomes for the SAME input,
+      // so the numeric check is consulted first.
+      const nA = SemanticDuplicateDetector.numericSignature(SemanticDuplicateDetector.textOf(a));
+      const nB = SemanticDuplicateDetector.numericSignature(SemanticDuplicateDetector.textOf(b));
+      const differentInputs = nA.size && nB.size &&
+        (![...nA].every(v => nB.has(v)) || ![...nB].every(v => nA.has(v)));
+
+      const relation = differentInputs ? 'parameter_variant'
+        : (/opposite expected outcomes/.test(distinct) ? 'contradictory' : 'distinct');
+
+      return {
+        relation,
+        reason: distinct,
+        // A parameter_variant is NOT auto-merged: below-limit, at-limit and
+        // above-limit are three obligations that happen to look alike.
+        merge: false
+      };
+    }
+
+    // §7.3: ONE similarity number for the incremental gate and the batch detector.
+    // The caller passes the score it already computed; recomputing here with the
+    // detector's own blend gave two different answers for the same pair, so a
+    // case the gate saw as a duplicate could be classed 'distinct' and kept.
+    let sim = typeof opts.similarity === 'number' ? opts.similarity : null;
+    if (sim === null) {
+      const det = opts.detector || new SemanticDuplicateDetector(threshold);
+      const groups = det.detectDuplicates([a, b]) || [];
+      sim = groups.length && groups[0].similarities && groups[0].similarities[0]
+        ? groups[0].similarities[0].combinedSimilarity
+        : (0.5 * safeNum(() => det.calculateSemanticSimilarity(a, b)) +
+           0.5 * safeNum(() => det.calculateLexicalSimilarity(a, b)));
+    }
+
+    if (sim >= threshold) {
+      // 3. Same scenario? Only when both sides actually described one. Two
+      //    title-only cases scoring high is thin evidence, not equivalence.
+      const described = (t) => (Array.isArray(t.steps) && t.steps.length > 0) &&
+        !!(t.expected_result || t.expectedResult);
+      if (described(a) && described(b)) {
+        return { relation: 'equivalent', reason: `same scenario (similarity ${sim.toFixed(2)})`, merge: true, similarity: sim };
+      }
+      return {
+        relation: 'uncertain',
+        reason: `similar (${sim.toFixed(2)}) but one or both cases are too thin to compare — retained for review`,
+        merge: false, similarity: sim
+      };
+    }
+
+    // 4. Below threshold but sharing an operation + subject: overlapping work,
+    //    not a duplicate. Worth surfacing so a reviewer can consolidate by hand.
+    const opsA = SemanticDuplicateDetector.opsIn(SemanticDuplicateDetector.textOf(a));
+    const opsB = SemanticDuplicateDetector.opsIn(SemanticDuplicateDetector.textOf(b));
+    const sharedOps = [...opsA].filter(o => opsB.has(o));
+    if (sim >= threshold * 0.8 && sharedOps.length) {
+      return { relation: 'overlapping', reason: `shares the ${sharedOps.join('/')} operation`, merge: false, similarity: sim };
+    }
+
+    return { relation: 'distinct', reason: 'no meaningful overlap', merge: false, similarity: sim };
+  }
+
+  /** Normalized content fingerprint: scenario identity, not id or wording order. */
+  static contentFingerprint(t) {
+    if (!t) return '';
+    const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const steps = (Array.isArray(t.steps) ? t.steps : [])
+      .map(s => norm(typeof s === 'string' ? s : (s && (s.action || s.step || s.text)) || ''))
+      .filter(Boolean);
+    const parts = [
+      norm(t.title),
+      norm(t.expected_result || t.expectedResult),
+      norm(t.test_data || t.testData),
+      steps.join('|')
+    ];
+    return parts.join('::');
+  }
+
+  static textOf(t) {
+    return [t.title, t.description, t.expected_result || t.expectedResult, t.test_data || t.testData,
+      ...(Array.isArray(t.steps) ? t.steps : [])].filter(Boolean).join(' ');
+  }
+
+  /**
+   * F05 §7.3 step 7: recheck survivors GLOBALLY, without assuming transitivity.
+   * A≈B and B≈C does not prove A≈C, so each candidate is compared against every
+   * retained case rather than against a group representative.
+   *
+   * @returns {{kept: Array, merged: Array, review: Array}}
+   */
+  static consolidate(testCases, opts = {}) {
+    const list = Array.isArray(testCases) ? testCases : [];
+    const det = opts.detector || new SemanticDuplicateDetector(opts.threshold ?? 0.75);
+    const kept = [], merged = [], review = [];
+
+    for (const candidate of list) {
+      let mergedInto = null;
+      for (const existing of kept) {
+        const verdict = SemanticDuplicateDetector.classifyPair(candidate, existing, { ...opts, detector: det });
+        if (verdict.merge) { mergedInto = { existing, verdict }; break; }
+        if (verdict.relation === 'uncertain' || verdict.relation === 'contradictory' || verdict.relation === 'overlapping') {
+          review.push({
+            a: candidate.title, b: existing.title,
+            relation: verdict.relation, reason: verdict.reason, similarity: verdict.similarity
+          });
+        }
+      }
+      if (mergedInto) {
+        merged.push({
+          title: candidate.title, into: mergedInto.existing.title,
+          relation: mergedInto.verdict.relation, reason: mergedInto.verdict.reason
+        });
+        // Preserve provenance: the survivor now covers both cases' requirements.
+        const ids = new Set([...(mergedInto.existing.requirementIds || []), ...(candidate.requirementIds || [])]);
+        if (ids.size) mergedInto.existing.requirementIds = [...ids];
+      } else {
+        kept.push(candidate);
+      }
+    }
+    return { kept, merged, review };
+  }
+
   // ========== HEURISTIC SEMANTIC FEATURES (secondary signal) ==========
 
   /**
@@ -455,19 +735,33 @@ class SemanticDuplicateDetector {
     const features1 = this.extractSemanticFeatures(test1);
     const features2 = this.extractSemanticFeatures(test2);
 
-    // Intent similarity (40%)
+    // F05: MISSING information is not agreement. Two tests with no steps used to
+    // score actions 1.0, and two with all-false outcome flags scored outcomes
+    // 1.0 — so the LESS a pair said, the more identical it looked ("Update
+    // billing address" vs "Delete saved card" reached 0.85 that way). A dimension
+    // neither side describes is dropped from the average and its weight
+    // redistributed, so similarity is only ever computed over real evidence.
     const intentSim = this.compareIntents(features1.intent, features2.intent);
-
-    // Entity similarity (30%)
-    const entitySim = this.compareEntities(features1.entities, features2.entities);
-
-    // Action similarity (20%)
-    const actionSim = this.compareActions(features1.actions, features2.actions);
-
-    // Outcome similarity (10%)
-    const outcomeSim = this.compareOutcomes(features1.outcome, features2.outcome);
-
-    return (intentSim * 0.4) + (entitySim * 0.3) + (actionSim * 0.2) + (outcomeSim * 0.1);
+    const dims = [
+      { w: 0.4, v: intentSim ?? 0, known: intentSim !== null },
+      {
+        w: 0.3, v: this.compareEntities(features1.entities, features2.entities),
+        known: !!(features1.entities.fields.length + features1.entities.buttons.length + features1.entities.apis.length)
+            && !!(features2.entities.fields.length + features2.entities.buttons.length + features2.entities.apis.length)
+      },
+      {
+        w: 0.2, v: this.compareActions(features1.actions, features2.actions),
+        known: features1.actions.length > 0 && features2.actions.length > 0
+      },
+      {
+        w: 0.1, v: this.compareOutcomes(features1.outcome, features2.outcome),
+        known: Object.values(features1.outcome).some(Boolean) && Object.values(features2.outcome).some(Boolean)
+      }
+    ];
+    const known = dims.filter(d => d.known);
+    if (!known.length) return 0; // nothing observable — assume nothing
+    const totalW = known.reduce((sum, d) => sum + d.w, 0);
+    return known.reduce((sum, d) => sum + d.v * d.w, 0) / totalW;
   }
 
   extractSemanticFeatures(testCase) {
@@ -583,12 +877,24 @@ class SemanticDuplicateDetector {
     return outcome;
   }
 
+  /**
+   * F05: only compare what was actually OBSERVED. `type:'unknown'` (no category),
+   * `polarity:'neutral'` (undetermined) and `scenario:'standard'` (the default)
+   * are absences, not features — crediting them for "matching" scored two
+   * title-only, entirely unrelated cases a perfect 1.0 intent similarity.
+   * Returns null when no sub-dimension is comparable.
+   * @returns {number|null}
+   */
   compareIntents(intent1, intent2) {
-    let score = 0;
-    if (intent1.type === intent2.type) score += 0.5;
-    if (intent1.polarity === intent2.polarity) score += 0.3;
-    if (intent1.scenario === intent2.scenario) score += 0.2;
-    return score;
+    const dims = [
+      { w: 0.5, known: intent1.type !== 'unknown' && intent2.type !== 'unknown', hit: intent1.type === intent2.type },
+      { w: 0.3, known: intent1.polarity !== 'neutral' && intent2.polarity !== 'neutral', hit: intent1.polarity === intent2.polarity },
+      // 'standard' on both sides means neither test said anything about scenario.
+      { w: 0.2, known: !(intent1.scenario === 'standard' && intent2.scenario === 'standard'), hit: intent1.scenario === intent2.scenario }
+    ].filter(d => d.known);
+    if (!dims.length) return null;
+    const totalW = dims.reduce((sum, d) => sum + d.w, 0);
+    return dims.reduce((sum, d) => sum + (d.hit ? d.w : 0), 0) / totalW;
   }
 
   compareEntities(entities1, entities2) {

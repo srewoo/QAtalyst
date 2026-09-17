@@ -90,10 +90,20 @@
    * with a sensible floor/ceiling so each story still gets meaningful coverage
    * without exploding the run.
    */
+  /**
+   * F13: the per-child budget had a hard floor of 8, so an epic with 20 stories
+   * generated at least 160 tests no matter what the user set the total to — the
+   * displayed count was not a bound at all. The floor now yields to the global
+   * budget: it raises a small share up to a usable minimum only while the total
+   * can afford it. Counts are ceilings, never quotas to fill.
+   */
   function perChildTestCount(totalTestCount, childCount, { min = 8, max = 25 } = {}) {
     const total = Number(totalTestCount) || 30;
     const n = Math.max(1, childCount);
-    return Math.min(max, Math.max(min, Math.ceil(total / n)));
+    const share = Math.ceil(total / n);
+    // Applying `min` must not push the epic past its own total.
+    const affordableMin = Math.max(1, Math.floor(total / n));
+    return Math.min(max, Math.max(Math.min(min, affordableMin), share));
   }
 
   /**
@@ -131,6 +141,158 @@
   }
 
   /**
+   * F13: consolidate the WHOLE epic after every child has finished.
+   *
+   * Children were generated independently, each with its own AcceptanceGate, and
+   * the results were simply concatenated. Three stories that each need a login
+   * prerequisite therefore produced three near-identical login tests, and nothing
+   * ever compared across children.
+   *
+   * This collapses proven equivalents across the epic while:
+   *   - keeping EVERY story link on the surviving case (one shared case can
+   *     legitimately cover several stories — the link set is the coverage, and
+   *     dropping it would silently uncover a story),
+   *   - refusing to merge pairs with a proven distinction (different actor,
+   *     opposite outcome, different boundary), so per-child permission and state
+   *     differences survive,
+   *   - recording per-child counts before and after, so a reviewer can see that a
+   *     story's coverage moved rather than disappeared.
+   *
+   * ponytail: consolidation only. It does not yet PROPOSE the cross-story
+   * workflow test fix2.md F13 also asks for — that needs a generation pass over
+   * the merged plan, not a filter over finished output.
+   *
+   * @param {Array<{child, testCases}>} results per-child results
+   * @param {object} [deps] { Detector } — injected for tests; falls back to the global
+   * @returns {{testCases, merged, perChild}}
+   */
+  function consolidateEpicSuite(results, deps = {}) {
+    const rows = Array.isArray(results) ? results : [];
+    const Detector = deps.Detector
+      || (typeof SemanticDuplicateDetector !== 'undefined' ? SemanticDuplicateDetector : null)
+      || (typeof self !== 'undefined' && self.SemanticDuplicateDetector)
+      || (typeof window !== 'undefined' && window.SemanticDuplicateDetector);
+
+    // Flatten, tagging every case with the story it came from.
+    const flat = [];
+    for (const row of rows) {
+      const key = (row && row.child && (row.child.key || row.child.id)) || '';
+      for (const tc of (row && row.testCases) || []) {
+        flat.push({ ...tc, _stories: [key].filter(Boolean) });
+      }
+    }
+    const before = countByStory(rows);
+
+    if (!Detector || flat.length < 2) {
+      return { testCases: flat, merged: [], perChild: { before, after: before } };
+    }
+
+    const det = new Detector(deps.threshold ?? 0.75);
+    const kept = [];
+    const merged = [];
+
+    for (const candidate of flat) {
+      let mergedInto = null;
+      for (const existing of kept) {
+        if (typeof Detector.distinctionReason === 'function' &&
+            Detector.distinctionReason(candidate, existing)) continue;
+        const groups = det.detectDuplicates([candidate, existing]) || [];
+        if (groups.some(g => (g.duplicates || []).length > 0)) { mergedInto = existing; break; }
+      }
+      if (mergedInto) {
+        // Carry the story links over — this is what keeps the merged-away
+        // story's coverage attributed rather than lost.
+        for (const s of candidate._stories) {
+          if (!mergedInto._stories.includes(s)) mergedInto._stories.push(s);
+        }
+        merged.push({ title: candidate.title, into: mergedInto.title, stories: candidate._stories.slice() });
+      } else {
+        kept.push(candidate);
+      }
+    }
+
+    // Per-story counts AFTER merging: a story is still covered by any case that
+    // links to it, even when that case now serves several stories.
+    const after = {};
+    for (const tc of kept) for (const s of tc._stories) after[s] = (after[s] || 0) + 1;
+
+    return { testCases: kept, merged, perChild: { before, after } };
+  }
+
+  function countByStory(rows) {
+    const out = {};
+    for (const row of rows || []) {
+      const key = (row && row.child && (row.child.key || row.child.id)) || '';
+      if (key) out[key] = ((row && row.testCases) || []).length;
+    }
+    return out;
+  }
+
+  /**
+   * F13: propose the workflow that SPANS stories.
+   *
+   * Consolidation removes redundancy between children but can only ever return a
+   * subset of what the children already wrote — and no child can write the test
+   * that crosses story boundaries, because no child sees the others. An epic that
+   * splits "create order / pay order / ship order" across three stories therefore
+   * gets three isolated suites and nothing that walks the whole path, which is
+   * exactly where integration defects live.
+   *
+   * This derives candidate end-to-end workflows from the consolidated suite by
+   * chaining stories whose operations form a lifecycle, and returns them as
+   * PROPOSALS for the caller to generate against — it does not invent test steps
+   * from nothing.
+   *
+   * ponytail: operation-sequence heuristics over story titles and case
+   * operations. A real workflow model needs the state/transition records of
+   * fix2.md §7.1; this is the seam where that swaps in.
+   */
+  function proposeCrossStoryWorkflows(results, consolidated, opts = {}) {
+    const rows = Array.isArray(results) ? results : [];
+    if (rows.length < 2) return [];
+
+    // Lifecycle order: an operation later in this list normally depends on one
+    // earlier in it, which is what makes the chain a workflow rather than a set.
+    const ORDER = ['create', 'add', 'submit', 'approve', 'pay', 'update', 'edit',
+                   'assign', 'ship', 'complete', 'export', 'archive', 'cancel', 'delete'];
+    const opOf = (text) => {
+      const t = String(text || '').toLowerCase();
+      for (const op of ORDER) if (new RegExp(`\\b${op}\\w*\\b`).test(t)) return op;
+      return null;
+    };
+
+    const stories = rows.map(r => {
+      const key = (r.child && (r.child.key || r.child.id)) || '';
+      const summary = (r.child && (r.child.summary || r.child.title)) || '';
+      const caseText = (r.testCases || []).map(t => t.title).join(' ');
+      return { key, summary, op: opOf(summary) || opOf(caseText) };
+    }).filter(s => s.key && s.op);
+
+    // Order the stories by their position in the lifecycle.
+    const chain = stories
+      .filter((s, i, arr) => arr.findIndex(x => x.op === s.op) === i)
+      .sort((a, b) => ORDER.indexOf(a.op) - ORDER.indexOf(b.op));
+
+    if (chain.length < 2) return [];
+
+    const subject = (opts.epicSummary || chain[0].summary || 'the epic')
+      .replace(/^(epic|story)[:\s-]*/i, '').trim();
+
+    return [{
+      kind: 'cross_story_workflow',
+      title: `End-to-end: ${chain.map(c => c.op).join(' → ')} across ${chain.length} stories`,
+      stories: chain.map(c => c.key),
+      operations: chain.map(c => c.op),
+      // What the caller should ask a generator to produce. It is a PROPOSAL, not
+      // a finished case — nothing here asserts behaviour the stories do not state.
+      rationale: `Stories ${chain.map(c => c.key).join(', ')} implement consecutive stages of ${subject}. ` +
+        `No child story can test the handover between them, because each is generated in isolation.`,
+      focus: `A single test that performs ${chain.map(c => c.op).join(', then ')} in sequence, ` +
+        `carrying the same record through every stage and asserting it survives each handover.`
+    }];
+  }
+
+  /**
    * Orchestrate epic-mode generation.
    * @param {{key,summary,description}} epic
    * @param {object} deps
@@ -165,7 +327,25 @@
       testCases: (s.status === 'fulfilled' && s.value && Array.isArray(s.value.testCases)) ? s.value.testCases : []
     }));
 
-    return { epicKey: epic.key, children, results, summary: aggregateEpicResults(results) };
+    // F13: one global consolidation pass across every child, instead of simply
+    // concatenating independently-gated suites.
+    const consolidated = consolidateEpicSuite(results, deps);
+
+    // F13: the test that spans stories, which no child could have written.
+    const workflows = proposeCrossStoryWorkflows(results, consolidated, { epicSummary: epic.summary });
+
+    return {
+      epicKey: epic.key,
+      children,
+      results,
+      consolidated,
+      workflows,
+      summary: {
+        ...aggregateEpicResults(results),
+        consolidatedTests: consolidated.testCases.length,
+        mergedAcrossStories: consolidated.merged.length
+      }
+    };
   }
 
   /**
@@ -257,7 +437,7 @@
 
   const api = {
     isEpicIssue, buildEpicChildrenJQL, buildEpicHeader, prepareChildTicketData,
-    perChildTestCount, runWithConcurrency, aggregateEpicResults, generateEpicTestCases,
+    perChildTestCount, runWithConcurrency, aggregateEpicResults, generateEpicTestCases, consolidateEpicSuite, proposeCrossStoryWorkflows,
     filterSelectedChildren, buildEpicRollupTicketData, foldChildContext, truncate, truncateKeepingLinks, extractDocLinks
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

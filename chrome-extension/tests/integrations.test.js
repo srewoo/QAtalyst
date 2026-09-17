@@ -385,3 +385,74 @@ describe('GoogleDocsIntegration.fetchDocument', () => {
     expect(result.content.length).toBeLessThan(big.length);
   });
 });
+
+describe('F25 — linked-source discovery is additive and honest', () => {
+  const { IntegrationManager } = require('../integrations.js');
+
+  const SETTINGS = {
+    confluenceUrl: 'https://wiki.example.com',
+    confluenceEmail: 'qa@example.com',
+    confluenceToken: 'FIXTURE-not-a-real-token',
+    figmaToken: 'FIXTURE-figma-not-real'
+  };
+
+  test('a Figma URL in a comment is found even when linkedPages has a Confluence page', async () => {
+    const mgr = new IntegrationManager(SETTINGS);
+    const seen = { confluence: null, figma: null, googleDocs: null };
+    mgr.fetchConfluencePages = async (urls) => { seen.confluence = urls; return []; };
+    mgr.fetchFigmaFiles = async (urls) => { seen.figma = urls; return []; };
+    mgr.fetchGoogleDocs = async (urls) => { seen.googleDocs = urls; return []; };
+
+    await mgr.fetchAllLinkedContent({
+      description: 'Spec: https://docs.google.com/document/d/abc123/edit',
+      linkedPages: [{ type: 'confluence', url: 'https://wiki.example.com/pages/1' }],
+      comments: [{ text: 'Design here: https://www.figma.com/file/XYZ/Flow' }]
+    });
+
+    // Pre-fix the text scan ran only when ALL THREE lists were empty, so the one
+    // Confluence entry in linkedPages hid both the Figma and the Google Doc link.
+    expect(seen.confluence).toContain('https://wiki.example.com/pages/1');
+    expect((seen.figma || []).join(' ')).toContain('figma.com');
+    expect((seen.googleDocs || []).join(' ')).toContain('docs.google.com');
+  });
+
+  test('the same page linked in the DOM and in text is one source, not two', async () => {
+    const mgr = new IntegrationManager(SETTINGS);
+    let urls = null;
+    mgr.fetchConfluencePages = async (u) => { urls = u; return []; };
+    mgr.fetchFigmaFiles = async () => [];
+    mgr.fetchGoogleDocs = async () => [];
+
+    await mgr.fetchAllLinkedContent({
+      description: 'See https://wiki.example.com/pages/1/',
+      linkedPages: [{ type: 'confluence', url: 'https://wiki.example.com/pages/1' }],
+      comments: []
+    });
+    expect(urls).toHaveLength(1);
+  });
+
+  test('no credential material is written to the console', async () => {
+    const logs = [];
+    const orig = { log: console.log, warn: console.warn, error: console.error };
+    console.log = console.warn = console.error = (...a) => logs.push(JSON.stringify(a));
+    try {
+      const mgr = new IntegrationManager(SETTINGS);
+      mgr.fetchConfluencePages = async () => [];
+      mgr.fetchFigmaFiles = async () => [];
+      mgr.fetchGoogleDocs = async () => [];
+      await mgr.fetchAllLinkedContent({
+        description: 'x',
+        linkedPages: [{ type: 'confluence', url: 'https://wiki.example.com/pages/1' }],
+        comments: []
+      });
+    } finally {
+      Object.assign(console, orig);
+    }
+    const all = logs.join('\n');
+    // Token PREFIXES were being logged — a prefix is still token material.
+    expect(all).not.toContain('FIXTURE-not-a-real-token');
+    expect(all).not.toContain('FIXTURE-not-a');
+    expect(all).not.toContain('FIXTURE-figma-not-real');
+    expect(all).not.toContain('FIXTURE-fi');
+  });
+});

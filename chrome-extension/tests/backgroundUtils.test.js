@@ -157,3 +157,28 @@ describe('deriveAdaptiveThresholds', () => {
     expect(r.relevanceThreshold).toBeLessThanOrEqual(0.35);
   });
 });
+
+describe('F21 — custom JQL filters apply on the ACTIVE mining path', () => {
+  test("the user's Custom JQL Filters setting is honoured", () => {
+    const jql = buildHistoricalJql(
+      { key: 'PAY-9', summary: 'Refund processing fails' },
+      { historicalJqlFilters: 'issuetype = Bug AND labels = payments AND created >= -90d' }
+    );
+    // The options page exposes this control, but only the OLDER mining helper
+    // read it — the agentic path built its query here and ignored the setting,
+    // so a visible control did nothing on the path that actually runs.
+    expect(jql).toContain('labels = payments');
+    expect(jql).toContain('created >= -90d');
+  });
+
+  test('falls back to a sensible default when no filter is configured', () => {
+    const jql = buildHistoricalJql({ key: 'PAY-9', summary: 'Refund processing fails' }, {});
+    expect(jql).toContain('issuetype = Bug');
+    expect(jql).toContain('created >= -365d');
+  });
+
+  test('works with no settings object at all (older callers)', () => {
+    expect(buildHistoricalJql({ key: 'PAY-9', summary: 'Refund processing fails' }))
+      .toContain('issuetype = Bug');
+  });
+});

@@ -66,3 +66,62 @@ describe('eval scorer (G3)', () => {
     expect(r.failures.length).toBeGreaterThan(0);
   });
 });
+
+describe('F20 — the scorer cannot award a grade it did not earn', () => {
+  const { evaluate, scoreSuite } = require('../eval/scorer.js');
+
+  test('an empty suite is not a perfect score', () => {
+    // Pre-fix: score 100, pass true — only the uniqueness term applied, and an
+    // empty suite trivially has no duplicates.
+    const r = evaluate({ ticket: {}, generatedSuite: [] });
+    expect(r.pass).toBe(false);
+    expect(r.score).toBeNull();
+    expect(r.failures.join(' ')).toMatch(/not scoreable/);
+  });
+
+  test('a suite with nothing to score against is not scoreable', () => {
+    const r = evaluate({ ticket: {}, generatedSuite: [{ title: 'anything', expected_result: 'ok' }] });
+    expect(r.pass).toBe(false);
+    expect(r.scoreable).toBe(false);
+  });
+
+  test('unresolved references do not count as valid grounding', () => {
+    const kg = { pages: [{ url: 'https://a/login', title: 'Login',
+      features: [{ type: 'button', text: 'Login', selector: '#l' }], apis: [] }] };
+    const m = scoreSuite({
+      ticket: { summary: 'Login', description: 'Acceptance Criteria:\n- User can log in' },
+      knowledgeGraph: kg,
+      generatedSuite: [
+        { title: 'User can log in', steps: ['Click the "Login" button'], expected_result: 'Signed in' },
+        { title: 'User can log in', steps: ['Click the "Launch Rocket" button'], expected_result: 'Signed in' }
+      ]
+    });
+    // Pre-fix both counted as grounded because neither was outright rejected.
+    expect(m.groundingValidity).toBeLessThan(1);
+    expect(m.groundingDetail.unresolved + m.groundingDetail.rejected).toBeGreaterThan(0);
+  });
+
+  test('merging a protected distinct pair fails the fixture', () => {
+    const r = evaluate({
+      ticket: { summary: 'Invoices', description: 'Acceptance Criteria:\n- Invoices can be exported' },
+      generatedSuite: [{ title: 'Export invoices', steps: ['Click Export'], expected_result: 'Exported' }],
+      protectedDistinctions: [{
+        reason: 'test harness: identical cases SHOULD merge',
+        cases: [
+          { title: 'Export invoices', steps: ['Click Export'], expected_result: 'Exported' },
+          { title: 'Export invoices', steps: ['Click Export'], expected_result: 'Exported' }
+        ]
+      }]
+    });
+    expect(r.falseMerges.length).toBe(1);
+    expect(r.pass).toBe(false);
+    expect(r.failures.join(' ')).toMatch(/false merge/);
+  });
+
+  test('the shipped adversarial corpus preserves every protected distinction', () => {
+    const fixture = require('../eval/fixtures/adversarial-distinctions.json');
+    const r = evaluate(fixture);
+    expect(r.falseMerges).toEqual([]);
+    expect(r.pass).toBe(true);
+  });
+});

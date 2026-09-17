@@ -38,6 +38,29 @@ class AgentToolRegistry {
     this.ctx = ctx;
     this.callCount = {};
     this.lastError = null; // {tool, error} — surfaced so the host can report why generation failed
+
+    // F09: a durable evidence packet. Retrieval results used to exist only as the
+    // planner's clipped last observation: a BM25 hit was summarised into the
+    // decision prompt and then thrown away, so the generator never saw the page
+    // that was retrieved FOR it and rebuilt a fixed context from the first 40
+    // fields / 30 buttons of the whole graph instead. Anything retrieved is
+    // recorded here, with its source, and fed into proposal generation.
+    this.evidence = {
+      pages: new Map(),  // url -> { url, title, summary, score, retrievedAt }
+      docs: [],          // { sourceType, url, excerpt, retrievedAt }
+      issues: []         // { key, summary, retrievedAt }
+    };
+  }
+
+  /** Record a retrieved page so the generator can use it, not just the planner. */
+  rememberPages(entries) {
+    for (const e of entries || []) {
+      if (!e || !e.url) continue;
+      const prev = this.evidence.pages.get(e.url);
+      // Keep the strongest retrieval score seen for this page.
+      if (prev && (prev.score || 0) >= (e.score || 0)) continue;
+      this.evidence.pages.set(e.url, { ...e, retrievedAt: Date.now() });
+    }
   }
 
   /** Tool catalogue surfaced to the planner. Keep descriptions tight — they go in the prompt. */
@@ -87,7 +110,13 @@ class AgentToolRegistry {
     if (this.ctx.bm25 && typeof this.ctx.bm25.search === 'function') {
       const hits = this.ctx.bm25.search(query, topK);
       const pages = this.resolvePages(hits.map(h => h.url));
-      return { matches: hits.map((h, i) => ({ url: h.url, score: round2(h.score), summary: summarizePage(pages[i]) })) };
+      const matches = hits.map((h, i) => ({
+        url: h.url, score: round2(h.score), summary: summarizePage(pages[i]),
+        page: pages[i] || null
+      }));
+      // F09: retain what was retrieved — this is the evidence the generator needs.
+      this.rememberPages(matches.map(m => ({ url: m.url, score: m.score, summary: m.summary, page: m.page })));
+      return { matches: matches.map(({ page, ...m }) => m), query };
     }
     // Fallback: keyword scan over KG pages
     const pages = pagesOf(kg);
@@ -97,7 +126,9 @@ class AgentToolRegistry {
       const blob = (p.url + ' ' + (p.title || '') + ' ' + JSON.stringify(p.features || '')).toLowerCase();
       return { url: p.url, score: terms.reduce((s, t) => s + (blob.includes(t) ? 1 : 0), 0), page: p };
     }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, topK);
-    return { matches: scored.map(s => ({ url: s.url, score: s.score, summary: summarizePage(s.page) })) };
+    const matches = scored.map(s => ({ url: s.url, score: s.score, summary: summarizePage(s.page), page: s.page }));
+    this.rememberPages(matches);
+    return { matches: matches.map(({ page, ...m }) => m), query };
   }
 
   async inspect_element({ selector, field, button }) {
@@ -188,6 +219,7 @@ class AgentToolRegistry {
   async propose_tests({ category = 'Positive', count = 5, focus = '' }) {
     count = Math.max(1, Math.min(12, count | 0 || 5));
     const ground = this.groundingContext();
+    const docEvidence = this.documentEvidence();
     const alreadyCovered = this.acceptedSummaries();
     const isRegression = /regress/i.test(category);
     const regressionCtx = isRegression ? this.regressionContext() : '';
@@ -225,7 +257,11 @@ class AgentToolRegistry {
     const user = [
       '<ticket_data>',
       this.ticketContext(),
+      this.reviewedContext(),
       regressionCtx,
+      // F09: requirement evidence from linked documents now reaches the
+      // GENERATOR, not only the planner's next decision prompt.
+      docEvidence ? `\nRETRIEVED DOCUMENT EVIDENCE:\n${docEvidence}` : '',
       '</ticket_data>',
       '',
       'REAL APP ENTITIES (use these — do not invent others):',
@@ -287,7 +323,17 @@ class AgentToolRegistry {
     if (!url) return { error: 'url required' };
     if (!this.ctx.confluenceFetch) return { available: false, note: 'Confluence integration not configured' };
     const text = await safeAsync(() => this.ctx.confluenceFetch(url), '');
-    return { url, length: (text || '').length, excerpt: (text || '').slice(0, 1500) };
+    if (!text) {
+      // F09: a failed fetch is not an empty document — say which.
+      return { url, length: 0, excerpt: '', fetched: false, note: 'document could not be fetched' };
+    }
+    // F09: retained with provenance so the requirement it contains reaches the
+    // generator, not only the planner's next decision prompt.
+    this.evidence.docs.push({
+      sourceType: 'confluence', url,
+      excerpt: text.slice(0, 4000), length: text.length, retrievedAt: Date.now()
+    });
+    return { url, length: text.length, excerpt: text.slice(0, 1500), fetched: true };
   }
 
   async crawl_route({ url }) {
@@ -314,6 +360,25 @@ class AgentToolRegistry {
    * (F4). Each section is independently clipped so one huge field can't starve
    * the others, and the whole block stays small enough for the agentic budget.
    */
+  /**
+   * F23: the reviewed requirement analysis and test scope, when the user ran and
+   * edited those steps. They were stored in the panel and never sent, so a
+   * correction or exclusion the user made had no effect on the generated suite.
+   *
+   * Passed as a REVIEWED INTERPRETATION, explicitly subordinate to the ticket:
+   * model-authored analysis is a proposal, and must not be promoted to source
+   * truth just because it passed through the panel.
+   */
+  reviewedContext() {
+    const rc = this.ctx.reviewedContext;
+    if (!rc || (!rc.analysis && !rc.scope)) return '';
+    const parts = ['REVIEWED INTERPRETATION (the QA engineer\'s analysis of this ticket —',
+      'honour its exclusions and clarifications; where it conflicts with the ticket text above, the TICKET wins):'];
+    if (rc.analysis) parts.push(`ANALYSIS${rc.analysisReviewed ? ' (edited by the user)' : ''}:\n${rc.analysis}`);
+    if (rc.scope) parts.push(`TEST SCOPE${rc.scopeReviewed ? ' (edited by the user)' : ''}:\n${rc.scope}`);
+    return parts.join('\n');
+  }
+
   ticketContext() {
     const t = this.ctx.ticketData || {};
     const parts = [];
@@ -439,20 +504,111 @@ class AgentToolRegistry {
       .join('\n');
   }
 
-  /** Compact, token-bounded list of real app entities for grounding generation. */
+  /**
+   * Compact, token-bounded list of real app entities for grounding generation.
+   *
+   * F09: this took the FIRST 40 fields / 30 buttons / 25 routes / 25 APIs of the
+   * entire graph in arbitrary index order, completely ignoring what retrieval had
+   * just found. The planner would search for "invoice export", get the right page
+   * back — and then the generator was handed the same arbitrary slice as always,
+   * with the retrieved page's entities quite possibly not in it at all.
+   *
+   * Retrieved entities now come FIRST and the remaining budget is filled from the
+   * global index, so retrieval actually steers generation.
+   */
   groundingContext() {
     const idx = this.ctx.verifierIndex;
     if (!idx || idx.empty) return '(no crawl data — generate from the ticket text only, keep references generic)';
-    const fields = [...idx.fields].slice(0, 40);
-    const buttons = [...idx.buttons].slice(0, 30);
-    const routes = [...idx.routes].slice(0, 25);
-    const apis = (idx.apis || []).slice(0, 25).map(a => `${a.method} ${a.endpoint || a.url}`);
-    return [
+
+    const retrieved = this.retrievedEntities();
+    // Retrieved first (ordered by retrieval score), then the rest of the index.
+    const merge = (first, all, cap) => {
+      const out = [];
+      const seen = new Set();
+      for (const v of [...first, ...all]) {
+        const k = String(v).toLowerCase();
+        if (!v || seen.has(k)) continue;
+        seen.add(k);
+        out.push(v);
+        if (out.length >= cap) break;
+      }
+      return out;
+    };
+
+    const fields = merge(retrieved.fields, [...idx.fields], 40);
+    const buttons = merge(retrieved.buttons, [...idx.buttons], 30);
+    const routes = merge(retrieved.routes, [...idx.routes], 25);
+    const apis = merge(retrieved.apis, (idx.apis || []).map(a => `${a.method} ${a.endpoint || a.url}`), 25);
+
+    const lines = [
       `Fields: ${fields.join(', ') || '(none)'}`,
       `Buttons/actions: ${buttons.join(', ') || '(none)'}`,
       `Routes: ${routes.join(', ') || '(none)'}`,
       `APIs: ${apis.join('; ') || '(none)'}`
-    ].join('\n');
+    ];
+
+    // The pages retrieval actually selected, named, so the model can tell which
+    // entities belong together rather than treating one flat list as one screen.
+    if (retrieved.pageLines.length) {
+      lines.push('', 'MOST RELEVANT PAGES (retrieved for this ticket):', ...retrieved.pageLines.slice(0, 8));
+    }
+    return lines.join('\n');
+  }
+
+  /**
+   * F09: entities from the pages retrieval selected, ordered by retrieval score.
+   * @returns {{fields:string[], buttons:string[], routes:string[], apis:string[], pageLines:string[]}}
+   */
+  retrievedEntities() {
+    const out = { fields: [], buttons: [], routes: [], apis: [], pageLines: [] };
+    const pages = [...(this.evidence?.pages?.values() || [])]
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 10);
+
+    for (const entry of pages) {
+      const page = entry.page;
+      if (page && page.url) out.routes.push(pathOfUrl(page.url));
+      out.pageLines.push(`- ${entry.url}${entry.summary ? ` — ${String(entry.summary).slice(0, 160)}` : ''}`);
+      if (!page) continue;
+      for (const f of (Array.isArray(page.features) ? page.features : [])) {
+        if (!f || typeof f !== 'object') continue;
+        if (f.type === 'form') {
+          for (const inp of (f.inputs || f.fields || [])) {
+            const name = (inp && (inp.name || inp.id || inp.label)) || inp;
+            if (name) out.fields.push(String(name).toLowerCase());
+          }
+        } else if (f.type === 'button' || f.type === 'link') {
+          if (f.text || f.label) out.buttons.push(String(f.text || f.label).toLowerCase());
+        }
+      }
+      for (const a of (Array.isArray(page.apis) ? page.apis : [])) {
+        if (a && (a.endpoint || a.url)) out.apis.push(`${a.method || 'GET'} ${a.endpoint || a.url}`);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * F09: requirement evidence retrieved from linked documents, passed straight
+   * into proposal generation. `fetch_confluence` used to return an excerpt to the
+   * PLANNER only — the generator never saw a word of it, so a requirement that
+   * existed solely in a linked document could not shape a single test.
+   */
+  documentEvidence() {
+    const docs = (this.evidence && this.evidence.docs) || [];
+    if (!docs.length) return '';
+    const BUDGET = 3000;
+    let used = 0;
+    const out = [];
+    for (const d of docs.slice(-5)) {
+      const head = `[${d.sourceType || 'document'}] ${d.url || ''}`;
+      const room = Math.max(0, BUDGET - used - head.length);
+      if (room < 200) break;
+      const body = String(d.excerpt || '').slice(0, room);
+      out.push(`${head}\n${body}`);
+      used += head.length + body.length;
+    }
+    return out.join('\n\n');
   }
 
   resolvePages(urls) {
@@ -471,6 +627,14 @@ function pagesOf(kg) {
     return Object.keys(kg.pages).map(url => ({ url, ...kg.pages[url] }));
   }
   return [];
+}
+
+/** Path portion of a URL, tolerant of relative/garbage input (F09). */
+function pathOfUrl(u) {
+  try { return new URL(u).pathname; } catch (_) {
+    const m = String(u || '').match(/^[a-z]+:\/\/[^/]+(\/[^?#]*)/i);
+    return m ? m[1] : String(u || '');
+  }
 }
 
 function summarizePage(page) {

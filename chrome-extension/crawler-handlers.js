@@ -104,6 +104,17 @@ async function handleStartCrawl(data) {
       cost: 0,
       provider: null
     });
+
+    // F26: the graph is committed — only NOW is it safe to drop the page batches
+    // it was assembled from. buildKnowledgeGraph() used to delete them before
+    // this save ran, so a failure here lost the entire crawl.
+    if (activeCrawler && typeof activeCrawler.releasePageBatches === 'function') {
+      await activeCrawler.releasePageBatches();
+    }
+    // F26: the crawl completed — its resume state is no longer a recovery point.
+    if (activeCrawler && typeof activeCrawler.clearResumeState === 'function') {
+      await activeCrawler.clearResumeState();
+    }
     console.log(`✅ Saved knowledge graph with ${knowledgeGraph.totalPages} pages`);
 
     // Invalidate stale BM25 index and build a fresh one eagerly so the first
@@ -261,6 +272,17 @@ async function handleLoadEmbeddings(data) {
       };
     }
 
+    // F02: the crawler emits `pages` as an ARRAY, but every lookup below (and in
+    // GraphFilter / the verifier / coverage) is BY URL. Normalize once, here, so
+    // `allPages[url]` resolves instead of silently returning undefined for every
+    // hit — which transferred ZERO pages for any graph over MAX_PAGES_TO_SEND.
+    if (embeddingData.knowledgeGraph) {
+      embeddingData.knowledgeGraph = {
+        ...embeddingData.knowledgeGraph,
+        pages: pagesByUrl(embeddingData.knowledgeGraph.pages)
+      };
+    }
+
     // Calculate knowledge graph size
     const fullPageCount = embeddingData.knowledgeGraph?.pages
       ? Object.keys(embeddingData.knowledgeGraph.pages).length
@@ -377,7 +399,7 @@ async function handleLoadEmbeddings(data) {
     // Send filtered knowledge graph to content script
     // ContextAnalysisAgent will run in orchestrator (every time tests are generated)
     console.log(`[LOAD GRAPH] 📨 Sending filtered knowledge graph to content script`);
-    console.log(`   Pages: ${wasFiltered ? MAX_PAGES_TO_SEND : fullPageCount} / ${fullPageCount}`);
+    console.log(`   Pages: ${Object.keys(knowledgeGraphToSend?.pages || {}).length} / ${fullPageCount}`);
 
     return {
       success: true,
@@ -389,7 +411,10 @@ async function handleLoadEmbeddings(data) {
         stale,                   // F19
         staleAfterDays,          // F19
         pageCount: fullPageCount,
-        transferPageCount: wasFiltered ? MAX_PAGES_TO_SEND : fullPageCount,
+        // F02: report what was ACTUALLY transferred. This was hard-coded to
+        // MAX_PAGES_TO_SEND whenever filtering ran, so a transfer of 3 relevant
+        // pages (or of 0) was reported to the UI as 30.
+        transferPageCount: Object.keys(knowledgeGraphToSend?.pages || {}).length,
         knowledgeGraph: knowledgeGraphToSend, // Send full filtered graph (will be analyzed by orchestrator)
         hasContext: !!knowledgeGraphToSend
       }
@@ -896,14 +921,21 @@ async function handleGetMergeableApps() {
  * Handle incremental page processing - save pages as we crawl
  * This allows large crawls to process data progressively instead of all at once
  */
+/**
+ * F26: this handler SAVES NOTHING. Its body was a bare `return {success:true}`
+ * under a comment claiming it saved the page — so every caller was told a page
+ * had been persisted when nothing had. Real durability comes from the crawler's
+ * page batches (checkAndSaveBatch) and the final graph commit.
+ *
+ * It is kept as an explicit no-op acknowledgement rather than silently claiming
+ * a successful save.
+ */
 async function handleProcessPageIncremental(pageData, crawlId, crawlStartTime) {
-  try {
-    // Just save page to knowledge graph (no embeddings needed)
-    return { success: true };
-  } catch (error) {
-    console.error('Error in handleProcessPageIncremental:', error);
-    return { success: false, error: error.message };
-  }
+  return {
+    success: true,
+    persisted: false,
+    note: 'no-op: page durability is provided by streamed page batches and the final graph commit'
+  };
 }
 
 /**

@@ -75,51 +75,45 @@ class CoverageMapper {
     });
 
     // Initialize feature details from inventory
+    // F16: every detail row carries its canonical key so marking matches the
+    // exact entity on the exact page, not merely something with the same label.
     coverage.forms.details = inventory.forms.map(f => ({
-      id: f.id,
-      url: f.url,
-      fields: f.fields,
-      covered: false
+      key: CoverageMapper.entityKey('form', f),
+      id: f.id, url: f.url, fields: f.fields, covered: false
     }));
 
     coverage.apis.details = inventory.apis.map(a => ({
-      method: a.method,
-      endpoint: a.endpoint,
-      url: a.url,
-      covered: false
+      key: CoverageMapper.entityKey('api', a),
+      method: a.method, endpoint: a.endpoint, url: a.url, covered: false
     }));
 
     coverage.buttons.details = inventory.buttons.map(b => ({
-      text: b.text,
-      url: b.url,
-      covered: false
+      key: CoverageMapper.entityKey('button', b),
+      text: b.text, url: b.url, covered: false
     }));
 
     coverage.pages.details = inventory.pages.map(p => ({
-      url: p.url,
-      title: p.title,
-      covered: false
+      key: CoverageMapper.entityKey('page', p),
+      url: p.url, title: p.title, covered: false
     }));
 
     // Re-mark covered features (since we just reinitialized).
     // v13.2: only HIGH/MEDIUM confidence counts as "covered" — LOW means the
     // entity was merely name-dropped, not exercised, and must NOT inflate the %.
+    // F16: match on the canonical key. Matching on a bare label marked the first
+    // same-named entity in the inventory covered — the wrong page's Save button,
+    // or DELETE when the test only performed a GET.
+    const byKey = {
+      form: new Map(coverage.forms.details.map(d => [d.key, d])),
+      api: new Map(coverage.apis.details.map(d => [d.key, d])),
+      button: new Map(coverage.buttons.details.map(d => [d.key, d])),
+      page: new Map(coverage.pages.details.map(d => [d.key, d]))
+    };
     coverage.testMapping.forEach(mapping => {
       mapping.coveredFeatures.forEach(feature => {
         if (feature.confidence === 'LOW') return;
-        if (feature.type === 'form') {
-          const formDetail = coverage.forms.details.find(f => f.id === feature.id);
-          if (formDetail) formDetail.covered = true;
-        } else if (feature.type === 'api') {
-          const apiDetail = coverage.apis.details.find(a => a.endpoint === feature.id);
-          if (apiDetail) apiDetail.covered = true;
-        } else if (feature.type === 'button') {
-          const buttonDetail = coverage.buttons.details.find(b => b.text === feature.id);
-          if (buttonDetail) buttonDetail.covered = true;
-        } else if (feature.type === 'page') {
-          const pageDetail = coverage.pages.details.find(p => p.url === feature.id);
-          if (pageDetail) pageDetail.covered = true;
-        }
+        const detail = byKey[feature.type] && byKey[feature.type].get(feature.key);
+        if (detail) detail.covered = true;
       });
     });
 
@@ -292,6 +286,123 @@ class CoverageMapper {
    * Embeddings are optional/injected so this stays testable and degrades to pure
    * token recall when `Embeddings` is unavailable.
    */
+  /**
+   * F07: coverage against requirement PREDICATES, not raw strings.
+   *
+   * mapAcceptanceCriteria() answers "does some test look like this sentence?".
+   * This answers "does a test perform this operation, as this actor, and assert
+   * this modality?" — and it reports which requirement id each test covers, so a
+   * ready case can cite its provenance and a reviewer can see the mapping.
+   *
+   * A compound AC only counts as covered when EVERY one of its atoms is covered;
+   * one branch standing in for the whole was how an allow/deny pair reported
+   * full coverage from the allow case alone.
+   *
+   * @param {Array} testCases
+   * @param {Array} requirements predicate records from requirement-model.js
+   * @returns {object} { applicable, total, covered, percentage, details, contradictions, uncovered }
+   */
+  static mapRequirementPredicates(testCases, requirements, opts = {}) {
+    const RM = opts.requirementModel
+      || (typeof self !== 'undefined' && self.mandatoryRequirements ? self : null)
+      || (typeof require === 'function' ? require('./requirement-model.js') : null);
+    const reqs = (requirements || []).filter(Boolean);
+    if (!reqs.length) {
+      return { applicable: false, total: 0, covered: 0, percentage: 100, details: [], uncovered: [], contradictions: [] };
+    }
+    const tests = testCases || [];
+
+    // Only mandatory obligations count toward completeness; the rest stay visible.
+    const mandatory = RM ? RM.mandatoryRequirements(reqs) : reqs.filter(r => r.status === 'mandatory');
+    const mandatoryIds = new Set(mandatory.map(r => r.id));
+
+    const details = reqs.map(req => {
+      let best = null;
+      for (const tc of tests) {
+        const m = CoverageMapper.matchTestToRequirement(tc, req);
+        if (!m.covers && !m.contradicts) continue;
+        if (!best || m.score > best.score) best = { ...m, test: tc };
+      }
+      const covered = !!(best && best.covers);
+      return {
+        id: req.id,
+        text: req.text,
+        status: req.status,
+        modality: req.modality,
+        mandatory: mandatoryIds.has(req.id),
+        covered,
+        contradicts: !!(best && best.contradicts && !covered),
+        coveredBy: covered ? (best.test.id || best.test.title) : null,
+        contradictedBy: (best && best.contradicts && !covered) ? (best.test.id || best.test.title) : null,
+        score: best ? Math.round(best.score * 100) / 100 : 0
+      };
+    });
+
+    // A compound requirement needs ALL of its atoms.
+    const groups = RM ? RM.groupCompound(reqs) : new Map();
+    for (const [, members] of groups) {
+      if (members.length < 2) continue;
+      const allCovered = members.every(m => details.find(d => d.id === m.id)?.covered);
+      if (!allCovered) {
+        for (const m of members) {
+          const d = details.find(x => x.id === m.id);
+          if (d) d.compoundIncomplete = true;
+        }
+      }
+    }
+
+    const mandatoryDetails = details.filter(d => d.mandatory);
+    const covered = mandatoryDetails.filter(d => d.covered).length;
+    return {
+      applicable: true,
+      total: mandatoryDetails.length,
+      covered,
+      percentage: mandatoryDetails.length ? Math.round((covered / mandatoryDetails.length) * 100) : 100,
+      uncovered: mandatoryDetails.filter(d => !d.covered && !d.contradicts).map(d => ({ id: d.id, text: d.text })),
+      contradictions: details.filter(d => d.contradicts).map(d => ({ id: d.id, text: d.text, by: d.contradictedBy })),
+      // Visible but not counted against completeness.
+      nonMandatory: details.filter(d => !d.mandatory).map(d => ({ id: d.id, text: d.text, status: d.status })),
+      details
+    };
+  }
+
+  /**
+   * F07: does this test establish and assert this requirement?
+   * Requires operation agreement AND modality agreement — a lexical mention is
+   * not coverage, and an inverted assertion is a contradiction, not a gap.
+   */
+  static matchTestToRequirement(testCase, req) {
+    const steps = Array.isArray(testCase.steps) ? testCase.steps : [];
+    const assertion = [testCase.title, testCase.expected_result || testCase.expectedResult]
+      .filter(Boolean).join(' ').toLowerCase();
+    const whole = [testCase.title, testCase.description, testCase.preconditions,
+      testCase.expected_result || testCase.expectedResult, ...steps]
+      .filter(Boolean).join(' ').toLowerCase();
+    if (!whole) return { covers: false, contradicts: false, score: 0 };
+
+    // The operation must actually be performed.
+    const opStem = (req.operation || '').replace(/(ing|ed|es|s)$/, '');
+    const opPresent = !req.operation || (opStem.length > 2 && whole.includes(opStem));
+    if (!opPresent) return { covers: false, contradicts: false, score: 0 };
+
+    // The actor, when the requirement names one, must be the test's actor.
+    const actorPresent = !req.actor || whole.includes(req.actor);
+    if (!actorPresent) return { covers: false, contradicts: false, score: 0 };
+
+    // Modality must agree with what the test ASSERTS (title + expected result).
+    const testNegative = /\b(cannot|can't|must not|should not|is not|are not|does not|doesn't|never|unable|denied|deny|denies|forbidden|prohibited|rejected|blocked|prevented|unauthoriz(?:ed)?|403|401|fails?|error)\b/i.test(assertion);
+    const reqNegative = req.modality === 'must_not';
+
+    // Token overlap gives the score; the gates above decide covers/contradicts.
+    const reqTokens = String(req.text || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [];
+    const hits = reqTokens.filter(t => whole.includes(t)).length;
+    const score = reqTokens.length ? hits / reqTokens.length : 0;
+    if (score < 0.3) return { covers: false, contradicts: false, score };
+
+    if (testNegative !== reqNegative) return { covers: false, contradicts: true, score };
+    return { covers: true, contradicts: false, score };
+  }
+
   static mapAcceptanceCriteria(testCases, acItems, opts = {}) {
     const threshold = opts.threshold ?? 0.4;
     // NOTE (G4): the default embedder (embeddings.js) is offline feature-hashed
@@ -335,7 +446,18 @@ class CoverageMapper {
 
       const coveredByToken = bestTok >= threshold;
       const coveredByEmb = bestEmb >= embThreshold;
-      const covered = coveredByToken || coveredByEmb;
+      let covered = coveredByToken || coveredByEmb;
+
+      // F07: a test may only cover an AC whose polarity it actually asserts.
+      // The assertion lives in the title + expected result, not in the setup
+      // steps (a step "attempt to delete" is not a claim about the outcome).
+      let contradicts = false;
+      const matchTc = (coveredByEmb && !coveredByToken) ? bestEmbTc : bestTokTc;
+      if (covered && matchTc) {
+        const acPol = acPolarity(text);
+        const tcPol = acPolarity([matchTc.title, matchTc.expected_result].filter(Boolean).join(' '));
+        if (acPol !== tcPol) { covered = false; contradicts = true; }
+      }
       // Attribute to whichever signal is stronger relative to its own threshold.
       const tokMargin = bestTok - threshold, embMargin = bestEmb - embThreshold;
       const useEmb = coveredByEmb && (!coveredByToken || embMargin > tokMargin);
@@ -344,7 +466,11 @@ class CoverageMapper {
         index, text,
         covered,
         score: Math.round(Math.max(bestTok, bestEmb) * 100) / 100,
-        matchType: covered ? (useEmb ? 'semantic' : 'token') : 'none',
+        // F07: 'contradicted' is NOT coverage — it is a conflict a reviewer must
+        // resolve, and it is strictly more urgent than a plain gap.
+        matchType: covered ? (useEmb ? 'semantic' : 'token') : (contradicts ? 'contradicted' : 'none'),
+        contradicts,
+        contradictedBy: contradicts ? (matchTc && (matchTc.id || matchTc.title)) || null : null,
         coveredBy: covered ? (bestTc && (bestTc.id || bestTc.title)) || null : null
       };
     });
@@ -355,9 +481,41 @@ class CoverageMapper {
       total: items.length,
       covered,
       uncovered: details.filter(d => !d.covered).map(d => ({ index: d.index, text: d.text })),
+      // F07: surface contradictions separately so they can't hide inside the
+      // uncovered count as an ordinary "we just need one more test" gap.
+      contradictions: details.filter(d => d.contradicts)
+        .map(d => ({ index: d.index, text: d.text, by: d.contradictedBy })),
       percentage: Math.round((covered / items.length) * 100),
       details
     };
+  }
+
+  /**
+   * F16: ONE canonical identity for an app entity, used by the inventory, the
+   * test→feature mapping and the covered-marking alike.
+   *
+   * These had drifted apart: the inventory keyed buttons by `text|url` and APIs
+   * by `method endpoint`, but the mapping emitted only `button.text` /
+   * `api.endpoint`, and marking then did `.find(b => b.text === id)`. So clicking
+   * Save on /billing marked the FIRST "Save" in the inventory covered — often the
+   * one on /profile — and a GET on /invoices marked DELETE /invoices covered.
+   *
+   * ponytail: identity is app + page URL + entity. It does not yet distinguish
+   * two states of the SAME url (modal open vs closed) — that needs the crawler to
+   * emit a state id (fix2.md §12.1). Keys are built here so that upgrade is one
+   * function.
+   */
+  static entityKey(type, e) {
+    const norm = (v) => String(v || '').trim().toLowerCase();
+    switch (type) {
+      case 'form':   return `form|${norm(e.id)}|${norm(e.url)}`;
+      // Method is part of an API's identity: GET and DELETE on one path are two
+      // different operations with two different expected outcomes.
+      case 'api':    return `api|${norm(e.method) || 'get'}|${norm(e.endpoint || e.url)}`;
+      case 'button': return `button|${norm(e.text)}|${norm(e.url)}`;
+      case 'page':   return `page|${norm(e.url)}`;
+      default:       return `${type}|${norm(e.id || e.text || e.url)}`;
+    }
   }
 
   /**
@@ -438,6 +596,11 @@ class CoverageMapper {
   /**
    * Map a single test case to features it covers
    */
+  /** Does the text name an explicit HTTP method? (F16 — see API mapping.) */
+  static methodsMentioned(text) {
+    return /\b(get|post|put|patch|delete|head|options)\b/.test(String(text || ''));
+  }
+
   mapTestToFeatures(testCase, inventory) {
     const coveredFeatures = [];
 
@@ -447,17 +610,67 @@ class CoverageMapper {
     // and require an action verb near the entity. Title/description/preconditions
     // are excluded — a test titled "verify login form" that never touches the
     // form in its steps no longer inflates coverage.
-    const actionText = [
-      testCase.expected_result || '',
-      ...(Array.isArray(testCase.steps) ? testCase.steps : [])
-    ].join(' ').toLowerCase();
+    // F16: keep the steps SEPARATE, not joined. A verb anywhere in the combined
+    // text used to satisfy the action check for every entity mentioned anywhere
+    // else, so a test whose steps click "Export" and whose expected result merely
+    // names "Save" credited an exercise of Save. An entity is only exercised when
+    // the action verb and the entity appear in the SAME step (or the same
+    // expected-result clause).
+    const actionUnits = [
+      ...(Array.isArray(testCase.steps) ? testCase.steps : []),
+      testCase.expected_result || ''
+    ].map(u => String(u || '').toLowerCase()).filter(Boolean);
+    const actionText = actionUnits.join(' ');
 
     // Cheap reference set used only as a weak fallback signal.
     const mentionText = [
       testCase.title || '', testCase.description || ''
     ].join(' ').toLowerCase();
 
+    /** Does any single step both mention `needle` AND carry an action verb? */
+    const actsOn = (re, needle) => {
+      if (!needle) return false;
+      return actionUnits.some(u => u.includes(needle) && re.test(u));
+    };
     const hasAction = (re) => re.test(actionText);
+
+    // F16: which page(s) does this test actually put us on? A test that navigates
+    // to /billing and clicks Save exercised BILLING's Save — not the identically
+    // labelled button on /profile. Without this, one click credited every
+    // same-named control in the app.
+    const scopeUrls = new Set(
+      inventory.pages
+        .filter(p => {
+          const u = (p.url || '').toLowerCase();
+          const t = (p.title || '').toLowerCase();
+          return (u && actionText.includes(u)) || (t && t.length > 2 && actionText.includes(t));
+        })
+        .map(p => (p.url || '').toLowerCase())
+    );
+
+    /**
+     * Can an entity on `url` be credited to this test?
+     *  - no page scope established → only if its label is UNAMBIGUOUS app-wide.
+     *    Two "Save" buttons and no stated page means we genuinely do not know
+     *    which one ran; guessing is how coverage inflated.
+     *  - page scope established → only entities on one of those pages.
+     */
+    const inScope = (url, sameLabelCount) => {
+      const u = (url || '').toLowerCase();
+      if (!scopeUrls.size) return sameLabelCount <= 1;
+      if (!u) return true; // app-level entity, not tied to a page
+      return scopeUrls.has(u);
+    };
+    const labelCounts = new Map();
+    for (const b of inventory.buttons) {
+      const t = (b.text || '').toLowerCase();
+      labelCounts.set(t, (labelCounts.get(t) || 0) + 1);
+    }
+    const formIdCounts = new Map();
+    for (const f of inventory.forms) {
+      const i = (f.id || '').toLowerCase();
+      formIdCounts.set(i, (formIdCounts.get(i) || 0) + 1);
+    }
     const FORM_ACTION = /\b(submit|fill|enter|type|input|complete|save|create|update|sign\s?up|register|log\s?in)\b/;
     const BTN_ACTION = /\b(click|tap|press|select|choose|toggle|hit)\b/;
     const API_ACTION = /\b(get|post|put|patch|delete|call|request|response|status\s?code|returns?|api|endpoint)\b/;
@@ -469,12 +682,17 @@ class CoverageMapper {
       const fieldsInSteps = (form.fields || []).filter(f => f && actionText.includes(String(f).toLowerCase()));
       const formIdInSteps = formId && actionText.includes(formId);
 
-      if ((formIdInSteps || fieldsInSteps.length > 0) && hasAction(FORM_ACTION)) {
+      const key = CoverageMapper.entityKey('form', form);
+      const actedOn = actsOn(FORM_ACTION, formId) ||
+        (form.fields || []).some(f => actsOn(FORM_ACTION, String(f || '').toLowerCase()));
+
+      const formScoped = inScope(form.url, formIdCounts.get(formId) || 1);
+      if ((formIdInSteps || fieldsInSteps.length > 0) && actedOn && formScoped) {
         const strong = formIdInSteps || fieldsInSteps.length >= Math.max(1, (form.fields || []).length / 2);
-        coveredFeatures.push({ type: 'form', id: form.id, confidence: strong ? 'HIGH' : 'MEDIUM' });
+        coveredFeatures.push({ type: 'form', key, id: form.id, url: form.url, confidence: strong ? 'HIGH' : 'MEDIUM' });
       } else if ((formId && mentionText.includes(formId)) || fieldsInSteps.length > 0) {
         // Mentioned/partially touched but not clearly exercised.
-        coveredFeatures.push({ type: 'form', id: form.id, confidence: 'LOW' });
+        coveredFeatures.push({ type: 'form', key, id: form.id, url: form.url, confidence: 'LOW' });
       }
     });
 
@@ -485,16 +703,26 @@ class CoverageMapper {
       const endpointInSteps = endpoint && actionText.includes(endpoint);
       const methodInSteps = method && actionText.includes(method);
 
-      if (endpointInSteps && (methodInSteps || hasAction(API_ACTION))) {
-        coveredFeatures.push({ type: 'api', id: api.endpoint, confidence: 'HIGH' });
+      const key = CoverageMapper.entityKey('api', api);
+      // F16: an operation on a path is only covered when THIS method is the one
+      // exercised. Previously any mention of the endpoint marked every method on
+      // it covered, so a read test credited coverage of the delete operation.
+      const methodOnEndpoint = actsOn(new RegExp(`\\b${method}\\b`), endpoint);
+
+      if (endpointInSteps && methodOnEndpoint) {
+        coveredFeatures.push({ type: 'api', key, id: api.endpoint, method: api.method, confidence: 'HIGH' });
+      } else if (endpointInSteps && !CoverageMapper.methodsMentioned(actionText)) {
+        // Endpoint exercised and no method named at all → assume the observed
+        // method; still only MEDIUM, and never when a DIFFERENT method is named.
+        coveredFeatures.push({ type: 'api', key, id: api.endpoint, method: api.method, confidence: hasAction(API_ACTION) ? 'MEDIUM' : 'LOW' });
       } else if (endpointInSteps) {
-        coveredFeatures.push({ type: 'api', id: api.endpoint, confidence: 'MEDIUM' });
+        coveredFeatures.push({ type: 'api', key, id: api.endpoint, method: api.method, confidence: 'LOW' });
       } else if (methodInSteps) {
         // method + at least half the endpoint path segments present in steps
         const parts = endpoint.split('/').filter(Boolean);
         const matched = parts.filter(p => actionText.includes(p));
         if (parts.length && matched.length >= parts.length / 2) {
-          coveredFeatures.push({ type: 'api', id: api.endpoint, confidence: 'MEDIUM' });
+          coveredFeatures.push({ type: 'api', key, id: api.endpoint, method: api.method, confidence: 'MEDIUM' });
         }
       }
     });
@@ -503,10 +731,12 @@ class CoverageMapper {
     inventory.buttons.forEach(button => {
       const buttonText = (button.text || '').toLowerCase();
       if (!buttonText) return;
-      if (actionText.includes(buttonText) && hasAction(BTN_ACTION)) {
-        coveredFeatures.push({ type: 'button', id: button.text, confidence: 'HIGH' });
+      const key = CoverageMapper.entityKey('button', button);
+      const scoped = inScope(button.url, labelCounts.get(buttonText) || 1);
+      if (actsOn(BTN_ACTION, buttonText) && scoped) {
+        coveredFeatures.push({ type: 'button', key, id: button.text, url: button.url, confidence: 'HIGH' });
       } else if (actionText.includes(buttonText) || mentionText.includes(buttonText)) {
-        coveredFeatures.push({ type: 'button', id: button.text, confidence: 'LOW' });
+        coveredFeatures.push({ type: 'button', key, id: button.text, url: button.url, confidence: 'LOW' });
       }
     });
 
@@ -515,12 +745,13 @@ class CoverageMapper {
       const pageUrl = (page.url || '').toLowerCase();
       const pageTitle = (page.title || '').toLowerCase();
 
-      if (pageUrl && actionText.includes(pageUrl) && hasAction(NAV_ACTION)) {
-        coveredFeatures.push({ type: 'page', id: page.url, confidence: 'HIGH' });
+      const key = CoverageMapper.entityKey('page', page);
+      if (pageUrl && actsOn(NAV_ACTION, pageUrl)) {
+        coveredFeatures.push({ type: 'page', key, id: page.url, confidence: 'HIGH' });
       } else if (pageUrl && actionText.includes(pageUrl)) {
-        coveredFeatures.push({ type: 'page', id: page.url, confidence: 'MEDIUM' });
+        coveredFeatures.push({ type: 'page', key, id: page.url, confidence: 'MEDIUM' });
       } else if (pageTitle && (actionText.includes(pageTitle) || mentionText.includes(pageTitle))) {
-        coveredFeatures.push({ type: 'page', id: page.url, confidence: 'LOW' });
+        coveredFeatures.push({ type: 'page', key, id: page.url, confidence: 'LOW' });
       }
     });
 
@@ -738,6 +969,25 @@ class CoverageMapper {
 // chars, minus generic function/QA-boilerplate words (user/system/ensure/able…)
 // that appear in nearly every AC and test and so carry no discriminating signal.
 const AC_STOPWORDS = new Set(['the','a','an','and','or','but','if','then','when','while','for','of','to','in','on','at','by','with','from','as','is','are','be','been','was','were','will','would','should','shall','can','could','may','might','must','that','this','these','those','it','its','their','they','user','users','able','ensure','system','not','no','yes','all','any','each','via','into','onto']);
+/**
+ * F07: polarity of a requirement/assertion — does it say a thing HAPPENS or that
+ * it is PREVENTED? Token recall is polarity-blind ('not'/'no' are stopwords and
+ * "can" vs "cannot" share every other token), so an AC "Viewer cannot delete
+ * invoices" scored 0.75 against a test asserting "Viewer CAN delete invoices"
+ * and was reported 100% covered by its own contradiction.
+ *
+ * ponytail: lexical negation cues only — it cannot parse scope ("no field is
+ * required") or double negatives. It is deliberately one-directional: a polarity
+ * clash only WITHHOLDS coverage (the AC shows as an uncovered gap + a surfaced
+ * contradiction), never grants it. Upgrade path is the requirement-predicate
+ * model in fix2.md §7.1.
+ */
+const NEGATIVE_CUES = /\b(?:cannot|can't|cant|may not|must not|should not|shouldn't|shall not|will not|won't|does not|doesn't|do not|don't|is not|isn't|are not|aren't|not be|never|no longer|unable|denied|deny|denies|forbidden|prohibit(?:ed|s)?|disallow(?:ed|s)?|reject(?:ed|s)?|block(?:ed|s)?|prevent(?:ed|s)?|restrict(?:ed|s)?|unauthoriz(?:ed)?|unauthoris(?:ed)?|without permission|403|hidden|disabled|greyed out|grayed out|read[- ]only)\b/i;
+
+function acPolarity(text) {
+  return NEGATIVE_CUES.test(String(text || '')) ? 'negative' : 'positive';
+}
+
 function acTokens(text) {
   const words = String(text || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [];
   return [...new Set(words.filter(w => !AC_STOPWORDS.has(w)))];

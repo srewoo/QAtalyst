@@ -248,8 +248,143 @@
     return renderMarkdown(scope);
   }
 
+  /**
+   * F15: render the quality status the pipeline already computes but that this
+   * panel never showed. Before this, the UI reported counts and a legacy
+   * "evolution" badge while `degradations`, acceptance-criteria coverage,
+   * rejection reasons and per-case grounding warnings were dropped on the floor —
+   * a suite with 12 rejected candidates and 3 uncovered criteria looked identical
+   * to a clean one.
+   *
+   * Every value here is escaped: all of it is model- or ticket-derived text.
+   */
+  function renderQualityStatus(data) {
+    const sections = [];
+    const esc = escapeHtml;
+
+    // ── reduced-context / removal warnings ──
+    const degradations = Array.isArray(data.degradations) ? data.degradations : [];
+    if (degradations.length) {
+      sections.push(`
+        <div class="quality-block quality-warn">
+          <h5>⚠️ What limited this run</h5>
+          <ul>${degradations.map(d => `<li>${esc(d)}</li>`).join('')}</ul>
+        </div>`);
+    }
+
+    // ── requirement coverage: the ticket-level promise ──
+    const ac = data.acCoverage || data.coverage?.acCoverage;
+    if (ac && ac.applicable) {
+      const uncovered = Array.isArray(ac.uncovered) ? ac.uncovered : [];
+      const contradictions = Array.isArray(ac.contradictions) ? ac.contradictions : [];
+      const complete = uncovered.length === 0 && contradictions.length === 0;
+      sections.push(`
+        <div class="quality-block ${complete ? 'quality-ok' : 'quality-warn'}">
+          <h5>${complete ? '✅' : '⚠️'} Requirement coverage: ${ac.covered}/${ac.total} (${ac.percentage}%)</h5>
+          ${uncovered.length ? `<details><summary>${uncovered.length} requirement(s) not covered</summary>
+            <ul>${uncovered.map(u => `<li>${esc(u.text)}</li>`).join('')}</ul></details>` : ''}
+          ${contradictions.length ? `<details open><summary>🚨 ${contradictions.length} requirement(s) CONTRADICTED by a generated test</summary>
+            <ul>${contradictions.map(c => `<li>${esc(c.text)} — contradicted by "${esc(c.by || 'a generated test')}"</li>`).join('')}</ul></details>` : ''}
+        </div>`);
+    }
+
+    // ── what the gate removed, and why ──
+    const rejected = Array.isArray(data.rejected) ? data.rejected : [];
+    if (rejected.length) {
+      const byStage = rejected.reduce((acc, r) => { acc[r.stage] = (acc[r.stage] || 0) + 1; return acc; }, {});
+      sections.push(`
+        <div class="quality-block">
+          <h5>🧹 ${rejected.length} candidate(s) removed by the quality gate</h5>
+          <div class="quality-chips">${Object.entries(byStage)
+            .map(([stage, n]) => `<span class="quality-chip">${esc(stage)}: ${n}</span>`).join('')}</div>
+          <details><summary>View reasons</summary>
+            <ul>${rejected.slice(0, 40).map(r =>
+              `<li><strong>${esc(r.title || r.test?.title || 'untitled')}</strong> — ${esc(r.reason || r.stage)}</li>`).join('')}</ul>
+          </details>
+        </div>`);
+    }
+
+    // ── near-duplicates deliberately KEPT, so a reviewer can audit the call ──
+    const kept = Array.isArray(data.preservedDistinctions) ? data.preservedDistinctions : [];
+    if (kept.length) {
+      sections.push(`
+        <div class="quality-block">
+          <h5>🔍 ${kept.length} similar pair(s) kept apart on purpose</h5>
+          <details><summary>Why they were not merged</summary>
+            <ul>${kept.map(k =>
+              `<li>"${esc(k.test || k.a || '')}" vs "${esc(k.against || k.b || '')}" — ${esc(k.reason)}</li>`).join('')}</ul>
+          </details>
+        </div>`);
+    }
+
+    // ── cases that are NOT ready to execute as-is ──
+    const cases = Array.isArray(data.testCases) ? data.testCases : [];
+    const needsReview = cases.filter(tc =>
+      tc._grounding === 'unresolved' || tc._grounding === 'unverified' ||
+      // F11: 'unknown' and 'unjudged' are not approvals — the requirement did not
+      // settle the outcome, or the critic never judged it.
+      (tc._assertionStatus && tc._assertionStatus !== 'supported') ||
+      tc._assertionWarning || (tc._behaviorWarnings || []).length);
+    if (needsReview.length) {
+      sections.push(`
+        <div class="quality-block quality-warn">
+          <h5>👁️ ${needsReview.length} of ${cases.length} case(s) need review before execution</h5>
+          <p class="quality-note">Marked below. They were not verified against the crawled app, or their expected result could not be supported.</p>
+        </div>`);
+    }
+
+    // F12: why did generation stop? "complete" needs no banner; anything else
+    // means the suite may be missing obligations and must not read as finished.
+    if (data.stopReason && data.stopReason !== 'complete') {
+      const label = {
+        budget_exhausted: 'stopped at the test budget',
+        no_novel_scenarios: 'stopped — no new distinct scenarios were being produced',
+        cancelled: 'cancelled — this suite is partial',
+        missing_evidence: 'stopped — required evidence was unavailable',
+        steps_exhausted: 'used its full planning budget'
+      }[data.stopReason] || esc(data.stopReason);
+      sections.unshift(`
+        <div class="quality-block quality-warn">
+          <h5>⏹️ Incomplete run: ${label}</h5>
+        </div>`);
+    }
+
+    // §15.6: the questions whose answers decide an expected result.
+    const clarifications = Array.isArray(data.clarifications) ? data.clarifications : [];
+    if (clarifications.length) {
+      sections.push(`
+        <div class="quality-block quality-warn">
+          <h5>❓ ${clarifications.length} question(s) need an answer</h5>
+          <p class="quality-note">Until these are settled, the affected expected results are assumptions — not requirements.</p>
+          <ul>${clarifications.map(q => `<li><strong>${esc(q.question)}</strong><br><span class="quality-note">${esc(q.why || '')}${
+            q.blocks && q.blocks.length ? ` Affects: ${esc(q.blocks.slice(0, 3).join('; '))}` : ''}</span></li>`).join('')}</ul>
+        </div>`);
+    }
+
+    // §15.3: what can actually be run right now.
+    const notReady = cases.filter(tc => tc._executability === 'specification_only');
+    const needsSetup = cases.filter(tc => tc._executability === 'manual_ready');
+    if (notReady.length || needsSetup.length) {
+      sections.push(`
+        <div class="quality-block">
+          <h5>🧪 Execution readiness</h5>
+          <div class="quality-chips">
+            <span class="quality-chip">ready: ${cases.length - notReady.length - needsSetup.length}</span>
+            ${needsSetup.length ? `<span class="quality-chip">needs setup: ${needsSetup.length}</span>` : ''}
+            ${notReady.length ? `<span class="quality-chip">not executable: ${notReady.length}</span>` : ''}
+          </div>
+          ${notReady.length ? `<details><summary>Cases that cannot be run as written</summary><ul>${
+            notReady.map(t => `<li>${esc(t.title)} — ${esc((t._executionGaps || []).join('; '))}</li>`).join('')}</ul></details>` : ''}
+        </div>`);
+    }
+
+    if (!sections.length) return '';
+    return `<div class="quality-status" data-testid="quality-status">${sections.join('')}</div>`;
+  }
+
   const __qaContentFormat = {
     escapeHtml,
+    renderQualityStatus,
     createSafeErrorMessage,
     createSafeFormattedContent,
     formatStreamingContent,

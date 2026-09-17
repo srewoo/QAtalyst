@@ -12,25 +12,48 @@
   // Used to bridge the gap between the immediate ACK and the final streamComplete message.
   const pendingStreamCompletions = new Map();
 
+  /**
+   * F17: does this completion belong to the run that is still waiting?
+   * A pending entry records the ticket it was started for; a message carrying a
+   * DIFFERENT ticket key is a late result from a superseded run and is dropped.
+   * Messages with no ticket key are accepted (older worker builds).
+   */
+  function isCurrentRun(pending, message) {
+    if (!message || !message.ticketKey) return true;
+    if (!pending || !pending.ticketKey) return true;
+    return pending.ticketKey === message.ticketKey;
+  }
+
   // escapeHtml, createSafeErrorMessage, createSafeFormattedContent → content-format.js
 
-  // Listen for streaming chunks, agent progress, evolution progress, enhancement progress, and historical mining progress
+  // Listen for streaming chunks, agent progress, enhancement progress, and historical mining progress.
+  // F21: the evolution* listeners are gone — that generation path was retired and
+  // nothing has sent those messages since, so they were dead handlers for a
+  // status the system can no longer produce.
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'streamChunk') {
       handleStreamChunk(request.requestId, request.chunk);
     }
 
     // Final result delivered via tab message (avoids message-channel-closed error in MV3)
+    //
+    // F17: completion is matched on streamType ALONE, which is not a run identity.
+    // After navigating to another ticket (or starting a replacement run), a late
+    // result from the previous run resolved the current panel's pending promise
+    // and rendered the old ticket's tests as if they were this one's. Reject any
+    // completion whose ticket doesn't match what the pending request asked for.
     if (request.action === 'streamComplete') {
       const pending = pendingStreamCompletions.get(request.streamType);
-      if (pending) {
+      if (pending && isCurrentRun(pending, request)) {
         pendingStreamCompletions.delete(request.streamType);
         pending.resolve(request.result);
+      } else if (pending) {
+        console.warn('[QAtalyst] Ignored a stale streamComplete for', request.ticketKey || '(unknown ticket)');
       }
     }
     if (request.action === 'streamError') {
       const pending = pendingStreamCompletions.get(request.streamType);
-      if (pending) {
+      if (pending && isCurrentRun(pending, request)) {
         pendingStreamCompletions.delete(request.streamType);
         pending.reject(new Error(request.error));
       }
@@ -45,9 +68,6 @@
     if (request.action === 'agentProgress') {
       handleAgentProgress(request.progress);
     }
-    if (request.action === 'evolutionProgress') {
-      handleEvolutionProgress(request.progress);
-    }
     if (request.action === 'enhancementProgress') {
       handleEnhancementProgress(request.status);
     }
@@ -59,12 +79,6 @@
     }
     if (request.type === 'UPLOAD_PROGRESS') {
       handleUploadProgress(request.progress);
-    }
-    if (request.action === 'evolutionComplete') {
-      handleEvolutionComplete(request.data);
-    }
-    if (request.action === 'evolutionError') {
-      handleEvolutionError(request.error);
     }
     if (request.action === 'qualityReports') {
       handleQualityReports(request.reports);
@@ -621,7 +635,15 @@
     const head = document.createElement('div');
     head.className = 'epic-summary';
     head.style.cssText = 'padding:12px;margin-bottom:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;font-size:13px;color:#075985;';
-    head.textContent = `🧭 Epic ${epic.key}: ${summary.totalTests} test cases across ${summary.stories} stories` +
+    // F13: report the CONSOLIDATED total, and say how many cases were shared
+    // across stories — otherwise a global merge is indistinguishable from tests
+    // having gone missing.
+    const consolidated = out.consolidated;
+    const finalCount = consolidated ? consolidated.testCases.length : summary.totalTests;
+    head.textContent = `🧭 Epic ${epic.key}: ${finalCount} test cases across ${summary.stories} stories` +
+      (consolidated && consolidated.merged.length
+        ? ` • ${consolidated.merged.length} duplicate(s) shared across stories instead of repeated`
+        : '') +
       (summary.failed ? ` • ${summary.failed} story(ies) failed` : '');
     wrap.appendChild(head);
 
@@ -799,42 +821,7 @@
     resultsContainer.innerHTML = agentProgressHTML;
   }
   
-  function handleEvolutionProgress(progress) {
-    const resultsContainer = document.getElementById('results-container');
-    if (!resultsContainer) return;
-    
-    const { generation, total, status, bestFitness } = progress;
-    
-    // Update evolution progress display
-    const evolutionProgressHTML = `
-      <div class="evolution-progress-container">
-        <div class="evolution-header">
-          <h3>🧬 Evolutionary Optimization</h3>
-          <div class="evolution-status ${status}">${status === 'completed' ? '✅ Complete' : '⚡ Evolving'}</div>
-        </div>
-        <div class="evolution-info">
-          <div class="evolution-stat">
-            <span class="stat-label">Generation:</span>
-            <span class="stat-value">${generation}/${total}</span>
-          </div>
-          <div class="evolution-stat">
-            <span class="stat-label">Best Fitness:</span>
-            <span class="stat-value">${bestFitness}/100</span>
-          </div>
-        </div>
-        <div class="evolution-progress-bar">
-          <div class="evolution-progress-fill" style="width: ${(generation / total) * 100}%"></div>
-        </div>
-        <div class="evolution-desc">
-          Applying genetic algorithm mutations to improve test coverage...
-        </div>
-      </div>
-    `;
-    
-    resultsContainer.innerHTML = evolutionProgressHTML;
-  }
-  
-  /**
+/**
    * Handle context quality assessment from background script
    * Shows real-time quality indicator during test generation
    */
@@ -1520,6 +1507,22 @@
     if (docTexts.length > 0) {
       ticketData.documentAttachments = docTexts;
       console.log(`📄 Extracted text from ${docTexts.length} document(s) for LLM context`);
+
+      // F24: an image-only PDF is passed to a vision model as an image rather
+      // than being dropped — previously its base64 was produced and discarded.
+      const scanned = docTexts.filter(d => d.isScannedPdf && d.base64);
+      if (scanned.length) {
+        ticketData.imageAttachments = (ticketData.imageAttachments || []).concat(
+          scanned.map(d => ({ data: `data:${d.mimeType};base64,${d.base64}`, fileName: d.fileName }))
+        );
+      }
+    }
+    // F24: attachments we could NOT read are recorded on the ticket so generation
+    // and the panel can say a requirement may be missing, instead of treating an
+    // unreadable spec as no spec.
+    if (docTexts.unreadable && docTexts.unreadable.length) {
+      ticketData.unreadableAttachments = docTexts.unreadable;
+      console.warn(`⚠️ ${docTexts.unreadable.length} attachment(s) could not be read`);
     }
   }
 
@@ -1534,29 +1537,55 @@
     console.log(`📄 Found ${docAttachments.length} document attachment(s) to extract`);
     const results = [];
 
-    for (const att of docAttachments.slice(0, 5)) { // cap at 5 to avoid token overload
+    // F24: report every attachment, including the ones we could not read. The old
+    // loop kept only successful non-empty results and dropped the rest on the
+    // floor — so the base64 fallback for an image-only PDF was never delivered,
+    // and a spec nobody could read looked identical to no spec at all.
+    const skipped = [];
+
+    for (const att of docAttachments.slice(0, 10)) {
+      const fileName = att.fileName || att.name || 'document';
       try {
         const result = await new Promise(resolve => {
           chrome.runtime.sendMessage({
             action: 'fetchDocument',
             url: att.url,
-            fileName: att.fileName || att.name || 'document',
+            fileName,
             jiraEmail,
             jiraApiToken
           }, response => resolve(response || { success: false, error: 'No response' }));
         });
 
-        if (result.success && result.text) {
-          console.log(`✅ Extracted ${result.text.length} chars from ${att.fileName}`);
-          results.push({ fileName: att.fileName || att.name, text: result.text, type: result.type });
+        if (result.text) {
+          console.log(`✅ Extracted ${result.text.length} chars from ${fileName}`);
+          results.push({ fileName, text: result.text, type: result.type, status: result.status });
+        } else if (result.base64 && result.isScannedPdf) {
+          // Image-only PDF: hand the bytes to a vision-capable model rather than
+          // discarding the document entirely.
+          console.log(`🖼️ ${fileName} has no text layer — passing as an image for vision extraction`);
+          results.push({
+            fileName, text: '', type: result.type, status: result.status,
+            base64: result.base64, mimeType: result.mimeType, isScannedPdf: true
+          });
         } else {
-          console.warn(`⚠️ Could not extract ${att.fileName}: ${result.error}`);
+          console.warn(`⚠️ Could not extract ${fileName}: ${result.note || result.error}`);
+          skipped.push({ fileName, reason: result.note || result.error || 'unknown error', status: result.status });
         }
       } catch (err) {
-        console.warn(`⚠️ Error extracting ${att.fileName}:`, err.message);
+        console.warn(`⚠️ Error extracting ${fileName}:`, err.message);
+        skipped.push({ fileName, reason: err.message, status: 'error' });
       }
     }
 
+    // Anything beyond the cap is an omission the user should know about.
+    if (docAttachments.length > 10) {
+      skipped.push({
+        fileName: `${docAttachments.length - 10} further attachment(s)`,
+        reason: 'not processed — attachment limit reached', status: 'skipped'
+      });
+    }
+
+    results.unreadable = skipped;
     return results;
   }
 
@@ -1913,7 +1942,7 @@
         }
 
         const response = await new Promise((resolve, reject) => {
-          pendingStreamCompletions.set('analyze', { resolve, reject });
+          pendingStreamCompletions.set('analyze', { resolve, reject, ticketKey });
           chrome.runtime.sendMessage({
             action: 'analyzeRequirementsStream',
             data: { ticketKey, ticketData, settings, crawledContext }
@@ -2046,7 +2075,7 @@
         }
 
         const response = await new Promise((resolve, reject) => {
-          pendingStreamCompletions.set('scope', { resolve, reject });
+          pendingStreamCompletions.set('scope', { resolve, reject, ticketKey });
           chrome.runtime.sendMessage({
             action: 'generateTestScopeStream',
             data: { ticketKey, ticketData, settings, crawledContext }
@@ -2131,6 +2160,10 @@
         'coverageTarget', 'dedupThreshold', 'relevanceThreshold', 'enabledCategories', 'testCount',
         'useCrawledDataForTests',
         'enableHistoricalMining', 'historicalMaxResults', 'historicalJqlFilters',
+        // F14: none of these were loaded for generation, so the worker's
+        // existing-suite dedup branch was unreachable no matter what the user set.
+        'dedupeAgainstExistingSuite',
+        'testrailUrl', 'testrailUsername', 'testrailApiKey', 'testrailProjectId', 'testrailSuiteId',
         'jiraBaseUrl', 'jiraEmail', 'jiraApiToken',
         'figmaToken', 'googleApiKey'
       ]);
@@ -2148,6 +2181,8 @@
       }
 
       // Extract app context from crawled knowledge graphs (if enabled)
+      currentTicketData = ticketData;
+
       let appContext = null;
       if (settings.useCrawledDataForTests !== false) { // Enabled by default
         console.log('🔍 [CRAWL DATA] Feature enabled - extracting app context from crawled data...');
@@ -2155,12 +2190,12 @@
         currentAppContext = appContext; // Store globally for UI display
         if (appContext) {
           console.log(`✅ [CRAWL DATA] Successfully extracted app context:`);
+          const kg = appContext.knowledgeGraph || {};
           console.log(`   📱 App URL: ${appContext.appUrl}`);
-          console.log(`   📄 Total Pages: ${appContext.totalPages || 0}`);
-          console.log(`   📝 Forms: ${appContext.forms?.length || 0}`);
-          console.log(`   🔌 APIs: ${appContext.apis?.length || 0}`);
-          console.log(`   📄 Page details: ${appContext.pages?.length || 0}`);
-          console.log(`   🔘 Features: ${appContext.features?.length || 0}`);
+          console.log(`   📄 Total Pages: ${appContext.pageCount || 0}`);
+          console.log(`   📄 Pages transferred: ${appContext.transferPageCount || 0}`);
+          console.log(`   📝 Forms: ${kg.forms?.length || 0}`);
+          console.log(`   🔌 APIs: ${kg.apis?.length || 0}`);
         } else {
           console.log('⚠️ [CRAWL DATA] No crawled app context found - proceeding without it');
           console.log('   💡 Tip: Crawl your app first using the popup or settings page');
@@ -2245,8 +2280,15 @@
               ticketData,
               settings,
               baseUrl: window.location.origin,
-              externalSources: currentAnalysisData?.externalSources, // Pass external sources if available
-              appContext: appContext // Add crawled app context
+              externalSources: currentAnalysisData?.externalSources, // source COUNTS only — see F09
+              appContext: appContext, // Add crawled app context
+              // F23: the reviewed analysis and test scope are edited in this
+              // panel and were then thrown away — generation rebuilt its own
+              // interpretation from the raw ticket. A user could correct an
+              // ambiguity or exclude a feature in the review step and still get
+              // tests based on the original reading, while the UI presented a
+              // connected QA workflow.
+              reviewedContext: buildReviewedContext()
             }
           }, response => {
             console.log('📥 Received response from background script:', response);
@@ -2282,7 +2324,7 @@
         resultsContainer.innerHTML = '<div class="qatalyst-loading">🤖 Generating test cases (streaming enabled)...</div>';
         
         const response = await new Promise((resolve, reject) => {
-          pendingStreamCompletions.set('testcases', { resolve, reject });
+          pendingStreamCompletions.set('testcases', { resolve, reject, ticketKey });
           chrome.runtime.sendMessage({
             action: 'generateTestCasesStream',
             data: { ticketKey, ticketData, settings, appContext }
@@ -2348,6 +2390,31 @@
   let currentTestScopeData = null;
   let currentTestCasesData = null;
   let currentAppContext = null; // Store crawled app context for UI display
+  // F03: the ticket behind the current suite, so regeneration can be validated
+  // against the original requirements rather than only the previous output.
+  let currentTicketData = null;
+
+  /**
+   * F23: package the user's REVIEWED analysis and scope so generation consumes
+   * the decisions they made, not just the raw ticket. Returns null when neither
+   * step has been run — generation then behaves exactly as before.
+   *
+   * Model output is a PROPOSAL: it is passed as reviewed interpretation, and the
+   * prompt is explicit that the ticket remains the source of truth, so an
+   * unsupported inference in the analysis cannot silently become a requirement.
+   */
+  function buildReviewedContext() {
+    const analysis = currentAnalysisData && (currentAnalysisData.analysis || currentAnalysisData.content);
+    const scope = currentTestScopeData && (currentTestScopeData.testScope || currentTestScopeData.scope || currentTestScopeData.content);
+    if (!analysis && !scope) return null;
+    return {
+      analysis: typeof analysis === 'string' ? analysis.slice(0, 6000) : null,
+      scope: typeof scope === 'string' ? scope.slice(0, 6000) : null,
+      // Whether the user actually edited/regenerated these, or just saw them.
+      analysisReviewed: !!(currentAnalysisData && currentAnalysisData.reviewed),
+      scopeReviewed: !!(currentTestScopeData && currentTestScopeData.reviewed)
+    };
+  }
   let currentQualityReports = null; // Store quality reports from background
 
   // Display functions
@@ -2500,15 +2567,17 @@
     // Render context summary box
     const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {}, currentAppContext);
 
-    // Calculate statistics from test cases
-    const stats = {
-      total: data.total || data.testCases?.length || 0,
-      positive: data.byCategory?.Positive || data.testCases?.filter(tc => tc.category === 'Positive').length || 0,
-      negative: data.byCategory?.Negative || data.testCases?.filter(tc => tc.category === 'Negative').length || 0,
-      edge: data.byCategory?.Edge || data.testCases?.filter(tc => tc.category === 'Edge').length || 0,
-      regression: data.byCategory?.Regression || data.testCases?.filter(tc => tc.category === 'Regression').length || 0,
-      integration: data.byCategory?.Integration || data.testCases?.filter(tc => tc.category === 'Integration').length || 0
-    };
+    // F15: one category registry across prompts, distribution, UI and export.
+    // The chips were a hardcoded five, so Security and Accessibility tests — which
+    // the distribution module can and does generate — were produced but had no
+    // filter and were invisible in the counts.
+    const allCases = data.testCases || [];
+    const registry = (typeof DynamicDistribution !== 'undefined' && DynamicDistribution.CATEGORIES)
+      || ['Positive', 'Negative', 'Edge', 'Regression', 'Integration', 'Security', 'Accessibility'];
+    // Registry order first, then any category the model actually emitted.
+    const categories = [...new Set([...registry, ...allCases.map(tc => tc.category).filter(Boolean)])];
+    const countFor = (cat) => data.byCategory?.[cat] ?? allCases.filter(tc => tc.category === cat).length;
+    const stats = { total: data.total || allCases.length || 0 };
 
     // Enhancement badges
     let enhancementBadges = '';
@@ -2574,36 +2643,22 @@
       }
     }
 
-    // Evolution status badge
-    let evolutionBadge = '';
-    if (data.evolutionPending && !data.finalEvolution) {
-      evolutionBadge = `
-        <div class="evolution-pending-badge">
-          ⏳ Evolutionary optimization in progress... Base test cases shown below.
-        </div>
-      `;
-    } else if (data.finalEvolution) {
-      evolutionBadge = `
-        <div class="evolution-complete-badge">
-          ✨ Enhanced with evolutionary optimization ${data.improvement ? `(+${data.improvement} tests)` : ''}
-        </div>
-      `;
-    }
+    // F21: the "evolutionary optimization" badges were removed — that generation
+    // path was retired and nothing sets `evolutionPending`/`finalEvolution` any
+    // more, so the UI could only ever have shown a status the system no longer
+    // produces. Real quality status is rendered by renderQualityStatus() below.
+    const qualityStatusHtml = renderQualityStatus(data);
 
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>✅ Generated Test Cases</h4>
         ${contextSummaryHtml}
-        ${evolutionBadge}
+        ${qualityStatusHtml}
         ${enhancementBadges}
         ${historicalBadge}
         <div class="test-stats" data-testid="test-stats">
           <button class="stat-filter active" data-filter="all" data-testid="filter-all">Total: ${stats.total}</button>
-          <button class="stat-filter" data-filter="Positive" data-testid="filter-Positive">Positive: ${stats.positive}</button>
-          <button class="stat-filter" data-filter="Negative" data-testid="filter-Negative">Negative: ${stats.negative}</button>
-          <button class="stat-filter" data-filter="Edge" data-testid="filter-Edge">Edge: ${stats.edge}</button>
-          <button class="stat-filter" data-filter="Regression" data-testid="filter-Regression">Regression: ${stats.regression}</button>
-          <button class="stat-filter" data-filter="Integration" data-testid="filter-Integration">Integration: ${stats.integration}</button>
+          ${categories.map(cat => `<button class="stat-filter" data-filter="${escapeHtml(cat)}" data-testid="filter-${escapeHtml(cat)}">${escapeHtml(cat)}: ${countFor(cat)}</button>`).join('')}
         </div>
 
         <!-- Enhanced Filter Controls -->
@@ -2868,6 +2923,9 @@
     });
   }
   
+  // F15: renderQualityStatus lives in content-format.js (pure + unit-tested);
+  // content.js calls it exactly as it would a local function.
+
   function renderContextSummaryBox(externalSources, appContext = null) {
     const jiraStatus = '✅ Yes'; // Jira is always the primary context
     const confluenceStatus = externalSources.confluence > 0 ? '✅ Yes' : '❌ No';
@@ -2933,6 +2991,26 @@
         ? `<span class="source-badge historical">🛡️ Bug Prevention</span>`
         : '';
 
+      // F15: per-case quality flags. The pipeline records these on every case
+      // (unresolved references, no crawl to verify against, a questionable
+      // assertion, an asserted behaviour with no supporting API) but the panel
+      // rendered none of them, so an unverified case was visually identical to a
+      // fully grounded one.
+      const warnings = [
+        tc._grounding === 'unresolved'
+          ? 'References app elements that could not be found in the crawl — verify before executing.' : '',
+        tc._grounding === 'unverified'
+          ? 'Not verified against a crawled app — grounding could not run.' : '',
+        tc._assertionWarning || '',
+        ...(Array.isArray(tc._behaviorWarnings) ? tc._behaviorWarnings : [])
+      ].filter(Boolean);
+      const qualityBadge = warnings.length
+        ? `<span class="tc-quality-badge ${tc._grounding === 'unresolved' ? 'unresolved' : 'review'}" title="${escapeHtml(warnings.join(' '))}">👁️ Review</span>`
+        : '';
+      const warningsHtml = warnings.length
+        ? `<div class="tc-warnings">${warnings.map(w => `<div class="tc-warning">⚠️ ${escapeHtml(w)}</div>`).join('')}</div>`
+        : '';
+
       const ref = escapeHtml(tc.historicalReference || '');
       const historicalInfo = tc.historicalReference
         ? `<div class="historical-ref">📚 Based on: <a href="${escapeHtml(window.location.origin)}/browse/${ref}" target="_blank" rel="noopener noreferrer">${ref}</a></div>`
@@ -2945,13 +3023,15 @@
         : '';
 
       return `
-      <div class="test-case ${tc.source === 'historical' ? 'historical-test' : ''}" data-testid="test-case-${idx}">
+      <div class="test-case ${tc.source === 'historical' ? 'historical-test' : ''}${warnings.length ? ' needs-review' : ''}" data-testid="test-case-${idx}">
         <div class="tc-header">
           <span class="tc-id">${escapeHtml(tc.id || '')}</span>
           <span class="tc-priority ${escapeHtml(tc.priority || '')}">${escapeHtml(tc.priority || '')}</span>
           <span class="tc-category">${escapeHtml(tc.category || '')}</span>
           ${sourceBadge}
+          ${qualityBadge}
         </div>
+        ${warningsHtml}
         <div class="tc-title">${inlineMarkdown(tc.title)}</div>
         ${tc.preventionReason ? `<div class="prevention-reason">🛡️ ${inlineMarkdown(tc.preventionReason)}</div>` : ''}
         ${historicalInfo}
@@ -3605,7 +3685,13 @@
             type: 'testCases',
             originalContent: JSON.stringify(currentTestCasesData.testCases),
             userReview: userReview,
-            settings
+            settings,
+            // F03: send the original ticket + crawl evidence too. Regeneration
+            // was previously given only the previous output and the review
+            // comment, so the regenerated suite could not be checked for
+            // relevance or grounding against anything.
+            ticketData: currentTicketData,
+            appContext: currentAppContext
           }
         }, response => {
           if (chrome.runtime.lastError) {
@@ -3634,66 +3720,6 @@
   function showHelp() {
     // Open options page with Help tab selected
     chrome.runtime.sendMessage({ action: 'openOptionsPage', tab: 'help' });
-  }
-
-  // Handle evolution completion
-  function handleEvolutionComplete(data) {
-    console.log('Evolution complete, updating UI with evolved tests');
-
-    if (!currentTestCasesData) {
-      console.warn('No current test cases data to update');
-      return;
-    }
-
-    // Update current data with evolved results
-    currentTestCasesData.testCases = data.testCases;
-    currentTestCasesData.total = data.statistics.total;
-    currentTestCasesData.byCategory = data.statistics.byCategory;
-    currentTestCasesData.byPriority = data.statistics.byPriority;
-    currentTestCasesData.evolved = true;
-    currentTestCasesData.finalEvolution = true;
-    currentTestCasesData.improvement = data.improvement;
-
-    // Re-display results with evolved tests
-    displayTestCasesResults(currentTestCasesData);
-
-    // Show success notification
-    const container = document.getElementById('results-container');
-    if (container) {
-      const notification = document.createElement('div');
-      notification.className = 'qatalyst-success';
-      notification.style.marginBottom = '16px';
-      notification.innerHTML = `
-        ✅ <strong>Evolutionary Optimization Complete!</strong><br>
-        ${data.improvement > 0 ? `Added ${data.improvement} optimized tests through genetic algorithm.` : 'Test suite optimized for better coverage.'}
-      `;
-
-      container.insertBefore(notification, container.firstChild);
-
-      // Auto-remove after 5 seconds
-      setTimeout(() => notification.remove(), 5000);
-    }
-  }
-
-  // Handle evolution error
-  function handleEvolutionError(error) {
-    console.error('Evolution error:', error);
-
-    const container = document.getElementById('results-container');
-    if (!container) return;
-
-    // Replace evolution progress with error message
-    const existing = container.querySelector('.evolution-progress-container');
-    if (existing) {
-      const notification = document.createElement('div');
-      notification.className = 'qatalyst-warning';
-      notification.innerHTML = `
-        ⚠️ <strong>Evolution Optimization Failed</strong><br>
-        ${error}<br>
-        <small>Base test cases are still available and valid.</small>
-      `;
-      existing.replaceWith(notification);
-    }
   }
 
   /**
@@ -3743,13 +3769,8 @@
       <div style="font-size: 12px; color: #495057;">${items.join(' &nbsp;|&nbsp; ')}</div>
     `;
 
-    // Insert before evolution progress or at end
-    const evolutionContainer = container.querySelector('.evolution-progress-container');
-    if (evolutionContainer) {
-      container.insertBefore(reportHTML, evolutionContainer);
-    } else {
-      container.appendChild(reportHTML);
-    }
+    // F21: the evolution-progress container no longer exists — nothing renders it.
+    container.appendChild(reportHTML);
   }
 
   // Initialize
@@ -4272,13 +4293,23 @@
 
       // Create app context with raw knowledge graph
       // ContextAnalysisAgent will analyze this in the orchestrator (Agent 1/8)
+      const r = kgResponse.result;
       const context = {
-        appUrl: kgResponse.result.appUrl,
+        appUrl: r.appUrl,
         knowledgeGraph: knowledgeGraph,
         hasContext: hasContext,
-        crawledAt: kgResponse.result.crawledAt,
-        pageCount: kgResponse.result.pageCount,
-        transferPageCount: kgResponse.result.transferPageCount
+        crawledAt: r.crawledAt,
+        pageCount: r.pageCount,
+        transferPageCount: r.transferPageCount,
+        // F01: these evidence flags were dropped here, so the worker's
+        // stale / thin-relevance degradation warnings could never fire — the
+        // suite looked fully grounded even against a months-old or unrelated
+        // crawl. They live on `result` (not on the graph) — carry both.
+        stale: r.stale,
+        stalenessDays: r.stalenessDays,
+        staleAfterDays: r.staleAfterDays,
+        lowRelevance: knowledgeGraph?.lowRelevance,
+        noRelevantPages: knowledgeGraph?.noRelevantPages
       };
 
       console.log('✅ [CRAWL DATA] App context prepared successfully:');

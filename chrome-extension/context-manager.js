@@ -48,10 +48,49 @@ if (typeof ContextManager === 'undefined') {
     HISTORICAL_BUGS: 40     // Lowest priority
   };
 
+  /**
+   * F21: what to assume when we do NOT recognise the model.
+   *
+   * The fallback used to be gpt-4.1 — the MOST PERMISSIVE row in the table, at
+   * ~1,047,576 input tokens. So an unrecognised model (a newer Claude, a Bedrock
+   * model id, a custom deployment) was assumed to have a million-token context,
+   * truncation never fired, and the provider rejected the oversized request or
+   * silently dropped the tail. Unknown capability must be assumed SMALL, not
+   * unlimited: over-truncating costs some context, under-truncating loses the
+   * request entirely.
+   */
+  const UNKNOWN_MODEL_LIMITS = { maxInput: 128000, maxOutput: 4096, safeInput: 96000 };
+
+  /**
+   * F21: resolve a model id to its limits. Exact match first, then a known family
+   * prefix (so `claude-sonnet-4-5-20250929` resolves like its dated sibling
+   * rather than falling off the table), then the conservative default.
+   * @returns {{limits: object, matched: 'exact'|'prefix'|'unknown'}}
+   */
+  function resolveModelLimits(model) {
+    const id = String(model || '');
+    if (MODEL_LIMITS[id]) return { limits: MODEL_LIMITS[id], matched: 'exact' };
+
+    // Longest known key that prefixes this id wins — most specific family.
+    const prefix = Object.keys(MODEL_LIMITS)
+      .filter(k => id.startsWith(k))
+      .sort((a, b) => b.length - a.length)[0];
+    if (prefix) return { limits: MODEL_LIMITS[prefix], matched: 'prefix' };
+
+    return { limits: UNKNOWN_MODEL_LIMITS, matched: 'unknown' };
+  }
+
   class ContextManager {
     constructor(model = 'gpt-4.1') {
       this.model = model;
-      this.limits = MODEL_LIMITS[model] || MODEL_LIMITS['gpt-4.1'];
+      const resolved = resolveModelLimits(model);
+      this.limits = resolved.limits;
+      // Exposed so callers can tell the user their budget is a conservative
+      // guess rather than this model's real capability.
+      this.limitsSource = resolved.matched;
+      if (resolved.matched === 'unknown') {
+        console.warn(`[ContextManager] Unknown model "${model}" — using conservative limits (${UNKNOWN_MODEL_LIMITS.safeInput} safe input tokens). Add it to MODEL_LIMITS for its real budget.`);
+      }
       this.contextParts = [];
       this.images = [];
       this.totalTokens = 0;
@@ -561,11 +600,13 @@ if (typeof ContextManager === 'undefined') {
     window.buildContextForRequest = buildContextForRequest;
     window.CONTENT_PRIORITY = CONTENT_PRIORITY;
     window.MODEL_LIMITS = MODEL_LIMITS;
+    window.resolveModelLimits = resolveModelLimits;
   }
   if (typeof globalThis !== 'undefined') {
     globalThis.ContextManager = ContextManager;
     globalThis.buildContextForRequest = buildContextForRequest;
     globalThis.CONTENT_PRIORITY = CONTENT_PRIORITY;
     globalThis.MODEL_LIMITS = MODEL_LIMITS;
+    globalThis.resolveModelLimits = resolveModelLimits;
   }
 }

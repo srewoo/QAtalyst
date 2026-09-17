@@ -131,3 +131,44 @@ describe('mergeDiscoveredFeatures (item 1: interaction-revealed features)', () =
     expect(merged).toHaveLength(2);
   });
 });
+
+describe('F18/F19/F26 — observation honesty and recoverability', () => {
+  test('F26: the resume snapshot records URLs, not just counts', async () => {
+    // A count cannot restart anything: on resume there is no way to know which
+    // URLs were done or what was still pending.
+    const saved = {};
+    global.chrome = global.chrome || {};
+    global.chrome.storage = { local: {
+      set: async (o) => Object.assign(saved, o),
+      get: async (k) => ({ [k]: saved[k] }),
+      remove: async () => {}
+    } };
+
+    const crawler = Object.create(WebAppCrawler.prototype);
+    Object.assign(crawler, {
+      crawlId: 'c1', startUrl: 'https://app/', visited: new Set(['https://app/a', 'https://app/b']),
+      queue: [{ url: 'https://app/c', depth: 1, priority: 5 }], batchNumber: 2, pages: []
+    });
+    await crawler.saveResumeState();
+
+    const state = saved['crawl_resume_c1'];
+    expect(state.visited).toEqual(['https://app/a', 'https://app/b']);
+    expect(state.queue[0].url).toBe('https://app/c');
+    expect(state.truncated).toBe(false);
+  });
+
+  test('F26: an oversized snapshot admits it is truncated', async () => {
+    const saved = {};
+    global.chrome.storage = { local: { set: async (o) => Object.assign(saved, o), get: async () => ({}), remove: async () => {} } };
+    const crawler = Object.create(WebAppCrawler.prototype);
+    Object.assign(crawler, {
+      crawlId: 'c2', startUrl: 'https://app/',
+      visited: new Set(Array.from({ length: 2500 }, (_, i) => `https://app/${i}`)),
+      queue: [], batchNumber: 1, pages: []
+    });
+    await crawler.saveResumeState();
+    // A bounded snapshot must not claim pages it cannot account for.
+    expect(saved['crawl_resume_c2'].truncated).toBe(true);
+    expect(saved['crawl_resume_c2'].visited).toHaveLength(2000);
+  });
+});

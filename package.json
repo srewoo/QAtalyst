@@ -12,7 +12,10 @@
     "eval": "node chrome-extension/eval/run-eval.js",
     "lint": "eslint chrome-extension/**/*.js",
     "format": "prettier --write chrome-extension/**/*.{js,html,css,json}",
-    "zip": "cd chrome-extension && zip -r \"../qatalyst-v$npm_package_version-webstore.zip\" . -x '*.DS_Store' '*.git*' '**/tests/*' '**/tests/**' '**/e2e/*' '**/e2e/**' '**/utils/*' '*.md' 'CONFIG.md' 'README.md' 'privacy.html'"
+    "zip": "./build.sh",
+    "eval:defects": "node chrome-extension/eval/defect-detection.js",
+    "eval:compare": "node chrome-extension/eval/compare-heuristics.js",
+    "eval:all": "npm run eval && npm run eval:defects && npm run eval:compare"
   },
   "repository": {
     "type": "git",
@@ -44,7 +47,10 @@
     "vitest": "^4.1.4"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
-  "private": true
+  "private": true,
+  "optionalDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
 }

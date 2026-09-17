@@ -57,6 +57,63 @@ function countKgEntities(kg) {
   return n;
 }
 
+/**
+ * F02: knowledge-graph pages are produced as an ARRAY by the crawler
+ * (buildKnowledgeGraph) but every consumer — BM25 transfer, GraphFilter,
+ * CoverageMapper, the verifier — looks them up BY URL. Normalize once, here.
+ * @returns {Object<string,object>} url -> page (never null)
+ */
+function pagesByUrl(pages) {
+  if (!pages) return {};
+  if (Array.isArray(pages)) {
+    const out = {};
+    pages.forEach((p, i) => {
+      if (!p || typeof p !== 'object') return;
+      out[p.url || p.metadata?.url || `page:${i}`] = p;
+    });
+    return out;
+  }
+  return typeof pages === 'object' ? pages : {};
+}
+
+/**
+ * F01: the single generation-context boundary. The content script sends the UI
+ * wrapper `{ appUrl, knowledgeGraph, hasContext, stale, ... }`, while grounding,
+ * coverage, retrieval and prompt formatting all read a graph's OWN top-level
+ * pages/forms/apis. Passing the wrapper straight through therefore produced an
+ * empty entity index while still looking like "we have crawl data".
+ *
+ * Accepts the wrapper, a raw crawl graph (pages: []) or an aggregated graph
+ * (pages: {url:{}}) and always returns a graph with `pages` as a URL-keyed map,
+ * evidence flags preserved — or null when there is no usable evidence, so the
+ * existing "no crawl" degradation actually fires.
+ */
+function normalizeGenerationContext(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const wrapped = raw.knowledgeGraph && typeof raw.knowledgeGraph === 'object';
+  const kg = wrapped ? raw.knowledgeGraph : raw;
+  if (!kg || typeof kg !== 'object') return null;
+
+  const pages = pagesByUrl(kg.pages);
+  const out = { ...kg, pages };
+
+  // Evidence/staleness flags live on the wrapper (crawler-handlers returns them
+  // on `result`, not on the graph) — carry them onto the canonical context so
+  // the stale / thin-relevance warnings survive to the UI.
+  if (wrapped) {
+    for (const k of ['appUrl', 'crawledAt', 'stale', 'stalenessDays', 'staleAfterDays',
+                     'pageCount', 'transferPageCount', 'lowRelevance', 'noRelevantPages']) {
+      if (out[k] === undefined && raw[k] !== undefined) out[k] = raw[k];
+    }
+  }
+  out.pageCount = out.pageCount ?? Object.keys(pages).length;
+  out.transferPageCount = Object.keys(pages).length;
+
+  // No pages AND no aggregated entities => no evidence at all.
+  if (!out.transferPageCount && !countKgEntities(out)) return null;
+  return out;
+}
+
 function clampInt(n, lo, hi) {
   n = parseInt(n, 10);
   if (!Number.isFinite(n)) n = lo;
@@ -166,7 +223,7 @@ function formatTicketContextForPrompt(t) {
  * issuetype Bug, matching the ticket's most significant summary terms, excluding
  * the ticket itself, newest first. Returns '' when there's nothing to search on.
  */
-function buildHistoricalJql(ticketData) {
+function buildHistoricalJql(ticketData, settings) {
   const key = ticketData && ticketData.key ? String(ticketData.key) : '';
   const project = key.includes('-') ? key.split('-')[0] : '';
   const words = String((ticketData && (ticketData.summary || ticketData.title)) || '').match(/[A-Za-z]{4,}/g) || [];
@@ -176,13 +233,21 @@ function buildHistoricalJql(ticketData) {
   const textClause = terms.map(t => `text ~ "${t.replace(/["\\]/g, '')}"`).join(' OR ');
   const parts = [];
   if (project) parts.push(`project = "${project}"`);
-  parts.push('issuetype = Bug');
   parts.push(`(${textClause})`);
   if (key) parts.push(`key != "${key}"`);
+
+  // F21: honour the user's Custom JQL Filters. The options page exposes
+  // `historicalJqlFilters`, but ONLY the older mining helper read it — the active
+  // agentic path built its query here and ignored the setting entirely, so a
+  // visible control silently did nothing on the path that actually runs.
+  const custom = settings && typeof settings.historicalJqlFilters === 'string'
+    ? settings.historicalJqlFilters.trim() : '';
+  parts.push(custom || 'issuetype = Bug AND created >= -365d');
+
   return parts.join(' AND ') + ' ORDER BY created DESC';
 }
 
-const api = { validateSettings, round2, clampInt, rejectionBreakdown, deriveAdaptiveThresholds, formatTicketContextForPrompt, countKgEntities, buildHistoricalJql };
+const api = { validateSettings, round2, clampInt, pagesByUrl, normalizeGenerationContext, rejectionBreakdown, deriveAdaptiveThresholds, formatTicketContextForPrompt, countKgEntities, buildHistoricalJql };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 if (typeof self !== 'undefined') Object.assign(self, api);
 })();

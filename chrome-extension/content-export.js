@@ -39,22 +39,56 @@
    * @returns {string} CSV text
    */
   function buildTestCasesCSV(testCases) {
-    // F27: carry regression provenance into the export. Source + Historical
-    // Reference + Rationale columns let a reviewer see which past bug a
-    // regression test guards against; blank for non-regression tests.
-    const headers = ['ID', 'Title', 'Category', 'Priority', 'Description', 'Expected Result', 'Source', 'Historical Reference', 'Rationale'];
-    const q = (v) => `"${toDisplayString(v).replace(/"/g, '""')}"`;
+    // F15: the export must contain enough to EXECUTE the test. Preconditions,
+    // Steps and Test Data were omitted entirely, so the CSV described tests
+    // nobody could run. Grounding + Review Needed distinguish ready cases from
+    // cases a human must check before execution.
+    //
+    // F27: Source + Historical Reference + Rationale carry regression provenance
+    // — which past bug a regression test guards against; blank otherwise.
+    const headers = [
+      'ID', 'Title', 'Category', 'Priority', 'Description',
+      'Preconditions', 'Steps', 'Test Data', 'Expected Result',
+      // F07/F15: which requirement each case covers. A ready case without a
+      // requirement link has no provenance a reviewer can check.
+      'Requirement IDs',
+      'Grounding', 'Review Needed', 'Source', 'Historical Reference', 'Rationale'
+    ];
+
+    // Spreadsheet formula injection: a model-authored field beginning with
+    // = + - @ (or a leading tab/CR) is executed as a formula by Excel/Sheets on
+    // open. Prefix a single quote so it is always treated as text.
+    const safe = (v) => {
+      const text = toDisplayString(v);
+      return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+    };
+    const q = (v) => `"${safe(v).replace(/"/g, '""')}"`;
 
     const rows = (testCases || []).map(tc => {
       const isRegression = /regress/i.test(tc.category || '') || (tc._proposedFor && /regress/i.test(tc._proposedFor.category || ''));
       const source = tc.source || (isRegression ? 'regression' : '');
+      const steps = (Array.isArray(tc.steps) ? tc.steps : (tc.steps ? [tc.steps] : []))
+        .map((s, i) => `${i + 1}. ${toDisplayString(typeof s === 'string' ? s : (s && (s.action || s.step || s.text)) || s)}`)
+        .join('\n');
+      const warnings = [
+        tc._grounding === 'unresolved' ? 'unresolved app references' : '',
+        tc._grounding === 'unverified' ? 'not verified against a crawl' : '',
+        tc._assertionWarning || '',
+        ...(Array.isArray(tc._behaviorWarnings) ? tc._behaviorWarnings : [])
+      ].filter(Boolean);
       return [
         q(tc.id || ''),
         q(tc.title || ''),
         q(tc.category || ''),
         q(tc.priority || ''),
         q(tc.description || ''),
+        q(tc.preconditions || ''),
+        q(steps),
+        q(tc.test_data || tc.testData || ''),
         q(tc.expected_result || tc.expectedResult || ''),
+        q(Array.isArray(tc.requirementIds) ? tc.requirementIds.join(' ') : ''),
+        q(tc._grounding || ''),
+        q(warnings.join(' | ')),
         q(source),
         q(tc.historicalReference || ''),
         q(tc.rationale || '')

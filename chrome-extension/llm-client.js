@@ -21,8 +21,27 @@ const MAX_STREAMING_ITERATIONS = 50000;
 // Shared with background.js's stop/diagnostic handlers (same Map instance).
 const activeStreams = (typeof self !== 'undefined') ? (self.activeStreams = self.activeStreams || new Map()) : new Map();
 
-async function callBedrock(systemMessage, userContent, settings, retries = MAX_RETRIES) {
+/**
+ * F17: one place that creates the per-request AbortController, so a caller's
+ * cancellation actually reaches the in-flight HTTP request.
+ *
+ * Every provider created a bare `new AbortController()` for its timeout only.
+ * The planner's cancel flag was checked BETWEEN iterations, so cancelling during
+ * a long generation waited for that call — and its retries — to finish first.
+ * `settings._abortSignal` now aborts the live request immediately.
+ */
+function requestController(settings) {
   const controller = new AbortController();
+  const external = settings && settings._abortSignal;
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', () => { try { controller.abort(); } catch (_) {} }, { once: true });
+  }
+  return controller;
+}
+
+async function callBedrock(systemMessage, userContent, settings, retries = MAX_RETRIES) {
+  const controller = requestController(settings);
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
@@ -167,7 +186,7 @@ async function callBedrock(systemMessage, userContent, settings, retries = MAX_R
 }
 
 async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RETRIES) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
@@ -283,7 +302,7 @@ async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RE
 }
 
 async function callGemini(systemMessage, userContent, settings, retries = MAX_RETRIES) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
@@ -390,7 +409,7 @@ async function callGemini(systemMessage, userContent, settings, retries = MAX_RE
 }
 
 async function callClaude(systemMessage, userContent, settings, retries = MAX_RETRIES) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
@@ -578,7 +597,7 @@ async function callAI(systemMessage, userContent, settings) {
 }
 
 async function callBedrockStream(systemMessage, userContent, settings, onChunk, requestId) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   activeStreams.set(requestId, controller);
 
   let reader = null;
@@ -767,7 +786,7 @@ async function callBedrockStream(systemMessage, userContent, settings, onChunk, 
 }
 
 async function callOpenAIStream(systemMessage, userContent, settings, onChunk, requestId) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   activeStreams.set(requestId, controller);
 
   let reader = null;
@@ -867,7 +886,7 @@ async function callOpenAIStream(systemMessage, userContent, settings, onChunk, r
 }
 
 async function callClaudeStream(systemMessage, userContent, settings, onChunk, requestId) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   activeStreams.set(requestId, controller);
 
   let reader = null;
@@ -992,7 +1011,7 @@ async function callClaudeStream(systemMessage, userContent, settings, onChunk, r
 }
 
 async function callGeminiStream(systemMessage, userContent, settings, onChunk, requestId) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   activeStreams.set(requestId, controller);
 
   let reader = null;
