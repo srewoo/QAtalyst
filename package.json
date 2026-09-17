@@ -1,6 +1,6 @@
 {
   "name": "qatalyst",
-  "version": "13.8",
+  "version": "14.0",
   "description": "AI test case generator for Jira. Turn tickets, requirements & acceptance criteria into positive, negative & edge-case tests.",
   "main": "chrome-extension/background.js",
   "scripts": {

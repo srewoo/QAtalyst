@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "QAtalyst - AI Test Case Generator",
-  "version": "13.8",
+  "version": "14.0",
   "description": "AI test case generator for Jira. Turn tickets, requirements & acceptance criteria into positive, negative & edge-case tests.",
   "permissions": [
     "storage",
