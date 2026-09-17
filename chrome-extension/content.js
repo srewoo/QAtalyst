@@ -786,12 +786,102 @@
   // late "done"/observation event can't overwrite the test-case list (race fix).
   let suppressAgentProgress = false;
 
+  /**
+   * One persistent "generating" surface.
+   *
+   * Generation can run for minutes, and the panel had no owner: the initial
+   * loading message, the historical-mining panel and the agent-progress panel
+   * each did `resultsContainer.innerHTML = …`, so the last writer won. Once
+   * mining finished, its "✅ Mining complete" box simply sat there while the
+   * planner worked — the user was left looking at a finished-looking panel with
+   * no indication anything was still happening, and no way to tell a slow run
+   * from a hung one.
+   *
+   * This owns the container for the whole run: sub-steps update IN PLACE, and an
+   * elapsed clock ticks regardless of whether events are arriving, so the UI
+   * proves liveness between sparse planner steps.
+   */
+  const GenerationStatus = {
+    _timer: null,
+    _startedAt: 0,
+    _state: null,
+
+    start(label = 'Generating test cases…') {
+      this._startedAt = Date.now();
+      this._state = { label, phase: 'Starting', detail: '', step: null, total: null, count: null, done: [] };
+      this._render();
+      clearInterval(this._timer);
+      // Tick independently of events: a long planner step must not look frozen.
+      this._timer = setInterval(() => this._render(), 1000);
+    },
+
+    update(patch = {}) {
+      if (!this._state) this.start();
+      // A finished phase is remembered, so progress reads as a trail rather than
+      // a single line that keeps being overwritten.
+      if (patch.phase && patch.phase !== this._state.phase && this._state.phase) {
+        this._state.done.push(this._state.phase);
+      }
+      Object.assign(this._state, patch);
+      this._render();
+    },
+
+    stop() {
+      clearInterval(this._timer);
+      this._timer = null;
+      this._state = null;
+    },
+
+    isActive() { return !!this._state; },
+
+    _elapsed() {
+      const s = Math.floor((Date.now() - this._startedAt) / 1000);
+      return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+    },
+
+    _render() {
+      const container = document.getElementById('results-container');
+      if (!container || !this._state) return;
+      const st = this._state;
+      const pct = (Number.isFinite(st.step) && Number.isFinite(st.total) && st.total > 0)
+        ? Math.min(100, Math.round((st.step / st.total) * 100)) : null;
+
+      container.innerHTML = `
+        <div class="qatalyst-generating" data-testid="generation-status">
+          <div class="gen-head">
+            <span class="gen-spinner" aria-hidden="true"></span>
+            <strong>${escapeHtml(st.label)}</strong>
+            <span class="gen-elapsed" data-testid="generation-elapsed">${escapeHtml(this._elapsed())}</span>
+          </div>
+          <div class="gen-phase">${escapeHtml(st.phase || 'Working…')}${
+            st.detail ? ` — <span class="gen-detail">${escapeHtml(String(st.detail).slice(0, 120))}</span>` : ''}</div>
+          ${pct !== null ? `<div class="gen-bar"><div class="gen-fill" style="width:${pct}%"></div></div>` : ''}
+          ${Number.isFinite(st.count) ? `<div class="gen-count">${st.count} test case(s) accepted so far</div>` : ''}
+          ${st.done.length ? `<div class="gen-done">${st.done.slice(-4).map(d => `✓ ${escapeHtml(d)}`).join(' &nbsp; ')}</div>` : ''}
+          <div class="gen-note">This can take a few minutes on a large ticket. You can keep working — results appear here when ready.</div>
+        </div>`;
+    }
+  };
+
   function handleAgentProgress(progress) {
     if (suppressAgentProgress) return;
     const resultsContainer = document.getElementById('results-container');
     if (!resultsContainer) return;
 
     const { agent, step, total, status, description, count, error } = progress;
+
+    // Route into the single generation surface so planner steps, mining and the
+    // final validation all update ONE panel in place.
+    if (GenerationStatus.isActive() && status !== 'error' && !error) {
+      GenerationStatus.update({
+        phase: agent ? `${agent}` : 'Planning coverage',
+        detail: description || '',
+        step: Number.isFinite(step) ? step : null,
+        total: Number.isFinite(total) ? total : null,
+        count: Number.isFinite(count) ? count : null
+      });
+      return;
+    }
     
     // Progress is only meaningful when both step and total are numbers.
     const hasProgress = Number.isFinite(step) && Number.isFinite(total) && total > 0;
@@ -937,6 +1027,17 @@
   function handleHistoricalMiningProgress(status) {
     const resultsContainer = document.getElementById('results-container');
     if (!resultsContainer) return;
+
+    // While a generation run owns the panel, mining is a PHASE of it — not a
+    // replacement for it. Overwriting the container here is what left the user
+    // staring at "✅ Mining complete" for the rest of the run.
+    if (GenerationStatus.isActive()) {
+      GenerationStatus.update({
+        phase: status === 'analyzing' ? 'Mining historical bugs' : 'Historical mining complete',
+        detail: status === 'analyzing' ? 'searching past issues for regression risks' : ''
+      });
+      return;
+    }
 
     const historicalHTML = `
       <div class="historical-mining-progress-container">
@@ -2147,7 +2248,11 @@
   async function handleTestCases(ticketKey, ticketData) {
     const resultsContainer = document.getElementById('results-container');
     const btn = document.getElementById('test-cases-btn');
+    // The disabled button was the only signal a run had started, and a greyed-out
+    // button reads as "unavailable", not "working".
+    btn.dataset.originalLabel = btn.dataset.originalLabel || btn.innerHTML;
     btn.disabled = true;
+    btn.innerHTML = '<span class="btn-icon">⏳</span><span>Generating…</span>';
     setActivityIndicator(true);
     
     try {
@@ -2269,7 +2374,8 @@
         const genAction = 'generateTestCasesAgentic';
         suppressAgentProgress = false; // allow progress updates for this run
         console.log('🚀 Starting agentic planner test case generation...');
-        resultsContainer.innerHTML = '<div class="qatalyst-loading">🧭 Planning grounded test coverage...</div>';
+        GenerationStatus.start('Generating test cases…');
+        GenerationStatus.update({ phase: 'Planning grounded test coverage', detail: 'reading the ticket and crawl evidence' });
 
         console.log('📤 Sending message to background script...');
         const response = await new Promise((resolve, reject) => {
@@ -2313,6 +2419,7 @@
         // Render final results and stop accepting progress updates so a late
         // "done" message cannot overwrite the test-case list.
         suppressAgentProgress = true;
+        GenerationStatus.stop();
         displayTestCasesResults(response);
       }
       // Use streaming or regular based on settings
@@ -2321,7 +2428,8 @@
         streamingContent = '';
         isStreaming = true;
         currentStreamingRequestId = `testcases-${Date.now()}`;
-        resultsContainer.innerHTML = '<div class="qatalyst-loading">🤖 Generating test cases (streaming enabled)...</div>';
+        GenerationStatus.start('Generating test cases…');
+        GenerationStatus.update({ phase: 'Streaming from the model', detail: 'output is validated before it is shown' });
         
         const response = await new Promise((resolve, reject) => {
           pendingStreamCompletions.set('testcases', { resolve, reject, ticketKey });
@@ -2345,7 +2453,8 @@
         displayTestCasesResults(response);
       } else {
         // Regular non-streaming (single-agent)
-        resultsContainer.innerHTML = '<div class="qatalyst-loading">🤖 Generating test cases...</div>';
+        GenerationStatus.start('Generating test cases…');
+        GenerationStatus.update({ phase: 'Asking the model', detail: 'this usually takes 30-90 seconds' });
         
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
@@ -2371,16 +2480,21 @@
           });
         });
 
+        GenerationStatus.stop();
         displayTestCasesResults(response);
       }
-      
+
     } catch (error) {
       isStreaming = false;
       currentStreamingRequestId = null;
       resultsContainer.innerHTML = '';
       resultsContainer.appendChild(createSafeErrorMessage(error.message));
     } finally {
+      // The status must never outlive the run — a spinner still ticking after a
+      // failure is worse than no spinner at all.
+      GenerationStatus.stop();
       btn.disabled = false;
+      if (btn.dataset.originalLabel) btn.innerHTML = btn.dataset.originalLabel;
       setActivityIndicator(false);
     }
   }
