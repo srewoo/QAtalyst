@@ -151,7 +151,16 @@ class WebAppCrawler {
         if (pageCount > 0) {
           console.log(`📚 Found previous crawl with ${pageCount} pages`);
 
-          // Store previously crawled URLs
+          // Retain the previous PAGE RECORDS, not just their URLs.
+          // Incremental mode skipped a known URL and then built the new graph from
+          // freshly-crawled pages only — so every skipped page vanished from the
+          // result. Turning on incremental crawling destroyed the evidence it was
+          // supposed to preserve. Carry them forward instead.
+          this.previousPages = new Map();
+          const pageList = Array.isArray(pages) ? pages : Object.values(pages);
+          for (const page of pageList) {
+            if (page && page.url) this.previousPages.set(page.url, page);
+          }
           for (const url of urls) {
             this.previouslyCrawled.add(url);
           }
@@ -296,12 +305,17 @@ class WebAppCrawler {
         continue;
       }
 
-      // Incremental crawl: Skip if previously crawled
+      // Incremental crawl: re-crawl only what is NEW or CHANGED.
       const incrementalMode = CONFIG.get('crawler.incremental.enabled', true);
       if (incrementalMode && this.previouslyCrawled.has(url)) {
-        console.log(`⏩ Skipping previously crawled: ${url}`);
-        this.visited.add(url);
-        continue;
+        const decision = await this.shouldRecrawl(url);
+        if (!decision.recrawl) {
+          console.log(`⏩ Unchanged, reusing previous crawl: ${url} (${decision.reason})`);
+          this.carryForwardPage(url);
+          this.visited.add(url);
+          continue;
+        }
+        console.log(`🔄 Changed since last crawl, re-crawling: ${url} (${decision.reason})`);
       }
 
       try {
@@ -368,12 +382,17 @@ class WebAppCrawler {
           return Promise.resolve();
         }
 
-        // Incremental crawl: Skip if previously crawled
+        // Incremental crawl: re-crawl only what is NEW or CHANGED (parallel path).
         const incrementalMode = CONFIG.get('crawler.incremental.enabled', true);
         if (incrementalMode && this.previouslyCrawled.has(url)) {
-          console.log(`⏩ Skipping previously crawled: ${url}`);
-          this.visited.add(url);
-          return Promise.resolve();
+          const decision = await this.shouldRecrawl(url);
+          if (!decision.recrawl) {
+            console.log(`⏩ Unchanged, reusing previous crawl: ${url} (${decision.reason})`);
+            this.carryForwardPage(url);
+            this.visited.add(url);
+            return Promise.resolve();
+          }
+          console.log(`🔄 Changed since last crawl, re-crawling: ${url} (${decision.reason})`);
         }
 
         // CRITICAL FIX: Validate tab before crawling, recreate if invalid
@@ -730,8 +749,23 @@ class WebAppCrawler {
       _pageHints: pageHints && Object.keys(pageHints).length > 0 ? pageHints : undefined,
       _apiSchemas: apiSummary.endpoints && apiSummary.endpoints.length > 0 ? apiSummary.endpoints : undefined,
       _apiErrors: apiSummary.errors && apiSummary.errors.length > 0 ? apiSummary.errors : undefined,
-      _pagination: apiSummary.pagination && apiSummary.pagination.length > 0 ? apiSummary.pagination : undefined
+      _pagination: apiSummary.pagination && apiSummary.pagination.length > 0 ? apiSummary.pagination : undefined,
+      // Freshness fingerprint, so the NEXT crawl can tell whether this page
+      // changed instead of re-crawling it blindly or skipping it blindly.
+      _contentHash: WebAppCrawler.hashContent(
+        [metadata.title, textContent, JSON.stringify(features || [])].join('\n'))
     };
+
+    // Server-supplied validators are far cheaper to check than a re-render, so
+    // capture them when the origin provides them.
+    try {
+      const head = await fetch(actualUrl, { method: 'HEAD', credentials: 'include' });
+      const etag = head.headers.get('etag');
+      const lastModified = head.headers.get('last-modified');
+      if (etag || lastModified) pageData._validators = { etag, lastModified };
+    } catch (_) {
+      // Not all origins answer HEAD; the content hash covers those.
+    }
 
     // WEEK 1: Track page load time for adaptive scaling
     this.trackPageLoadTime(metadata.loadTime || 1000);
@@ -1582,6 +1616,105 @@ class WebAppCrawler {
    * durable record.
    */
   /**
+   * Has this page CHANGED since the last crawl?
+   *
+   * Incremental mode previously skipped any URL it had seen before, so a page
+   * whose content had been rewritten was never re-crawled and the graph kept
+   * describing an app that no longer existed. A URL is an identifier, not a
+   * version.
+   *
+   * The check is deliberately cheap — a conditional HTTP request, no tab, no
+   * render — so skipping stays much faster than crawling. It errs toward
+   * RE-CRAWLING: when we cannot prove a page is unchanged we crawl it, because a
+   * redundant crawl costs seconds and stale evidence costs correctness.
+   *
+   * @returns {Promise<{recrawl: boolean, reason: string}>}
+   */
+  async shouldRecrawl(url) {
+    const previous = this.previousPages && this.previousPages.get(url);
+    if (!previous) return { recrawl: true, reason: 'no previous record' };
+
+    // A page that errored last time has no usable evidence to reuse.
+    if (previous.error) return { recrawl: true, reason: 'previous crawl failed for this page' };
+
+    // Refresh anything older than the configured TTL, so a site without
+    // validators still gets revisited eventually.
+    const maxAgeDays = CONFIG.get('crawler.incremental.maxAgeDays', 14);
+    const observedAt = previous.timestamp || this.previousCrawlObservedAt;
+    if (observedAt && Date.now() - observedAt > maxAgeDays * 86400000) {
+      return { recrawl: true, reason: `evidence older than ${maxAgeDays} days` };
+    }
+
+    // Conditional request: the server tells us whether it changed.
+    const validators = previous._validators;
+    if (validators && (validators.etag || validators.lastModified)) {
+      try {
+        const headers = {};
+        if (validators.etag) headers['If-None-Match'] = validators.etag;
+        if (validators.lastModified) headers['If-Modified-Since'] = validators.lastModified;
+        const res = await fetch(url, { method: 'GET', headers, credentials: 'include', cache: 'no-cache' });
+        if (res.status === 304) return { recrawl: false, reason: 'server reported 304 Not Modified' };
+        if (res.ok) {
+          const etag = res.headers.get('etag');
+          const lastMod = res.headers.get('last-modified');
+          if (etag && validators.etag && etag === validators.etag) {
+            return { recrawl: false, reason: 'ETag unchanged' };
+          }
+          if (!etag && lastMod && validators.lastModified === lastMod) {
+            return { recrawl: false, reason: 'Last-Modified unchanged' };
+          }
+          return { recrawl: true, reason: etag ? 'ETag changed' : 'content validators changed' };
+        }
+      } catch (e) {
+        // A failed probe proves nothing — crawl rather than assume unchanged.
+        return { recrawl: true, reason: `could not verify freshness (${e.message})` };
+      }
+    }
+
+    // Content hash as a fallback for servers that send no validators.
+    if (previous._contentHash) {
+      try {
+        const res = await fetch(url, { credentials: 'include', cache: 'no-cache' });
+        if (!res.ok) return { recrawl: true, reason: `freshness probe returned HTTP ${res.status}` };
+        const body = await res.text();
+        const hash = WebAppCrawler.hashContent(body);
+        return hash === previous._contentHash
+          ? { recrawl: false, reason: 'content hash unchanged' }
+          : { recrawl: true, reason: 'content hash changed' };
+      } catch (e) {
+        return { recrawl: true, reason: `could not fetch to compare (${e.message})` };
+      }
+    }
+
+    // Nothing to compare against — an SPA route, or a record from before
+    // fingerprinting existed. Re-crawl once so it gains a fingerprint.
+    return { recrawl: true, reason: 'no freshness fingerprint stored' };
+  }
+
+  /**
+   * Reuse a previous page record unchanged, so an incremental crawl PRESERVES
+   * evidence instead of quietly discarding everything it skipped.
+   */
+  carryForwardPage(url) {
+    const previous = this.previousPages && this.previousPages.get(url);
+    if (!previous) return false;
+    this.pages.push({ ...previous, _reused: true, _reusedAt: Date.now() });
+    this.reusedPageCount = (this.reusedPageCount || 0) + 1;
+    return true;
+  }
+
+  /** Stable, cheap content fingerprint (FNV-1a). Not cryptographic — a change detector. */
+  static hashContent(text) {
+    const s = String(text || '');
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(36);
+  }
+
+  /**
    * F26: a RESUMABLE checkpoint — the queue and the visited set, not a count.
    *
    * The previous checkpoint saved page/queue COUNTS, which cannot restart
@@ -1689,6 +1822,11 @@ class WebAppCrawler {
     // are recorded as explicit exploration gaps. Without this, "not in the graph"
     // and "does not exist in the app" were indistinguishable, and grounding
     // treated an unexplored variant as a hallucination.
+    const reused = allPages.filter(p => p && p._reused).length;
+    if (reused) {
+      console.log(`♻️  Reused ${reused} unchanged page(s) from the previous crawl; ${allPages.length - reused} were new or changed.`);
+    }
+
     const explorationGaps = [];
     if (this.parameterizedUrlTracking && this.parameterizedUrlTracking.size) {
       for (const [pattern, count] of this.parameterizedUrlTracking.entries()) {
@@ -1721,6 +1859,13 @@ class WebAppCrawler {
       appUrl: this.startUrl,
       crawledAt: Date.now(),
       explorationGaps,
+      // Incremental crawl accounting, so "50 pages" cannot hide the fact that
+      // only 3 were actually looked at this time.
+      incremental: {
+        reusedPages: reused,
+        freshPages: allPages.length - reused,
+        previousCrawlObservedAt: this.previousCrawlObservedAt || null
+      },
       duration: duration,
       totalPages: allPages.length,
       totalErrors: this.errors.length,

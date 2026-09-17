@@ -30,6 +30,27 @@ const activeStreams = (typeof self !== 'undefined') ? (self.activeStreams = self
  * a long generation waited for that call — and its retries — to finish first.
  * `settings._abortSignal` now aborts the live request immediately.
  */
+/**
+ * Ollama speaks the OpenAI chat-completions protocol, so it reuses that path
+ * entirely — only the base URL and the (absent) credential differ. Keeping this
+ * in one helper means local models get every fix the OpenAI path gets, instead of
+ * becoming a second implementation that drifts.
+ */
+function openAiCompatibleEndpoint(settings) {
+  if (settings.llmProvider === 'ollama') {
+    const base = (settings.ollamaBaseUrl || 'http://localhost:11434').replace(/\/+$/, '');
+    return {
+      url: `${base}/v1/chat/completions`,
+      headers: { 'Content-Type': 'application/json' } // local: no API key
+    };
+  }
+  const base = (settings.openaiBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  return {
+    url: `${base}/chat/completions`,
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` }
+  };
+}
+
 function requestController(settings) {
   const controller = new AbortController();
   const external = settings && settings._abortSignal;
@@ -239,12 +260,10 @@ async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RE
       requestBody.response_format = { type: 'json_object' };
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const endpoint = openAiCompatibleEndpoint(settings);
+    const response = await fetch(endpoint.url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.apiKey}`
-      },
+      headers: endpoint.headers,
       body: JSON.stringify(requestBody),
       signal: controller.signal
     });
@@ -559,7 +578,10 @@ async function callAI(systemMessage, userContent, settings) {
 
   try {
     const dispatch = () => {
-      if (settings.llmProvider === 'openai') return callOpenAI(systemMessage, userContent, settings);
+      // Ollama is OpenAI-protocol-compatible — same code path, local endpoint.
+      if (settings.llmProvider === 'openai' || settings.llmProvider === 'ollama') {
+        return callOpenAI(systemMessage, userContent, settings);
+      }
       if (settings.llmProvider === 'gemini') return callGemini(systemMessage, userContent, settings);
       if (settings.llmProvider === 'claude') return callClaude(systemMessage, userContent, settings);
       if (settings.llmProvider === 'bedrock') return callBedrock(systemMessage, userContent, settings);
@@ -798,12 +820,11 @@ async function callOpenAIStream(systemMessage, userContent, settings, onChunk, r
     }
     messages.push({ role: 'user', content: userContent });
 
-    const response = await fetch(APP_CONFIG.ENDPOINTS.openai, {
+    // Same helper as the non-streaming path, so Ollama streams locally too.
+    const streamEndpoint = openAiCompatibleEndpoint(settings);
+    const response = await fetch(streamEndpoint.url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.apiKey}`
-      },
+      headers: streamEndpoint.headers,
       body: JSON.stringify({
         model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.openai,
         messages: messages,
@@ -1142,7 +1163,7 @@ async function callAIStream(systemMessage, userContent, settings, onChunk, reque
 
   try {
     let result;
-    if (settings.llmProvider === 'openai') {
+    if (settings.llmProvider === 'openai' || settings.llmProvider === 'ollama') {
       result = await callOpenAIStream(systemMessage, userContent, settings, onChunk, requestId);
     } else if (settings.llmProvider === 'gemini') {
       result = await callGeminiStream(systemMessage, userContent, settings, onChunk, requestId);

@@ -142,6 +142,64 @@ class BM25Index {
     return index;
   }
 
+  /**
+   * Incrementally re-index only the pages that CHANGED.
+   *
+   * A full rebuild re-tokenises every page in the graph, which on a large app is
+   * the most expensive part of an incremental crawl — so "only crawl what
+   * changed" still paid the full indexing cost every run. This updates the
+   * affected documents in place and repairs the corpus statistics (df, N, avgdl)
+   * that depend on them, which is the part a naive upsert gets wrong: forgetting
+   * to decrement df for a replaced document silently skews every future score.
+   *
+   * @param {BM25Index} index existing index (mutated and returned)
+   * @param {Array|Object} changedPages pages to add or replace
+   * @param {string[]} [removedUrls] pages no longer in the graph
+   * @returns {BM25Index}
+   */
+  static update(index, changedPages, removedUrls = []) {
+    if (!index) return BM25Index.build(changedPages);
+
+    const entries = Array.isArray(changedPages)
+      ? changedPages.map(p => [p && (p.url || p.metadata?.url), p])
+      : Object.entries(changedPages || {});
+
+    // Remove a document AND its contribution to the document frequencies.
+    const drop = (url) => {
+      const doc = index.docs[url];
+      if (!doc) return;
+      for (const term of Object.keys(doc.tf)) {
+        index.df[term] = (index.df[term] || 1) - 1;
+        if (index.df[term] <= 0) delete index.df[term];
+      }
+      delete index.docs[url];
+    };
+
+    for (const url of removedUrls || []) drop(url);
+
+    let added = 0, replaced = 0;
+    for (const [url, page] of entries) {
+      if (!url || !page) continue;
+      if (index.docs[url]) { drop(url); replaced++; } else { added++; }
+
+      const tokens = BM25Index.pageToTokens(page);
+      if (tokens.length === 0) continue;
+      const tf = {};
+      for (const token of tokens) tf[token] = (tf[token] || 0) + 1;
+      index.docs[url] = { len: tokens.length, tf };
+      for (const term of Object.keys(tf)) index.df[term] = (index.df[term] || 0) + 1;
+    }
+
+    // Corpus statistics must be recomputed from what the index now holds.
+    const docs = Object.values(index.docs);
+    index.N = docs.length;
+    index.avgdl = index.N > 0 ? docs.reduce((sum, d) => sum + d.len, 0) / index.N : 1;
+    index.builtAt = Date.now();
+
+    console.log(`[BM25] Incremental update: ${added} added, ${replaced} replaced, ${(removedUrls || []).length} removed → ${index.N} docs`);
+    return index;
+  }
+
   // ── Scoring ──────────────────────────────────────────────────────────────
 
   idf(term) {

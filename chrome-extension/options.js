@@ -1,7 +1,16 @@
 // Options page script
 
 // Model options - keep in sync with popup.js
+/**
+ * OFFLINE FALLBACK ONLY. The real list is discovered from the provider with the
+ * user's own key (model-registry.js), because a hardcoded list is wrong in both
+ * directions: it offers models an account may not have access to — which fails
+ * at generation time, after the user has waited — and hides models the account
+ * does have, including anything released since this list was last edited.
+ * Used before a key is entered, and when discovery fails.
+ */
 const modelOptions = {
+  ollama: [],
   openai: [
     { value: 'gpt-5.2',      label: 'GPT-5.2 (Recommended)' },
     { value: 'gpt-5.2-mini', label: 'GPT-5.2 Mini (Fast & Cheap)' },
@@ -54,6 +63,7 @@ const modelOptions = {
 };
 
 const keyLinks = {
+  ollama: 'https://ollama.com/download',
   openai: 'https://platform.openai.com/api-keys',
   claude: 'https://console.anthropic.com/settings/keys',
   gemini: 'https://aistudio.google.com/app/apikey',
@@ -176,6 +186,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const settings = await chrome.storage.sync.get([
     'llmProvider',
     'llmModel',
+    'ollamaBaseUrl',
     'apiKey',
     'bedrockAccessKeyId',
     'bedrockSecretKey',
@@ -276,9 +287,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateKeyLink('openai');
   }
 
-  if (settings.llmModel) {
-    document.getElementById('llmModel').value = settings.llmModel;
+  if (settings.ollamaBaseUrl) {
+    document.getElementById('ollamaBaseUrl').value = settings.ollamaBaseUrl;
   }
+
+  if (settings.llmModel) {
+    const sel = document.getElementById('llmModel');
+    // The saved model may not be in the built-in list (a fine-tune, a private
+    // deployment, a local Ollama tag). Keep it selectable rather than silently
+    // dropping the user's choice; discovery below replaces the list anyway.
+    if (!Array.from(sel.options).some(o => o.value === settings.llmModel)) {
+      const opt = document.createElement('option');
+      opt.value = settings.llmModel;
+      opt.textContent = settings.llmModel;
+      sel.appendChild(opt);
+    }
+    sel.value = settings.llmModel;
+  }
+
+  // Discover what this key can really use, without blocking page load.
+  refreshModels({ silent: true });
 
   if (settings.apiKey) {
     document.getElementById('apiKey').value = settings.apiKey;
@@ -463,19 +491,111 @@ document.addEventListener('DOMContentLoaded', async () => {
 document.getElementById('llmProvider').addEventListener('change', (e) => {
   updateModelOptions(e.target.value);
   updateKeyLink(e.target.value);
-  toggleBedrockFields(e.target.value);
+  toggleProviderFields(e.target.value);
+  // Ask the provider what this key can actually use.
+  refreshModels({ silent: true });
 });
 
-function toggleBedrockFields(provider) {
+// Re-discover when the credential changes — a new key can mean new access.
+document.getElementById('apiKey').addEventListener('change', () => refreshModels({ silent: true }));
+document.getElementById('refreshModelsBtn').addEventListener('click', () => refreshModels({ silent: false }));
+const ollamaUrlInput = document.getElementById('ollamaBaseUrl');
+if (ollamaUrlInput) ollamaUrlInput.addEventListener('change', () => refreshModels({ silent: true }));
+
+function toggleProviderFields(provider) {
   const apiKeyGroup = document.getElementById('apiKeyGroup');
   const bedrockGroup = document.getElementById('bedrockCredentialsGroup');
-  if (provider === 'bedrock') {
-    apiKeyGroup.style.display = 'none';
-    bedrockGroup.style.display = 'block';
-  } else {
-    apiKeyGroup.style.display = 'block';
-    bedrockGroup.style.display = 'none';
+  const ollamaGroup = document.getElementById('ollamaGroup');
+
+  const isBedrock = provider === 'bedrock';
+  const isOllama = provider === 'ollama';
+  // Ollama is local: it needs a URL, not a credential. Showing an API Key field
+  // would imply one is required.
+  apiKeyGroup.style.display = (isBedrock || isOllama) ? 'none' : 'block';
+  bedrockGroup.style.display = isBedrock ? 'block' : 'none';
+  if (ollamaGroup) ollamaGroup.style.display = isOllama ? 'block' : 'none';
+}
+// Kept as an alias so any existing caller keeps working.
+const toggleBedrockFields = toggleProviderFields;
+
+/**
+ * Populate the Model dropdown from the PROVIDER, using the user's own
+ * credentials, and say plainly where the list came from. A stale hardcoded list
+ * silently offering an inaccessible model is worse than a short accurate one.
+ */
+async function refreshModels({ silent = false } = {}) {
+  const provider = document.getElementById('llmProvider').value;
+  const modelSelect = document.getElementById('llmModel');
+  const hint = document.getElementById('modelSourceHint');
+  const btn = document.getElementById('refreshModelsBtn');
+  const previous = modelSelect.value;
+
+  const setHint = (html) => {
+    if (!hint) return;
+    hint.innerHTML = '';
+    const span = document.createElement('span');
+    span.innerHTML = html;
+    hint.appendChild(span);
+    hint.appendChild(document.createTextNode(' '));
+    if (btn) hint.appendChild(btn);
+  };
+
+  if (typeof discoverModels !== 'function') return;
+
+  let apiKey = document.getElementById('apiKey').value;
+  // Stored keys are encrypted; the field may hold a masked placeholder.
+  if (apiKey && /^[•*]+$/.test(apiKey.trim())) {
+    const stored = await loadAndDecryptStoredKey();
+    if (stored) apiKey = stored;
   }
+
+  if (!silent && btn) btn.textContent = '↻ Checking…';
+  setHint('Checking which models your credentials can use…');
+
+  const settings = {
+    apiKey,
+    ollamaBaseUrl: (document.getElementById('ollamaBaseUrl') || {}).value,
+    openaiBaseUrl: ''
+  };
+  const fallback = (modelOptions[provider] || []).map(o => ({ id: o.value, label: o.label }));
+  const result = await discoverModels(provider, settings, fallback);
+
+  modelSelect.innerHTML = '';
+  for (const m of result.models) {
+    const option = document.createElement('option');
+    option.value = m.id;
+    option.textContent = m.label || m.id;
+    modelSelect.appendChild(option);
+  }
+  // Keep the user's saved choice when the provider still offers it.
+  if (previous && result.models.some(m => m.id === previous)) modelSelect.value = previous;
+
+  if (btn) btn.textContent = '↻ Refresh model list';
+  if (result.source === 'discovered') {
+    setHint(`✅ ${result.models.length} model(s) available to your ${provider === 'ollama' ? 'local Ollama' : 'account'}.`);
+  } else if (!result.models.length) {
+    setHint(`⚠️ Could not list models: ${escapeForHint(result.error || 'unknown error')}`);
+  } else {
+    setHint(`⚠️ Showing a built-in list — could not confirm your access (${escapeForHint(result.error || '')}). Some models here may not work.`);
+  }
+}
+
+function escapeForHint(text) {
+  const d = document.createElement('div');
+  d.textContent = String(text || '');
+  return d.innerHTML;
+}
+
+/** Read back the saved (encrypted) key so discovery works without re-typing it. */
+async function loadAndDecryptStoredKey() {
+  try {
+    const stored = await chrome.storage.sync.get(['apiKey']);
+    if (!stored.apiKey) return '';
+    if (typeof securityManager !== 'undefined' && securityManager.decrypt) {
+      return await securityManager.decrypt(stored.apiKey);
+    }
+    return stored.apiKey;
+  } catch (_) { return ''; }
 }
 
 // Show/hide the session token warning hint based on Access Key ID prefix
@@ -587,6 +707,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     // API Settings
     llmProvider: document.getElementById('llmProvider').value,
     llmModel: document.getElementById('llmModel').value,
+    ollamaBaseUrl: (document.getElementById('ollamaBaseUrl') || {}).value || 'http://localhost:11434',
     apiKey: document.getElementById('apiKey').value,
     bedrockAccessKeyId: document.getElementById('bedrockAccessKeyId').value,
     bedrockSecretKey: document.getElementById('bedrockSecretKey').value,

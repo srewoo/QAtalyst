@@ -16,7 +16,9 @@
 
 const SCHEMA = {
   // ── provider ──
-  llmProvider: { type: 'enum', values: ['openai', 'claude', 'gemini', 'bedrock'], default: 'openai', consumedBy: 'llm-client' },
+  llmProvider: { type: 'enum', values: ['openai', 'claude', 'gemini', 'bedrock', 'ollama'], default: 'openai', consumedBy: 'llm-client' },
+  ollamaBaseUrl: { type: 'string', default: 'http://localhost:11434', consumedBy: 'llm-client + model-registry' },
+  openaiBaseUrl: { type: 'string', default: '', consumedBy: 'llm-client + model-registry' },
   llmModel: { type: 'string', default: '', consumedBy: 'llm-client' },
   temperature: { type: 'number', min: 0, max: 2, default: 0.3, consumedBy: 'llm-client' },
   maxTokens: { type: 'int', min: 256, max: 200000, default: 8000, consumedBy: 'llm-client' },

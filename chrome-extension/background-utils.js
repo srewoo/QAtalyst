@@ -24,6 +24,12 @@ function validateSettings(settings) {
     if (!settings.bedrockSecretKey || settings.bedrockSecretKey.trim() === '') {
       errors.push('AWS Secret Access Key is required for Bedrock. Please configure it in extension settings.');
     }
+  } else if (settings.llmProvider === 'ollama') {
+    // Local models need no credential — demanding one would make the provider
+    // unusable. What it does need is a reachable endpoint.
+    if (settings.ollamaBaseUrl && !/^https?:\/\//i.test(String(settings.ollamaBaseUrl).trim())) {
+      errors.push('Ollama URL must start with http:// or https:// (default: http://localhost:11434)');
+    }
   } else {
     if (!settings.apiKey || settings.apiKey.trim() === '') {
       errors.push(APP_CONFIG.ERRORS.NO_API_KEY);

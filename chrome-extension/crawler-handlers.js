@@ -117,19 +117,44 @@ async function handleStartCrawl(data) {
     }
     console.log(`✅ Saved knowledge graph with ${knowledgeGraph.totalPages} pages`);
 
-    // Invalidate stale BM25 index and build a fresh one eagerly so the first
-    // query after a crawl doesn't pay the build cost.
+    // Index eagerly so the first query after a crawl doesn't pay the build cost —
+    // and, on an incremental crawl, re-vectorise ONLY the pages that changed.
+    // Rebuilding the whole index re-tokenises every page in the graph, which on a
+    // large app is the most expensive part of the run, so "only crawl what
+    // changed" was still paying the full indexing cost every time.
     try {
-      await storageManager.deleteBm25Index(config.startUrl);
-      const bm25 = BM25Index.build(knowledgeGraph.pages);
+      const pages = Array.isArray(knowledgeGraph.pages)
+        ? knowledgeGraph.pages : Object.values(knowledgeGraph.pages || {});
+      const changed = pages.filter(p => p && !p._reused);
+      const reused = pages.length - changed.length;
+
+      let bm25 = null;
+      if (reused > 0 && changed.length < pages.length) {
+        const saved = await storageManager.loadBm25Index(config.startUrl).catch(() => null);
+        if (saved) {
+          bm25 = BM25Index.update(BM25Index.deserialize(saved), changed,
+            // Drop anything the graph no longer contains, so the corpus
+            // statistics cannot drift against pages that are gone.
+            [...new Set(Object.keys(BM25Index.deserialize(saved).docs || {}))]
+              .filter(u => !pages.some(p => (p.url || p.metadata?.url) === u)));
+          console.log(`♻️  BM25 updated incrementally: ${changed.length} re-indexed, ${reused} reused`);
+        }
+      }
+      if (!bm25) {
+        await storageManager.deleteBm25Index(config.startUrl);
+        bm25 = BM25Index.build(knowledgeGraph.pages);
+        console.log(`✅ BM25 index built (${bm25.N} docs)`);
+      }
       await storageManager.saveBm25Index(config.startUrl, bm25.serialize());
-      console.log(`✅ BM25 index built eagerly (${bm25.N} docs)`);
     } catch (e) {
       console.warn('⚠️ BM25 index build failed (will retry on first query):', e.message);
     }
 
     const result = {
       pages: knowledgeGraph.totalPages,
+      // Report what was actually looked at, so "50 pages" cannot hide the fact
+      // that only 3 were crawled this time.
+      incremental: knowledgeGraph.incremental || null,
       features: knowledgeGraph.stats.totalFeatures,
       apis: knowledgeGraph.stats.totalApis,
       appUrl: config.startUrl,
