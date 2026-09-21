@@ -3002,6 +3002,9 @@
     });
 
     // Filter functionality
+    // §15.1: make the per-case review controls live.
+    bindReviewDecisionButtons();
+
     const filterButtons = document.querySelectorAll('.stat-filter');
 
     // Ensure only 'Total' button is active initially and reset filter state
@@ -3204,6 +3207,50 @@
 
   // renderMarkdown, inlineMarkdown, formatAnalysis, formatTestScope → content-format.js
 
+  /**
+   * §15.1: record what the reviewer decided about a case, so the decision
+   * survives the next run instead of having to be made again. Scoped to the
+   * project and the requirement revision, so it cannot leak across projects or
+   * outlive the requirement it was about.
+   */
+  async function recordDecision(testCase, verdict, reason) {
+    try {
+      const key = currentTicketData && currentTicketData.key;
+      const res = await chrome.runtime.sendMessage({
+        action: 'recordReviewDecision',
+        data: {
+          testCase, verdict,
+          project: key ? String(key).split('-')[0] : 'default',
+          meta: {
+            reason: reason || '',
+            requirementIds: testCase.requirementIds || [],
+            requirementRevision: (currentTicketData && (currentTicketData.updated || currentTicketData.version)) || null
+          }
+        }
+      });
+      return !!(res && res.success);
+    } catch (e) {
+      console.warn('[QAtalyst] could not record review decision:', e.message);
+      return false;
+    }
+  }
+
+  /** Wire the per-case review controls rendered by formatTestCases. */
+  function bindReviewDecisionButtons() {
+    document.querySelectorAll('[data-decision]').forEach(btn => {
+      if (btn.dataset.bound) return;
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', async () => {
+        const idx = Number(btn.dataset.caseIndex);
+        const tc = ((currentTestCasesData && currentTestCasesData.testCases) || [])[idx];
+        if (!tc) return;
+        const ok = await recordDecision(tc, btn.dataset.decision);
+        btn.textContent = ok ? '✓ noted' : '✗ failed';
+        btn.disabled = true;
+      });
+    });
+  }
+
   function formatTestCases(testCases) {
     return testCases.map((tc, idx) => {
       // Handle both camelCase and snake_case property names
@@ -3273,6 +3320,15 @@
         ${testData ? `<div class="tc-data"><strong>Test Data:</strong> ${inlineMarkdown(testData)}</div>` : ''}
         <div class="tc-expected">
           <strong>Expected Result:</strong> ${inlineMarkdown(expectedResult)}
+        </div>
+        <div class="tc-decisions">
+          <span class="tc-decisions-label">Not useful?</span>
+          <button type="button" class="tc-decision-btn" data-decision="irrelevant" data-case-index="${idx}"
+                  title="Do not propose this scenario again for this ticket">Irrelevant</button>
+          <button type="button" class="tc-decision-btn" data-decision="incorrect_expectation" data-case-index="${idx}"
+                  title="The expected result is wrong">Wrong expectation</button>
+          <button type="button" class="tc-decision-btn" data-decision="not_executable" data-case-index="${idx}"
+                  title="This cannot be run as written">Not executable</button>
         </div>
       </div>
     `;

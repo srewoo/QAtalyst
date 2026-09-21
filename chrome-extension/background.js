@@ -648,6 +648,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // §15.1: record what a reviewer decided about a case, so the decision survives
+  // the next run instead of having to be made again.
+  if (request.action === 'recordReviewDecision') {
+    (async () => {
+      try {
+        const { testCase, verdict, meta, project } = request.data || {};
+        if (typeof ReviewMemory !== 'function') { sendResponse({ success: false, error: 'review memory unavailable' }); return; }
+        const memory = await new ReviewMemory(chrome.storage.local, project || 'default').load();
+        memory.record(testCase, verdict, meta || {});
+        await memory.save();
+        sendResponse({ success: true });
+      } catch (e) { sendResponse({ success: false, error: e.message }); }
+    })();
+    return true;
+  }
+
+  // §14: accept imported evidence files (OpenAPI, role/state profile, PR diff,
+  // execution results, runtime errors) and report what each one yielded.
+  if (request.action === 'importEvidence') {
+    (async () => {
+      try {
+        const parsed = buildImportedEvidence(request.data || {});
+        if (!parsed) { sendResponse({ success: false, error: 'No usable evidence in the supplied files' }); return; }
+        await chrome.storage.local.set({ qatalyst_imported_evidence: request.data });
+        sendResponse({
+          success: true,
+          obligations: parsed.obligations.length,
+          sources: parsed.sources.map(s => s.source),
+          failures: parsed.failures
+        });
+      } catch (e) { sendResponse({ success: false, error: e.message }); }
+    })();
+    return true;
+  }
+
   // F17: let the panel recover a partial suite from an interrupted or cancelled run.
   if (request.action === 'getRecoverableRuns') {
     listRecoverableRuns(request.data && request.data.ticketKey)
@@ -2554,6 +2589,13 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
 
   // F17: the tools call the provider with these settings, so the run's abort
   // signal must ride along — otherwise cancel only stops the NEXT planner step.
+  // §14: evidence the user imported earlier is reused automatically — they
+  // should not have to re-upload an API contract for every ticket.
+  let storedImports = null;
+  try {
+    storedImports = (await chrome.storage.local.get('qatalyst_imported_evidence')).qatalyst_imported_evidence || null;
+  } catch (_) {}
+
   // Match the planner to what this provider can realistically sustain.
   const tuning = (typeof providerTuning === 'function')
     ? providerTuning(settings.llmProvider, settings)
@@ -2579,7 +2621,7 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
     reviewedContext: data.reviewedContext || null,
     // §14: imported evidence a crawl cannot provide — API contracts, the role and
     // state matrix, what changed in the PR, and which paths fail in production.
-    importedEvidence: buildImportedEvidence(data.imports),
+    importedEvidence: buildImportedEvidence(data.imports || storedImports),
     ticketData: enrichedTicketData,
     knowledgeGraph,
     bm25,
@@ -2719,6 +2761,62 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
       if (needsSetup) degradations.push(`${needsSetup} case(s) need a fixture or fault-injection hook before they can run.`);
     }
 
+    // §15.2: record what this run was generated FROM, and compare it with the
+    // previous run's manifest. Without this the module existed but nothing ever
+    // stored or diffed one — a capability with no caller is the same defect as a
+    // setting with no control.
+    try {
+      if (typeof buildManifest === 'function' && result.coverage?.requirements) {
+        const manifestKey = `qatalyst_manifest_${ticketData && ticketData.key}`;
+        const previous = (await chrome.storage.local.get(manifestKey))[manifestKey] || null;
+
+        const manifest = buildManifest({
+          ticketKey: ticketData && ticketData.key,
+          ticketRevision: (ticketData && (ticketData.updated || ticketData.version)) || null,
+          requirements: result.coverage.requirements,
+          settings, model: settings.llmModel,
+          testCases: result.testCases
+        });
+
+        if (previous && typeof diffManifests === 'function') {
+          const diff = diffManifests(previous, manifest);
+          result.requirementChanges = diff;
+          if (diff.updateRequired.length) {
+            degradations.push(`${diff.updateRequired.length} requirement(s) changed since the last run — the affected tests may need updating rather than replacing.`);
+          }
+          if (diff.newlyNeeded.length) {
+            degradations.push(`${diff.newlyNeeded.length} requirement(s) are new since the last run.`);
+          }
+          if (diff.possiblyObsolete.length) {
+            degradations.push(`${diff.possiblyObsolete.length} requirement(s) from the last run are gone — their tests may be obsolete, but review before deleting: they may still be protecting real behaviour.`);
+          }
+        }
+        await chrome.storage.local.set({ [manifestKey]: manifest });
+      }
+    } catch (e) { console.warn('[Agentic] generation manifest skipped:', e.message); }
+
+    // §15.1: apply what a reviewer already decided about these scenarios, so a
+    // rejection does not have to be repeated on every run of the same ticket.
+    try {
+      if (typeof ReviewMemory === 'function' && ticketData && ticketData.key) {
+        const project = String(ticketData.key).split('-')[0];
+        const memory = await new ReviewMemory(chrome.storage.local, project).load();
+        const applied = memory.apply(result.testCases, {
+          requirementRevision: (ticketData.updated || ticketData.version) || null
+        });
+        result.testCases = applied.kept;
+        if (applied.suppressed.length) {
+          degradations.push(`${applied.suppressed.length} case(s) you previously marked irrelevant or duplicate were not proposed again.`);
+        }
+        if (applied.stale.length) {
+          degradations.push(`${applied.stale.length} earlier review decision(s) are stale — the requirement changed underneath them and they need re-reviewing.`);
+        }
+        if (applied.locked.length) {
+          degradations.push(`${applied.locked.length} case(s) you edited are locked and were preserved as you wrote them.`);
+        }
+      }
+    } catch (e) { console.warn('[Agentic] review memory skipped:', e.message); }
+
     // §15.6: ask about the facts that DECIDE an expected result, rather than
     // inventing a specific the ticket never stated.
     if (typeof clarificationQuestions === 'function' && result.coverage?.requirements) {
@@ -2762,6 +2860,8 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
       // §15.6: open questions and the obligations that depend on them.
       clarifications: result.clarifications || null,
       unresolved: result.unresolved || null,
+      // §15.2: what changed since the last run of this ticket.
+      requirementChanges: result.requirementChanges || null,
       degradations, // F21: reduced-context warnings for the UI to surface
       distribution: result.distribution,
       statistics: {

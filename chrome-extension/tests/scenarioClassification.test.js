@@ -150,3 +150,47 @@ describe('F07 §7.1 — requirement predicates', () => {
     expect(cov.nonMandatory.length).toBe(2);
   });
 });
+
+describe('§10 row 13 — removing the sole covering case reopens its requirement', () => {
+  const RMod = require('../requirement-model.js');
+  const reqs = RMod.buildRequirements(
+    ['An owner can delete an invoice', 'Uploads above 100 KB must be rejected'], { ticketKey: 'T' });
+
+  const suite = [
+    { id: 'A', title: 'Owner deletes an invoice', steps: ['Log in as owner', 'Click Delete'],
+      expected_result: 'The invoice is deleted' },
+    { id: 'B', title: 'Upload above the limit is rejected', steps: ['Upload a 101 KB file'],
+      expected_result: 'The upload is rejected' }
+  ];
+
+  test('coverage is recomputed from the RETAINED suite, not the generated one', () => {
+    const before = CoverageMapper.mapRequirementPredicates(suite, reqs, { requirementModel: RMod });
+    // The assertion critic drops case A in strict mode.
+    const after = CoverageMapper.mapRequirementPredicates(
+      suite.filter(t => t.id !== 'A'), reqs, { requirementModel: RMod });
+
+    expect(before.covered).toBe(1);
+    // Reporting the pre-removal number would claim coverage the suite no longer has.
+    expect(after.covered).toBe(0);
+    expect(after.percentage).toBeLessThan(before.percentage);
+  });
+
+  test('the requirement returns to the uncovered list', () => {
+    const after = CoverageMapper.mapRequirementPredicates(
+      suite.filter(t => t.id !== 'A'), reqs, { requirementModel: RMod });
+    expect(after.uncovered.map(u => u.text)).toContain('An owner can delete an invoice');
+  });
+
+  test('completion cannot be claimed while a mandatory obligation is uncovered', () => {
+    const after = CoverageMapper.mapRequirementPredicates(
+      suite.filter(t => t.id !== 'A'), reqs, { requirementModel: RMod });
+    const complete = after.covered === after.total && after.contradictions.length === 0;
+    expect(complete).toBe(false);
+  });
+
+  test('an emptied suite reports zero coverage, never inherited coverage', () => {
+    const none = CoverageMapper.mapRequirementPredicates([], reqs, { requirementModel: RMod });
+    expect(none.covered).toBe(0);
+    expect(none.uncovered).toHaveLength(none.total);
+  });
+});

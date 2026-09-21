@@ -425,6 +425,52 @@
           </div>
         </div>
         
+        <div class="section" id="evidenceImportSection">
+          <h2>📥 Imported Evidence (optional)</h2>
+          <p>
+            A crawl observes one session of one build: one role, one viewport, one set of API calls.
+            It cannot state a contract, enumerate your roles, describe states nobody clicked into, or
+            say which paths fail in production. Import those as files — no account connection needed —
+            and generated tests can assert them instead of guessing.
+          </p>
+
+          <div class="form-group">
+            <label for="importOpenApi">OpenAPI contract (.json):</label>
+            <input type="file" id="importOpenApi" accept=".json,application/json" data-testid="import-openapi">
+            <p class="help-text">Documented limits, required fields, enums, error responses and auth become asserted obligations.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="importProfile">Role / state / feature-flag profile (.json):</label>
+            <input type="file" id="importProfile" accept=".json,application/json" data-testid="import-profile">
+            <p class="help-text">
+              e.g. <code>{"roles":[{"name":"owner","can":["delete"]},{"name":"viewer","cannot":["delete"]}],
+              "states":[{"name":"draft","to":["issued"]}]}</code> — gives allow/deny pairs and invalid transitions.
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label for="importChange">PR / MR changed files (.json):</label>
+            <input type="file" id="importChange" accept=".json,application/json" data-testid="import-change">
+            <p class="help-text">The GitHub or GitLab API response. Scopes regression to what actually changed.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="importExecution">Execution results (.json):</label>
+            <input type="file" id="importExecution" accept=".json,application/json" data-testid="import-execution">
+            <p class="help-text">Distinguishes tests that have actually run from proposals, and flags flaky ones.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="importRuntime">Runtime errors (.json):</label>
+            <input type="file" id="importRuntime" accept=".json,application/json" data-testid="import-runtime">
+            <p class="help-text">Prioritises real failure paths. Emails, cards, tokens and IPs are redacted before use.</p>
+          </div>
+
+          <button type="button" id="importEvidenceBtn" class="btn-secondary" data-testid="import-evidence-btn">Import evidence</button>
+          <p class="help-text" id="importEvidenceResult" data-testid="import-evidence-result"></p>
+        </div>
+
         <div class="form-group" id="ollamaGroup" style="display:none;">
           <label for="ollamaBaseUrl">Ollama URL:</label>
           <input type="text" id="ollamaBaseUrl" data-testid="ollama-base-url"

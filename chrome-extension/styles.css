@@ -1536,3 +1536,27 @@
   cursor: pointer;
 }
 .qatalyst-panel .gen-cancel:hover { background: #f1f5f9; border-color: #94a3b8; }
+
+/* §15.1: per-case review decisions — kept quiet so they do not compete with the
+   test content, but always available. */
+.qatalyst-panel .tc-decisions {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.qatalyst-panel .tc-decisions-label { font-size: 11px; color: #94a3b8; }
+.qatalyst-panel .tc-decision-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  color: #64748b;
+  cursor: pointer;
+}
+.qatalyst-panel .tc-decision-btn:hover { background: #f1f5f9; color: #334155; }
+.qatalyst-panel .tc-decision-btn:disabled { opacity: 0.6; cursor: default; }

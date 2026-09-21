@@ -532,6 +532,51 @@ function updateModelCapabilityHint() {
 
 document.getElementById('llmModel').addEventListener('change', updateModelCapabilityHint);
 
+/**
+ * §14: read the imported evidence files and hand them to the worker.
+ *
+ * These importers existed and were unit-tested but nothing ever reached them —
+ * a capability with no caller, which is the same defect as a setting with no
+ * control. File import keeps it account-free, per fix2.md §14.1.
+ */
+const readFileText = (input) => new Promise((resolve) => {
+  const file = input && input.files && input.files[0];
+  if (!file) { resolve(null); return; }
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result || ''));
+  reader.onerror = () => resolve(null);
+  reader.readAsText(file);
+});
+
+document.getElementById('importEvidenceBtn')?.addEventListener('click', async () => {
+  const out = document.getElementById('importEvidenceResult');
+  out.textContent = 'Reading files…';
+
+  const imports = {
+    openapi: await readFileText(document.getElementById('importOpenApi')),
+    projectProfile: await readFileText(document.getElementById('importProfile')),
+    changeContext: await readFileText(document.getElementById('importChange')),
+    executionResults: await readFileText(document.getElementById('importExecution')),
+    runtimeErrors: await readFileText(document.getElementById('importRuntime'))
+  };
+  for (const k of Object.keys(imports)) if (!imports[k]) delete imports[k];
+
+  if (!Object.keys(imports).length) {
+    out.textContent = 'Choose at least one file to import.';
+    return;
+  }
+
+  const res = await chrome.runtime.sendMessage({ action: 'importEvidence', data: imports });
+  if (!res || !res.success) {
+    out.textContent = `❌ ${(res && res.error) || 'Import failed'}`;
+    return;
+  }
+  // A partly-failed import must say which source failed, not report success.
+  const failed = (res.failures || []).map(f => `${f.source} (${f.error})`);
+  out.textContent = `✅ Imported ${res.sources.join(', ')} — ${res.obligations} obligation(s) available to generation.` +
+    (failed.length ? `  ⚠️ Could not read: ${failed.join('; ')}` : '');
+});
+
 // Provider change handler
 document.getElementById('llmProvider').addEventListener('change', (e) => {
   updateModelOptions(e.target.value);
