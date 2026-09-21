@@ -54,7 +54,34 @@ function detectModality(text) {
   return 'must';
 }
 
+/**
+ * A build instruction, not a behaviour.
+ *
+ * Grooming notes mix the two: "title should be ellipsed" is testable, but
+ * "props -> (list of sessions, active session id...)" is a function signature and
+ * "use relay" is a library choice. Counting those as acceptance criteria inflates
+ * the denominator — RE-11256 reported 30 obligations where roughly 27 are
+ * behavioural — and pushes the planner to write tests for things no test can
+ * observe.
+ *
+ * Deliberately NARROW: anything a user could see is kept. Only explicit
+ * technology and component-API directives are set aside.
+ */
+const IMPLEMENTATION_NOTE_RE = new RegExp([
+  '^\\s*props\\s*(?:->|→|:)',                       // props -> (a, b, c)
+  '\\buse\\s+(?:relay|redux|graphql|apollo|mobx|rxjs|lodash)\\b',
+  '^\\s*use\\s+[\\w\\- ]{0,30}component\\b',         // "use listing component"
+  '\\bcallback to\\b.*\\bprops\\b',
+  '^\\s*(?:refactor|extract|rename)\\s+the\\s+\\w+\\s+(?:component|module|file)\\b'
+].join('|'), 'i');
+
+function isImplementationNote(text) {
+  return IMPLEMENTATION_NOTE_RE.test(String(text || ''));
+}
+
 function detectStatus(text) {
+  // Checked first: a build instruction is not an obligation whatever verb it uses.
+  if (isImplementationNote(text)) return 'implementation_note';
   if (/\b(tbd|tbc|to be (?:decided|confirmed)|\?\?|unclear|open question|needs? clarification)\b/i.test(text)) {
     return 'ambiguous';
   }
@@ -177,7 +204,7 @@ function groupCompound(reqs) {
   return groups;
 }
 
-const api = { buildRequirements, mandatoryRequirements, groupCompound, splitCompound, OPTIONAL_MARKER_RE,
+const api = { buildRequirements, mandatoryRequirements, groupCompound, splitCompound, OPTIONAL_MARKER_RE, isImplementationNote,
               detectModality, detectStatus, detectOperation };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 if (typeof self !== 'undefined') Object.assign(self, api);

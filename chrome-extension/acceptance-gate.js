@@ -104,6 +104,7 @@ class AcceptanceGate {
    */
   admit(candidates) {
     const newlyAccepted = [];
+    const rejectedBefore = this.rejected.length;
     for (const candidate of (candidates || [])) {
       if (!candidate || (!candidate.title && !candidate.description)) continue;
 
@@ -206,10 +207,17 @@ class AcceptanceGate {
     // them as a crawl mismatch would wave through exactly the hallucinated tests
     // grounding exists to catch. Twenty in a row is a different claim.
     const MIN_BATCH_FOR_MISMATCH = 3;
+    // Compare THIS batch's rejections, not the cumulative list. `this.rejected`
+    // accumulates across every batch the planner submits, so comparing it to one
+    // batch's candidate count fired whenever the running total happened to equal
+    // the current batch size — and the flag, once set, was never cleared. That is
+    // how the panel came to say "none of the tests could be matched" while
+    // displaying eight tests that had matched.
+    const batchRejects = this.rejected.slice(rejectedBefore).filter(r => r.stage === 'grounding');
     if (newlyAccepted.length === 0 && candidates && candidates.length >= MIN_BATCH_FOR_MISMATCH) {
-      const groundingRejects = this.rejected.filter(r => r.stage === 'grounding');
+      const groundingRejects = batchRejects;
       if (groundingRejects.length === candidates.length) {
-        console.warn(`[Gate] All ${candidates.length} candidates failed grounding — treating the crawl as not covering this ticket.`);
+        console.warn(`[Gate] All ${candidates.length} candidates in this batch failed grounding — treating the crawl as not covering this ticket.`);
         this.crawlMismatch = true;
         for (const r of groundingRejects) {
           const test = { ...r.test, _grounding: 'unverified', _groundingIssues: [r.reason] };
@@ -217,14 +225,20 @@ class AcceptanceGate {
           this.stats.accepted++;
           newlyAccepted.push(test);
         }
-        this.rejected = this.rejected.filter(r => r.stage !== 'grounding');
+        // Only this batch's grounding rejections are withdrawn — earlier batches
+        // may have been rejected for good reason.
+        const withdraw = new Set(groundingRejects);
+        this.rejected = this.rejected.filter(r => !withdraw.has(r));
       }
     }
 
     this.accepted.push(...newlyAccepted);
     return {
       accepted: newlyAccepted, rejected: this.rejected,
-      crawlMismatch: !!this.crawlMismatch,
+      // Report the state of the SUITE, not a sticky flag: if anything in the
+      // final suite did ground against the crawl, the crawl plainly covers part
+      // of this ticket and claiming otherwise is false.
+      crawlMismatch: !!this.crawlMismatch && !this.accepted.some(t => t._grounding === 'verified'),
       preservedDistinctions: this.preservedDistinctions,
       stats: { ...this.stats, preservedDistinctions: this.preservedDistinctions.length }
     };

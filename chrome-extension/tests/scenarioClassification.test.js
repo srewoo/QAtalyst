@@ -290,3 +290,93 @@ describe('§7.1 — "good to have" is not a release obligation', () => {
     expect(items.some(i => /good to have/i.test(i))).toBe(true);
   });
 });
+
+describe('grooming notes: build instructions are not acceptance criteria', () => {
+  const RMod = require('../requirement-model.js');
+
+  test('a props signature is not a testable obligation', () => {
+    // "props -> (list of sessions, active session id, callback...)" is a function
+    // signature. Counting it inflated RE-11256's denominator and pushed the
+    // planner to write tests for something no test can observe.
+    expect(RMod.detectStatus('props -> (list of sessions, active session id, onRename)'))
+      .toBe('implementation_note');
+  });
+
+  test('a library choice is not a testable obligation', () => {
+    expect(RMod.detectStatus('implement pagination for session listing. use relay.'))
+      .toBe('implementation_note');
+    expect(RMod.detectStatus('use listing component (infinite loader).'))
+      .toBe('implementation_note');
+  });
+
+  test('anything a user can SEE is still an obligation', () => {
+    // The exclusion is deliberately narrow.
+    for (const behavioural of [
+      'title should be ellipsed (use ellipsis tooltip).',
+      'on hover we need to show the 3dot icon which will open the dropdown',
+      'In history pane, it will shows an empty state with no recent chats.',
+      'Pagination of chat list (~20)',
+      'It should be responsive.'
+    ]) {
+      expect(RMod.detectStatus(behavioural)).toBe('mandatory');
+    }
+  });
+
+  test('build instructions do not count toward completeness', () => {
+    const reqs = RMod.buildRequirements([
+      'The panel displays a list of chat sessions',
+      'props -> (list of sessions, active session id)',
+      'use relay for pagination'
+    ], { ticketKey: 'T' });
+    expect(RMod.mandatoryRequirements(reqs)).toHaveLength(1);
+  });
+
+  test('they remain visible rather than being discarded', () => {
+    const reqs = RMod.buildRequirements(['props -> (a, b)'], { ticketKey: 'T' });
+    // Set aside, not deleted — a reviewer may still want to see them.
+    expect(reqs).toHaveLength(1);
+    expect(reqs[0].status).toBe('implementation_note');
+  });
+});
+
+describe('the crawl-mismatch claim must match the actual suite', () => {
+  const { AcceptanceGate } = require('../acceptance-gate.js');
+  const { GroundedVerifier } = require('../grounded-verifier.js');
+
+  const kg = { pages: [{ url: 'https://app/x', title: 'X',
+    features: [{ type: 'button', text: 'Save', selector: '#s' }], apis: [] }] };
+  const ticket = { summary: 'Save things', description: 'The Save button stores the record.' };
+
+  test('a run with some grounded tests is not reported as a total mismatch', () => {
+    const gate = new AcceptanceGate({ knowledgeGraph: kg, ticketData: ticket,
+      deps: { GroundedVerifier, SemanticDuplicateDetector }, relevanceThreshold: 0 });
+
+    // A batch that all fails grounding…
+    gate.admit([
+      { title: 'Teleport a', steps: ['Click the "Teleport" button'], expected_result: 'Gone' },
+      { title: 'Teleport b', steps: ['Click the "Warp" button'], expected_result: 'Gone' },
+      { title: 'Teleport c', steps: ['Click the "Portal" button'], expected_result: 'Gone' }
+    ]);
+    // …followed by one that grounds cleanly.
+    const r = gate.admit([
+      { title: 'Save the record', steps: ['Click the "Save" button'], expected_result: 'The record is stored' }
+    ]);
+
+    // The panel previously said "none of the tests could be matched" while
+    // displaying tests that plainly had matched: the flag was sticky and the
+    // comparison used a cumulative reject list against one batch's size.
+    expect(gate.getAccepted().some(t => t._grounding === 'verified')).toBe(true);
+    expect(r.crawlMismatch).toBe(false);
+  });
+
+  test('a genuine total mismatch is still reported', () => {
+    const gate = new AcceptanceGate({ knowledgeGraph: kg, ticketData: ticket,
+      deps: { GroundedVerifier, SemanticDuplicateDetector }, relevanceThreshold: 0 });
+    const r = gate.admit([
+      { title: 'Teleport a', steps: ['Click the "Teleport" button'], expected_result: 'Gone' },
+      { title: 'Teleport b', steps: ['Click the "Warp" button'], expected_result: 'Gone' },
+      { title: 'Teleport c', steps: ['Click the "Portal" button'], expected_result: 'Gone' }
+    ]);
+    expect(r.crawlMismatch).toBe(true);
+  });
+});
