@@ -255,3 +255,64 @@ describe('F12 — planning is driven by obligations, not category quotas', () =>
     expect(asked.every(c => c === 'Security')).toBe(true);
   });
 });
+
+describe('Coverage Target is honoured, and says how', () => {
+  const planner = (lastCoverage, coverageTarget = 90) => {
+    const { PlannerAgent } = require('../agent-loop.js');
+    const p = Object.create(PlannerAgent.prototype);
+    return Object.assign(p, {
+      gate: { getAccepted: () => Array(10).fill({}), stats: {} },
+      budget: { maxTests: 30, minTests: 1, maxNoProgress: 4, coverageTarget },
+      noProgressStreak: 0, lastCoverage, emit() {}
+    });
+  };
+
+  test('feature coverage stops the run once the target is met', () => {
+    expect(planner({ coveragePercent: 95 }).shouldStop(true)).toBe(true);
+    expect(planner({ coveragePercent: 70 }).shouldStop(true)).toBe(false);
+  });
+
+  test('the configured value is what is compared against, not a constant', () => {
+    expect(planner({ coveragePercent: 85 }, 80).shouldStop(true)).toBe(true);
+    expect(planner({ coveragePercent: 85 }, 95).shouldStop(true)).toBe(false);
+  });
+
+  test('without a usable crawl it falls back to requirement coverage', () => {
+    // Previously coveragePercent was undefined here, so the target was skipped
+    // entirely and the planner ran to its full step budget even with every
+    // acceptance criterion already covered.
+    const p = planner({ applicable: false,
+      acCoverage: { applicable: true, covered: 27, total: 27, percentage: 100 } });
+    expect(p.shouldStop(true)).toBe(true);
+    expect(p.coverageBasis).toBe('requirements');
+  });
+
+  test('the fallback still respects the target', () => {
+    const p = planner({ applicable: false,
+      acCoverage: { applicable: true, covered: 17, total: 27, percentage: 63 } });
+    expect(p.shouldStop(true)).toBe(false);
+  });
+
+  test('feature coverage takes precedence when both are available', () => {
+    const p = planner({ coveragePercent: 95,
+      acCoverage: { applicable: true, covered: 27, total: 27, percentage: 100 } });
+    p.shouldStop(true);
+    expect(p.coverageBasis).toBe('features');
+  });
+
+  test('uncovered acceptance criteria still block an early stop', () => {
+    // The ticket-level promise outranks the app-feature percentage.
+    const p = planner({ coveragePercent: 99,
+      acCoverage: { applicable: true, covered: 10, total: 27, percentage: 37 } });
+    expect(p.shouldStop(true)).toBe(false);
+  });
+
+  test('an unmeasurable target is reported rather than silently ignored', () => {
+    const p = planner({ applicable: false });
+    p.shouldStop(true);
+    expect(p.coverageBasis).toBeNull();
+    const src = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'background.js'), 'utf8');
+    expect(src).toMatch(/could not be applied/);
+  });
+});

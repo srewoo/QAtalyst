@@ -146,6 +146,10 @@ class PlannerAgent {
       // F12: an explicit stop reason — complete / budget_exhausted /
       // no_novel_scenarios / cancelled / steps_exhausted.
       stopReason: this.stopReason || 'steps_exhausted',
+      // Which measure the Coverage Target was actually judged against, so a
+      // setting that could not be evaluated is visible rather than silently inert.
+      coverageBasis: this.coverageBasis || null,
+      coverageTarget: this.budget.coverageTarget,
       rejected: this.gate.rejected,
       // F05/F15: near-duplicate pairs the gate deliberately KEPT apart, so a
       // reviewer can audit every merge decision rather than trusting the count.
@@ -333,12 +337,26 @@ class PlannerAgent {
       this.stopReason = 'no_novel_scenarios';
       if (!silent) this.emit({ phase: 'stop', reason: 'no-progress' }); return true;
     }
-    const cov = this.lastCoverage?.coveragePercent;
+    // The Coverage Target applies to FEATURE coverage when a usable crawl exists.
+    // When it does not, coveragePercent is undefined and the target used to be
+    // skipped entirely — so on a ticket whose feature is not yet built, the
+    // planner ran to its full step budget even with every acceptance criterion
+    // covered. Requirement coverage is the meaningful fallback: it is the
+    // ticket-level promise, and it is what the user means by "covered" when
+    // there is no app to measure against.
+    const ac = this.lastCoverage?.acCoverage;
+    const featureCov = this.lastCoverage?.coveragePercent;
+    const requirementCov = (ac && ac.applicable && typeof ac.percentage === 'number')
+      ? ac.percentage : null;
+
+    const cov = (typeof featureCov === 'number') ? featureCov : requirementCov;
+    this.coverageBasis = (typeof featureCov === 'number') ? 'features'
+      : (requirementCov !== null ? 'requirements' : null);
+
     if (typeof cov === 'number' && cov >= this.budget.coverageTarget && accepted >= this.budget.minTests) {
       // F5: feature-coverage target reached — but don't declare done while the
       // ticket's acceptance criteria are still uncovered and budget remains. AC
       // coverage is the ticket-level promise and outranks the app-feature %.
-      const ac = this.lastCoverage?.acCoverage;
       if (ac && ac.applicable && ac.covered < ac.total && accepted < this.budget.maxTests) {
         return false;
       }

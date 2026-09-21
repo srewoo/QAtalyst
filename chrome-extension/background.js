@@ -2786,6 +2786,15 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
       degradations.push('None of the generated tests could be matched against the crawled app — the crawl does not appear to cover this feature (it may not be built yet, or a different area was crawled). These tests are specification-level and were NOT verified against the real UI.');
     }
 
+    // Say which measure the Coverage Target was judged against — and say so
+    // plainly when it could not be judged at all, rather than leaving a visible
+    // setting silently inert.
+    if (result.coverageBasis === 'requirements') {
+      degradations.push(`Coverage Target (${result.coverageTarget}%) was measured against requirement coverage — there was no usable crawl to measure app features against.`);
+    } else if (!result.coverageBasis) {
+      degradations.push(`Coverage Target (${result.coverageTarget}%) could not be applied: neither app-feature nor requirement coverage was measurable for this ticket.`);
+    }
+
     // §15.3: label each case honestly — specification_only / manual_ready /
     // automation_ready — instead of presenting everything as ready to run.
     if (typeof assessExecutability === 'function') {
