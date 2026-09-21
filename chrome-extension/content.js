@@ -554,7 +554,10 @@
    * during Epic Mode). Resolves with the handler's result object.
    */
   function generateForChild(childData, perChildSettings, appContext) {
-    return new Promise((resolve, reject) => {
+    // Bounded like the single-ticket path. Epic children used a bare Promise with
+    // no timeout, so one child whose worker call never returned left the whole
+    // epic waiting forever — the same hang that was fixed for stories.
+    return withGenerationTimeout(new Promise((resolve, reject) => {
       chrome.runtime.sendMessage({
         action: 'generateTestCasesAgentic',
         data: {
@@ -562,7 +565,11 @@
           ticketData: childData,
           settings: perChildSettings,
           baseUrl: window.location.origin,
-          appContext
+          appContext,
+          // Epic children were the only generation path that never received the
+          // reviewed analysis/scope, so a correction made in review applied to a
+          // story but not to the same story inside its epic.
+          reviewedContext: buildReviewedContext()
         }
       }, response => {
         if (chrome.runtime.lastError) {
@@ -575,7 +582,7 @@
           resolve(response);
         }
       });
-    });
+    }));
   }
 
   /**
@@ -918,14 +925,21 @@
   function withGenerationTimeout(promise, { hardMs = 45 * 60 * 1000 } = {}) {
     return new Promise((resolve, reject) => {
       let settled = false;
+      // Its OWN clock. Reading GenerationStatus._startedAt would be 0 whenever the
+      // status panel is not running — Epic Mode suppresses it — making elapsed
+      // time epoch-sized and firing the timeout on the first tick.
+      const startedAt = Date.now();
       const done = (fn) => (v) => { if (!settled) { settled = true; clearInterval(poll); fn(v); } };
 
       const poll = setInterval(() => {
         if (settled) return;
-        const elapsed = Date.now() - GenerationStatus._startedAt;
+        const elapsed = Date.now() - startedAt;
         // Only give up when the run is BOTH silent and long — a local model can
-        // legitimately take many minutes between planner steps.
-        const silentTooLong = GenerationStatus._stalledMs() > 10 * 60 * 1000;
+        // legitimately take many minutes between planner steps. The stall signal
+        // only exists while the status panel is live; without it, fall back to
+        // the hard ceiling alone rather than treating "no events" as a stall.
+        const stalled = GenerationStatus.isActive() ? GenerationStatus._stalledMs() : 0;
+        const silentTooLong = stalled > 10 * 60 * 1000;
         if (elapsed > hardMs || silentTooLong) {
           settled = true;
           clearInterval(poll);
