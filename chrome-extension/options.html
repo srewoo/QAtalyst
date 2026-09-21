@@ -400,21 +400,88 @@
         <div class="form-row">
           <div class="form-group">
             <label for="llmProvider">LLM Provider:</label>
+            <!-- Provider NAMES only. A model name here goes stale the moment a
+                 newer one ships, and which model to use is the Model dropdown's
+                 job to say — that list is discovered from the provider. -->
             <select id="llmProvider" data-testid="llm-provider-select">
-              <option value="openai">OpenAI (GPT-5.2)</option>
+              <option value="openai">OpenAI</option>
               <option value="claude">Anthropic Claude</option>
               <option value="gemini">Google Gemini</option>
               <option value="bedrock">AWS Bedrock</option>
+              <option value="ollama">Ollama (local models)</option>
             </select>
           </div>
           <div class="form-group">
             <label for="llmModel">Model:</label>
             <select id="llmModel" data-testid="llm-model-select">
-              <!-- Populated dynamically -->
+              <!-- Discovered from the provider with your own credentials -->
             </select>
+            <p class="help-text" id="modelSourceHint" data-testid="model-source-hint" style="margin-top:6px;">
+              <button type="button" id="refreshModelsBtn" data-testid="refresh-models-btn"
+                      style="background:none;border:none;color:#0052cc;cursor:pointer;padding:0;font-size:inherit;">
+                &#8635; Refresh model list
+              </button>
+            </p>
           </div>
         </div>
         
+        <div class="section" id="evidenceImportSection">
+          <h2>📥 Imported Evidence (optional)</h2>
+          <p>
+            A crawl observes one session of one build: one role, one viewport, one set of API calls.
+            It cannot state a contract, enumerate your roles, describe states nobody clicked into, or
+            say which paths fail in production. Import those as files — no account connection needed —
+            and generated tests can assert them instead of guessing.
+          </p>
+
+          <div class="form-group">
+            <label for="importOpenApi">OpenAPI contract (.json):</label>
+            <input type="file" id="importOpenApi" accept=".json,application/json" data-testid="import-openapi">
+            <p class="help-text">Documented limits, required fields, enums, error responses and auth become asserted obligations.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="importProfile">Role / state / feature-flag profile (.json):</label>
+            <input type="file" id="importProfile" accept=".json,application/json" data-testid="import-profile">
+            <p class="help-text">
+              e.g. <code>{"roles":[{"name":"owner","can":["delete"]},{"name":"viewer","cannot":["delete"]}],
+              "states":[{"name":"draft","to":["issued"]}]}</code> — gives allow/deny pairs and invalid transitions.
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label for="importChange">PR / MR changed files (.json):</label>
+            <input type="file" id="importChange" accept=".json,application/json" data-testid="import-change">
+            <p class="help-text">The GitHub or GitLab API response. Scopes regression to what actually changed.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="importExecution">Execution results (.json):</label>
+            <input type="file" id="importExecution" accept=".json,application/json" data-testid="import-execution">
+            <p class="help-text">Distinguishes tests that have actually run from proposals, and flags flaky ones.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="importRuntime">Runtime errors (.json):</label>
+            <input type="file" id="importRuntime" accept=".json,application/json" data-testid="import-runtime">
+            <p class="help-text">Prioritises real failure paths. Emails, cards, tokens and IPs are redacted before use.</p>
+          </div>
+
+          <button type="button" id="importEvidenceBtn" class="btn-secondary" data-testid="import-evidence-btn">Import evidence</button>
+          <p class="help-text" id="importEvidenceResult" data-testid="import-evidence-result"></p>
+        </div>
+
+        <div class="form-group" id="ollamaGroup" style="display:none;">
+          <label for="ollamaBaseUrl">Ollama URL:</label>
+          <input type="text" id="ollamaBaseUrl" data-testid="ollama-base-url"
+                 placeholder="http://localhost:11434" value="http://localhost:11434">
+          <p class="help-text">
+            Local models need no API key, and nothing leaves your machine. Ollama must allow this
+            extension to call it: start it with <code>OLLAMA_ORIGINS=chrome-extension://* ollama serve</code>,
+            then click &#8635; Refresh to list the models you have pulled.
+          </p>
+        </div>
+
         <div class="form-group" id="apiKeyGroup">
           <label for="apiKey">API Key:</label>
           <input type="password" id="apiKey" placeholder="Enter your API key" data-testid="api-key-input">
@@ -524,7 +591,7 @@
         <div class="form-group">
           <label for="coverageTarget">🎯 Coverage Target (%)</label>
           <input type="number" id="coverageTarget" min="40" max="100" value="80" data-testid="coverage-target">
-          <p class="help-text">Agentic mode keeps generating grounded tests until this share of the app's real features (forms/APIs/buttons) is covered, or the test budget is reached.</p>
+          <p class="help-text">Agentic mode keeps generating grounded tests until this share is covered, or the test budget is reached. Measured against the app's real features (forms/APIs/buttons) when a matching crawl exists; against the ticket's requirements when it does not. The results panel says which was used.</p>
         </div>
       </div>
     </div>
@@ -554,6 +621,17 @@
         </div>
         <p class="help-text">Off by default. When on, QAtalyst makes one extra Jira request per selected story to pull "Web links" (e.g., Confluence/Figma/Docs URLs added to the issue-links panel) — more context, but slower for large epics.</p>
 
+      </div>
+
+      <div class="section">
+        <h2>🔁 Deduplicate Against Your Existing Suite</h2>
+        <p>Before proposing a test, check whether your test-management suite already covers it. Requires TestRail to be configured below.</p>
+
+        <div class="checkbox-group">
+          <input type="checkbox" id="dedupeAgainstExistingSuite" data-testid="dedupe-against-existing-suite">
+          <label for="dedupeAgainstExistingSuite">Check generated tests against the existing TestRail suite</label>
+        </div>
+        <p class="help-text">Generated tests that duplicate a case your team already maintains are rejected with a link to the existing case. If the suite cannot be read, QAtalyst says so rather than assuming you have no tests.</p>
       </div>
 
       <div class="section">
@@ -1271,13 +1349,38 @@
     <div class="tab-content" id="help-tab">
       <div class="section">
         <h2>❓ Help & Documentation</h2>
-        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v13.4 - AI-powered test case generation with advanced features.</p>
+        <p style="color: #64748b; margin-bottom: 24px;">Complete guide to QAtalyst v14.0 - AI-powered test case generation with advanced features.</p>
 
         <!-- What's New -->
         <div class="help-card" style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border-color: #86efac;">
-          <h3 style="color: #16a34a;">✨ What's New in v13.4</h3>
+          <h3 style="color: #16a34a;">✨ What's New in v14.0</h3>
 
-          <h4 style="color: #15803d;">🕷️ Deep Capture Crawling (NEW - v13.4)</h4>
+          <h4 style="color: #15803d;">🔌 Providers &amp; Models (NEW - v14.0)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Local models via Ollama:</strong> New provider — no API key, and nothing leaves your machine. The model list is whatever you have pulled. Start Ollama with <code>OLLAMA_ORIGINS=chrome-extension://* ollama serve</code> so the extension may call it.</li>
+            <li><strong>Model list reflects your real access:</strong> The dropdown is now fetched from the provider with your own key instead of a hardcoded list — so it includes fine-tunes and newly released models, and stops offering models your account cannot use. If discovery fails you get the built-in list <em>clearly marked as a fallback</em>, rather than a guess presented as fact.</li>
+            <li><strong>Reasoning models work correctly:</strong> o-series and GPT-5 reasoning models reject <code>max_tokens</code> and custom temperatures, so selecting one used to fail outright. Requests now use the right parameters, and the output budget is raised because reasoning consumes part of it. Any setting that cannot apply is shown next to the field instead of being silently ignored.</li>
+          </ul>
+
+          <h4 style="color: #15803d;">🎯 Test Quality (NEW - v14.0)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Every route is checked:</strong> Grounding, relevance, duplicate and assertion checks now run on single-call, streaming, agentic <em>and</em> review-regeneration — previously quality depended on which mode you had enabled.</li>
+            <li><strong>Distinct tests are no longer merged away:</strong> Opposite outcomes (can vs cannot), different roles, different operations and boundary values are protected from deduplication. Pairs that are merely similar are kept and shown for review rather than deleted.</li>
+            <li><strong>Requirement coverage that means something:</strong> Each acceptance criterion becomes an atomic obligation with an ID. A test now has to perform the operation as the right actor and assert the right outcome — a test asserting the <em>opposite</em> of a criterion is reported as a contradiction, not as coverage.</li>
+            <li><strong>Nothing is marked verified unless it is:</strong> Tests referencing UI that does not exist are flagged, not passed off as grounded. Tests for features the ticket requires but that are not built yet are labelled specification-level rather than rejected.</li>
+            <li><strong>Honest status:</strong> The results panel now shows what limited the run, what was removed and why, which cases need review before execution, and which questions must be answered before an expected result can be trusted.</li>
+          </ul>
+
+          <h4 style="color: #15803d;">🕷️ Crawling &amp; Evidence (NEW - v14.0)</h4>
+          <ul style="margin-left: 20px; line-height: 1.8;">
+            <li><strong>Truly incremental crawls:</strong> Only new or <em>changed</em> pages are crawled and re-indexed. Change is detected by ETag/Last-Modified or a content fingerprint — a previously seen URL is no longer assumed unchanged — and unchanged pages are preserved instead of being dropped from the graph.</li>
+            <li><strong>Large crawls reach generation:</strong> Apps with more than 30 crawled pages previously transferred none of them to the generator. Fixed, along with the loss of buttons, tables and page text during transfer.</li>
+            <li><strong>Attachments are actually read:</strong> Compressed PDFs and DOCX files now have their text extracted. Anything unreadable is reported, so a requirement living only in an attachment is never silently missing.</li>
+            <li><strong>Import what a crawl cannot see:</strong> OpenAPI contracts, a role/state/feature-flag profile, PR/MR change context, execution results and runtime errors — all as file imports, no account connection required.</li>
+            <li><strong>Existing suites:</strong> Deduplication against your TestRail suite now works, reads every page, and recognises a paraphrased duplicate. Re-exporting no longer creates duplicates.</li>
+          </ul>
+
+          <h4 style="color: #15803d; margin-top: 24px; padding-top: 8px; border-top: 1px solid #bbf7d0;">🕷️ Deep Capture Crawling (v13.4)</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>API Response Bodies:</strong> The crawler now captures the JSON your app's fetch/XHR calls return — not just the endpoints — enabling response-schema inference for far more realistic test data. No extra browser permissions required. Toggle under <em>Crawler Settings → Deep Capture</em>.</li>
             <li><strong>Interaction-Aware Discovery:</strong> Click-based discovery now records forms, buttons, and inputs that only appear <em>after</em> a click (not just new URLs), and a hover pass opens dropdowns/submenus to capture their links.</li>
@@ -1285,7 +1388,7 @@
             <li><strong>Modern SPA Detection:</strong> Detects React 18 (createRoot/fiber), Svelte, and a generic SPA fallback — so client-rendered apps get the proper hydration wait before extraction.</li>
           </ul>
 
-          <h4 style="color: #15803d;">🗺️ Wider, Faster, More Resilient Crawls (NEW - v13.4)</h4>
+          <h4 style="color: #15803d;">🗺️ Wider, Faster, More Resilient Crawls (v13.4)</h4>
           <ul style="margin-left: 20px; line-height: 1.8;">
             <li><strong>Recursive Sitemap Discovery:</strong> Unions every sitemap candidate plus all robots.txt directives and follows nested sitemap indexes (cycle-guarded) — discovering far more pages than the old first-hit, 10-submap approach.</li>
             <li><strong>Adaptive Concurrency:</strong> Tab-pool scaling now keys off P90 response time (robust to slow outliers) and sheds tabs immediately on consecutive errors, so crawls stay fast without overloading the target.</li>
@@ -1953,6 +2056,7 @@
   <script src="config.js"></script>
   <script src="security.js"></script>
   <script src="integrations.js"></script>
+  <script src="model-registry.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

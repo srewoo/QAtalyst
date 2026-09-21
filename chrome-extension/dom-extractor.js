@@ -97,32 +97,57 @@ if (typeof DOMExtractor === 'undefined') {
     this.errorPatterns = [];
     this.pageHints = {};
 
-    try {
-      // Extract different feature types
-      this.features.push(...this.extractForms());
-      this.features.push(...this.extractTables());
-      this.features.push(...this.extractButtons());
-      this.features.push(...this.extractNavigation());
-      this.features.push(...this.extractModals());
-      this.features.push(...this.extractCards());
-      this.features.push(...this.extractLists());
+    // Each phase is isolated. One `try` used to wrap all ten, so a throw in an
+    // early phase discarded every later one — a single invalid selector in form
+    // extraction silently returned ZERO features for the whole page, and the
+    // summary log never ran, so there was nothing to notice. A phase that fails
+    // now costs only its own contribution, and says which phase and why.
+    this.extractionErrors = [];
 
-      // NEW: Extract error message patterns
-      this.errorPatterns = this.extractErrorPatterns();
-
-      // NEW: Detect page-level hints (lazy load, dynamic content)
-      this.pageHints = this.detectPageHints();
-
-      // NEW: Record cross-origin iframes (embedded widgets we can't read into)
-      this.extractExternalEmbeds();
-      if (this.externalEmbeds.length > 0) {
-        this.pageHints.externalEmbeds = this.externalEmbeds;
+    const phase = (name, fn) => {
+      try {
+        return fn();
+      } catch (error) {
+        // DOMException stringifies to "[object DOMException]", which tells you
+        // nothing — record the name and message instead.
+        const detail = error && (error.name || error.message)
+          ? `${error.name || 'Error'}: ${error.message || String(error)}`
+          : String(error);
+        this.extractionErrors.push({ phase: name, error: detail });
+        console.warn(`⚠️ DOM extraction: "${name}" failed and was skipped — ${detail}`);
+        return null;
       }
+    };
 
-      console.log(`📊 DOM Extraction: Found ${this.features.length} features, ${this.errorPatterns.length} error patterns, ${this.externalEmbeds.length} external embeds`);
-    } catch (error) {
-      console.error('❌ DOM extraction error:', error);
+    for (const [name, fn] of [
+      ['forms', () => this.extractForms()],
+      ['tables', () => this.extractTables()],
+      ['buttons', () => this.extractButtons()],
+      ['navigation', () => this.extractNavigation()],
+      ['modals', () => this.extractModals()],
+      ['cards', () => this.extractCards()],
+      ['lists', () => this.extractLists()]
+    ]) {
+      const result = phase(name, fn);
+      if (Array.isArray(result)) this.features.push(...result);
     }
+
+    this.errorPatterns = phase('errorPatterns', () => this.extractErrorPatterns()) || [];
+    this.pageHints = phase('pageHints', () => this.detectPageHints()) || {};
+
+    phase('externalEmbeds', () => {
+      this.extractExternalEmbeds();
+      if (this.externalEmbeds.length > 0) this.pageHints.externalEmbeds = this.externalEmbeds;
+    });
+
+    // Partial extraction must be visible downstream, so a thin page can be told
+    // apart from a page we failed to read.
+    if (this.extractionErrors.length) {
+      this.pageHints.extractionErrors = this.extractionErrors;
+      console.warn(`⚠️ DOM Extraction completed with ${this.extractionErrors.length} failed phase(s): ${this.extractionErrors.map(e => e.phase).join(', ')}`);
+    }
+
+    console.log(`📊 DOM Extraction: Found ${this.features.length} features, ${this.errorPatterns.length} error patterns, ${this.externalEmbeds.length} external embeds`);
 
     return this.features;
   }
@@ -320,12 +345,23 @@ if (typeof DOMExtractor === 'undefined') {
    */
   getFieldDependencies(field) {
     const dependencies = {};
-    const parent = field.closest('[data-show-when], [data-depends-on], [ng-if], [v-if], [*ngIf]') || field;
+    // `[*ngIf]` is NOT a valid CSS selector — an attribute name cannot begin with
+    // `*` — so this threw a DOMException for every field on every page, aborting
+    // extraction entirely (see extract()). Angular's `*ngIf` is template syntax
+    // that never survives into the DOM; the rendered markup carries `ng-reflect-ng-if`
+    // in dev builds and nothing at all in production, so match those instead.
+    const parent = field.closest(
+      '[data-show-when], [data-depends-on], [ng-if], [v-if], [ng-reflect-ng-if], [data-ng-if]'
+    ) || field;
 
     // Check common conditional display attributes
     const showWhen = parent.dataset.showWhen || parent.getAttribute('data-show-when');
     const dependsOn = parent.dataset.dependsOn || parent.getAttribute('data-depends-on');
-    const ngIf = parent.getAttribute('ng-if') || parent.getAttribute('*ngIf');
+    // getAttribute('*ngIf') is harmless (it just returns null) but pointless —
+    // the attribute cannot exist in rendered DOM. Read what Angular really emits.
+    const ngIf = parent.getAttribute('ng-if')
+      || parent.getAttribute('data-ng-if')
+      || parent.getAttribute('ng-reflect-ng-if');
     const vIf = parent.getAttribute('v-if');
     const vShow = parent.getAttribute('v-show');
 

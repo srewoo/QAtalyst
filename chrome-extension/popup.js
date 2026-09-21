@@ -39,17 +39,35 @@ if (noApiKeyNoticeEl) {
 
 // Load crawled apps on startup
 async function loadCrawledApps() {
+  const group = document.getElementById('crawledAppsGroup');
+  const list = document.getElementById('crawledAppsList');
+
+  // Always show the section and say which state we are in. It used to stay
+  // hidden unless the load both succeeded AND returned rows, so "you have no
+  // crawls", "the read failed" and "the code never ran" all looked identical —
+  // and a user with a 70-page crawl saw nothing at all.
+  if (group) group.style.display = 'block';
+  if (list) list.textContent = 'Loading crawled applications…';
+
   try {
     const response = await chrome.runtime.sendMessage({ action: 'getAllApps' });
 
-    if (response && response.success && response.apps && response.apps.length > 0) {
+    if (response && response.success && Array.isArray(response.apps)) {
       displayCrawledApps(response.apps);
+      return;
+    }
+    if (list) {
+      list.textContent = response && response.error
+        ? `Could not read stored crawls: ${response.error}`
+        : 'Could not read stored crawls (no response from the extension worker).';
     }
   } catch (error) {
-    // Silently ignore "Receiving end does not exist" errors during initialization
-    if (!error.message.includes('Receiving end does not exist')) {
-      console.error('Error loading crawled apps:', error);
+    if (error.message && error.message.includes('Receiving end does not exist')) {
+      if (list) list.textContent = 'Extension worker is starting — reopen this popup in a moment.';
+      return;
     }
+    console.error('Error loading crawled apps:', error);
+    if (list) list.textContent = `Could not read stored crawls: ${error.message}`;
   }
 }
 
@@ -74,17 +92,28 @@ function displayCrawledApps(apps) {
   const appsList = document.getElementById('crawledAppsList');
   const appsGroup = document.getElementById('crawledAppsGroup');
 
+  appsGroup.style.display = 'block';
+
   if (apps.length === 0) {
-    appsGroup.style.display = 'none';
+    // An empty list is a real state and must be shown as one.
+    appsList.textContent = 'No crawls stored yet. Run a crawl above, or use Import Data to load a saved crawl.';
     return;
   }
 
-  appsGroup.style.display = 'block';
+  // Merge needs two graphs; say so before the button reports it as an error.
+  const mergeBtn = document.getElementById('mergeGraphsBtn');
+  if (mergeBtn) {
+    mergeBtn.disabled = apps.length < 2;
+    mergeBtn.title = apps.length < 2
+      ? 'Merging needs at least 2 stored crawls — crawl another app or import one.'
+      : `Merge any of your ${apps.length} stored crawls`;
+  }
   appsList.innerHTML = apps.map(app => `
     <div class="app-list-item">
       <div>
         <div class="app-url" title="${app.url}">${getCleanDomain(app.url)}</div>
-        <div class="app-meta">${app.pages || 0} pages • ${app.features || 0} features • ${app.crawledAt}</div>
+        <div class="app-meta">${app.pages || 0} pages • ${app.features || 0} features${
+          app.apis != null ? ` • ${app.apis} APIs` : ''} • ${app.crawledAt}</div>
       </div>
       <div>
         <button class="btn-crawl-action" data-url="${app.url}" data-action="export">Export</button>

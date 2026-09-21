@@ -22,22 +22,35 @@
   var MAX_BODY_CHARS = 8000; // coarse clip in-page; NetworkMonitor clips again
   var caps = (window.__qatalystApiCaptures = window.__qatalystApiCaptures || []);
 
+  // F18: this must agree with NetworkMonitor.isApiRequest — the two matchers had
+  // drifted, and this one required a TRAILING SLASH, so a bare `/graphql`
+  // endpoint (the usual form) was never captured here even though webRequest
+  // recorded it. Response bodies for GraphQL APIs were therefore always missing.
   function isApiish(u) {
     try {
       var p = new URL(u, location.href).pathname.toLowerCase();
-      return /\/(api|rest|graphql|ajax)\//.test(p) || /\/v\d+\//.test(p) || p.endsWith('.json');
+      return /\/(api|rest|ajax)(\/|$)/.test(p) ||
+             /\/graphql(\/|$)/.test(p) ||
+             /\/v\d+(\/|$)/.test(p) ||
+             p.endsWith('.json');
     } catch (e) { return false; }
   }
   function clip(s) {
     return (typeof s === 'string' && s.length > MAX_BODY_CHARS) ? s.slice(0, MAX_BODY_CHARS) : s;
   }
+  // F18: bound the bytes BEFORE parsing. These parsed a multi-megabyte response
+  // in full and only clipped the fallback string — so the clip protected memory
+  // in exactly the case where it was already cheap, and not at all in the case
+  // where it mattered. An oversized body is retained as a clipped string.
   function parseMaybe(t) {
     if (typeof t !== 'string') return t;
-    try { return JSON.parse(t); } catch (e) { return clip(t); }
+    if (t.length > MAX_BODY_CHARS) return clip(t);
+    try { return JSON.parse(t); } catch (e) { return t; }
   }
   function tryJson(b) {
-    if (typeof b === 'string') { try { return JSON.parse(b); } catch (e) { return clip(b); } }
-    return undefined;
+    if (typeof b !== 'string') return undefined;
+    if (b.length > MAX_BODY_CHARS) return clip(b);
+    try { return JSON.parse(b); } catch (e) { return b; }
   }
   function push(rec) { if (caps.length < MAX_CAPTURES) caps.push(rec); }
 

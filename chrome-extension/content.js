@@ -12,25 +12,48 @@
   // Used to bridge the gap between the immediate ACK and the final streamComplete message.
   const pendingStreamCompletions = new Map();
 
+  /**
+   * F17: does this completion belong to the run that is still waiting?
+   * A pending entry records the ticket it was started for; a message carrying a
+   * DIFFERENT ticket key is a late result from a superseded run and is dropped.
+   * Messages with no ticket key are accepted (older worker builds).
+   */
+  function isCurrentRun(pending, message) {
+    if (!message || !message.ticketKey) return true;
+    if (!pending || !pending.ticketKey) return true;
+    return pending.ticketKey === message.ticketKey;
+  }
+
   // escapeHtml, createSafeErrorMessage, createSafeFormattedContent → content-format.js
 
-  // Listen for streaming chunks, agent progress, evolution progress, enhancement progress, and historical mining progress
+  // Listen for streaming chunks, agent progress, enhancement progress, and historical mining progress.
+  // F21: the evolution* listeners are gone — that generation path was retired and
+  // nothing has sent those messages since, so they were dead handlers for a
+  // status the system can no longer produce.
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'streamChunk') {
       handleStreamChunk(request.requestId, request.chunk);
     }
 
     // Final result delivered via tab message (avoids message-channel-closed error in MV3)
+    //
+    // F17: completion is matched on streamType ALONE, which is not a run identity.
+    // After navigating to another ticket (or starting a replacement run), a late
+    // result from the previous run resolved the current panel's pending promise
+    // and rendered the old ticket's tests as if they were this one's. Reject any
+    // completion whose ticket doesn't match what the pending request asked for.
     if (request.action === 'streamComplete') {
       const pending = pendingStreamCompletions.get(request.streamType);
-      if (pending) {
+      if (pending && isCurrentRun(pending, request)) {
         pendingStreamCompletions.delete(request.streamType);
         pending.resolve(request.result);
+      } else if (pending) {
+        console.warn('[QAtalyst] Ignored a stale streamComplete for', request.ticketKey || '(unknown ticket)');
       }
     }
     if (request.action === 'streamError') {
       const pending = pendingStreamCompletions.get(request.streamType);
-      if (pending) {
+      if (pending && isCurrentRun(pending, request)) {
         pendingStreamCompletions.delete(request.streamType);
         pending.reject(new Error(request.error));
       }
@@ -45,9 +68,6 @@
     if (request.action === 'agentProgress') {
       handleAgentProgress(request.progress);
     }
-    if (request.action === 'evolutionProgress') {
-      handleEvolutionProgress(request.progress);
-    }
     if (request.action === 'enhancementProgress') {
       handleEnhancementProgress(request.status);
     }
@@ -55,16 +75,13 @@
       handleContextQualityAssessment(request.assessment);
     }
     if (request.action === 'historicalMiningProgress') {
-      handleHistoricalMiningProgress(request.status);
+      // The worker sends `progress`, not `status`. Reading the wrong field made
+      // this always undefined, so the panel rendered "✅ Mining complete" from the
+      // very first event — mining looked finished before it had started.
+      handleHistoricalMiningProgress(request.progress || request.status);
     }
     if (request.type === 'UPLOAD_PROGRESS') {
       handleUploadProgress(request.progress);
-    }
-    if (request.action === 'evolutionComplete') {
-      handleEvolutionComplete(request.data);
-    }
-    if (request.action === 'evolutionError') {
-      handleEvolutionError(request.error);
     }
     if (request.action === 'qualityReports') {
       handleQualityReports(request.reports);
@@ -537,7 +554,10 @@
    * during Epic Mode). Resolves with the handler's result object.
    */
   function generateForChild(childData, perChildSettings, appContext) {
-    return new Promise((resolve, reject) => {
+    // Bounded like the single-ticket path. Epic children used a bare Promise with
+    // no timeout, so one child whose worker call never returned left the whole
+    // epic waiting forever — the same hang that was fixed for stories.
+    return withGenerationTimeout(new Promise((resolve, reject) => {
       chrome.runtime.sendMessage({
         action: 'generateTestCasesAgentic',
         data: {
@@ -545,7 +565,11 @@
           ticketData: childData,
           settings: perChildSettings,
           baseUrl: window.location.origin,
-          appContext
+          appContext,
+          // Epic children were the only generation path that never received the
+          // reviewed analysis/scope, so a correction made in review applied to a
+          // story but not to the same story inside its epic.
+          reviewedContext: buildReviewedContext()
         }
       }, response => {
         if (chrome.runtime.lastError) {
@@ -558,7 +582,7 @@
           resolve(response);
         }
       });
-    });
+    }));
   }
 
   /**
@@ -621,7 +645,15 @@
     const head = document.createElement('div');
     head.className = 'epic-summary';
     head.style.cssText = 'padding:12px;margin-bottom:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;font-size:13px;color:#075985;';
-    head.textContent = `🧭 Epic ${epic.key}: ${summary.totalTests} test cases across ${summary.stories} stories` +
+    // F13: report the CONSOLIDATED total, and say how many cases were shared
+    // across stories — otherwise a global merge is indistinguishable from tests
+    // having gone missing.
+    const consolidated = out.consolidated;
+    const finalCount = consolidated ? consolidated.testCases.length : summary.totalTests;
+    head.textContent = `🧭 Epic ${epic.key}: ${finalCount} test cases across ${summary.stories} stories` +
+      (consolidated && consolidated.merged.length
+        ? ` • ${consolidated.merged.length} duplicate(s) shared across stories instead of repeated`
+        : '') +
       (summary.failed ? ` • ${summary.failed} story(ies) failed` : '');
     wrap.appendChild(head);
 
@@ -764,12 +796,219 @@
   // late "done"/observation event can't overwrite the test-case list (race fix).
   let suppressAgentProgress = false;
 
+  /**
+   * One persistent "generating" surface.
+   *
+   * Generation can run for minutes, and the panel had no owner: the initial
+   * loading message, the historical-mining panel and the agent-progress panel
+   * each did `resultsContainer.innerHTML = …`, so the last writer won. Once
+   * mining finished, its "✅ Mining complete" box simply sat there while the
+   * planner worked — the user was left looking at a finished-looking panel with
+   * no indication anything was still happening, and no way to tell a slow run
+   * from a hung one.
+   *
+   * This owns the container for the whole run: sub-steps update IN PLACE, and an
+   * elapsed clock ticks regardless of whether events are arriving, so the UI
+   * proves liveness between sparse planner steps.
+   */
+  const GenerationStatus = {
+    _timer: null,
+    _startedAt: 0,
+    _lastEventAt: 0,
+    _state: null,
+
+    // A run that goes quiet for this long is reported as possibly stalled. It is
+    // NOT cancelled automatically — a local model on a big ticket can genuinely
+    // be this slow, and killing real work would be worse than waiting.
+    STALL_WARN_MS: 120000,
+
+    start(label = 'Generating test cases…') {
+      this._startedAt = Date.now();
+      this._lastEventAt = Date.now();
+      this._state = { label, phase: 'Starting', detail: '', step: null, total: null, count: null, done: [] };
+      this._render();
+      clearInterval(this._timer);
+      // Tick independently of events: a long planner step must not look frozen.
+      this._timer = setInterval(() => this._render(), 1000);
+    },
+
+    update(patch = {}) {
+      if (!this._state) return; // never resurrect a finished run from a late event
+      this._lastEventAt = Date.now();
+      // A finished phase is remembered, so progress reads as a trail rather than
+      // a single line that keeps being overwritten.
+      if (patch.phase && patch.phase !== this._state.phase && this._state.phase) {
+        this._state.done.push(this._state.phase);
+      }
+      Object.assign(this._state, patch);
+      this._render();
+    },
+
+    /** Silence since the last progress event — the signal that something is wrong. */
+    _stalledMs() {
+      return this._lastEventAt ? Date.now() - this._lastEventAt : 0;
+    },
+
+    stop() {
+      clearInterval(this._timer);
+      this._timer = null;
+      this._state = null;
+      this._lastEventAt = 0;
+    },
+
+    isActive() { return !!this._state; },
+
+    _elapsed() {
+      const s = Math.floor((Date.now() - this._startedAt) / 1000);
+      return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+    },
+
+    _render() {
+      const container = document.getElementById('results-container');
+      if (!container || !this._state) return;
+      const st = this._state;
+      const pct = (Number.isFinite(st.step) && Number.isFinite(st.total) && st.total > 0)
+        ? Math.min(100, Math.round((st.step / st.total) * 100)) : null;
+
+      // A run with no news for minutes must SAY so. Silently spinning forever is
+      // what made a stalled run indistinguishable from a slow one.
+      const stalledMs = this._stalledMs();
+      const stalled = stalledMs > this.STALL_WARN_MS;
+      const stalledMin = Math.floor(stalledMs / 60000);
+
+      container.innerHTML = `
+        <div class="qatalyst-generating${stalled ? ' gen-stalled' : ''}" data-testid="generation-status">
+          <div class="gen-head">
+            <span class="gen-spinner" aria-hidden="true"></span>
+            <strong>${escapeHtml(st.label)}</strong>
+            <span class="gen-elapsed" data-testid="generation-elapsed">${escapeHtml(this._elapsed())}</span>
+          </div>
+          <div class="gen-phase">${escapeHtml(st.phase || 'Working…')}${
+            st.detail ? ` — <span class="gen-detail">${escapeHtml(String(st.detail).slice(0, 120))}</span>` : ''}</div>
+          ${pct !== null ? `<div class="gen-bar"><div class="gen-fill" style="width:${pct}%"></div></div>` : ''}
+          ${Number.isFinite(st.count) ? `<div class="gen-count">${st.count} test case(s) accepted so far</div>` : ''}
+          ${st.done.length ? `<div class="gen-done">${st.done.slice(-4).map(d => `✓ ${escapeHtml(d)}`).join(' &nbsp; ')}</div>` : ''}
+          ${stalled ? `
+            <div class="gen-stall-warning" data-testid="generation-stalled">
+              ⚠️ No progress for ${stalledMin} minute(s). The run may have stalled — or a local/slow model may still be working.
+              Check the service-worker console for errors, or stop and try again.
+            </div>` : ''}
+          <div class="gen-note">This can take a few minutes on a large ticket. You can keep working — results appear here when ready.</div>
+          <button type="button" class="gen-cancel" data-testid="generation-cancel">Stop generation</button>
+        </div>`;
+
+      // Cancel must be reachable at ANY point, not only once a run looks stuck.
+      const cancelBtn = container.querySelector('[data-testid="generation-cancel"]');
+      if (cancelBtn) cancelBtn.addEventListener('click', () => cancelGeneration());
+    }
+  };
+
+  /**
+   * Stop a running generation and hand the panel back to the user.
+   *
+   * There was no way out of a run at all: no cancel, and no client-side timeout,
+   * so if the worker died or never replied the sendMessage callback simply never
+   * fired and the panel waited forever.
+   */
+  /**
+   * Bound a worker request in wall-clock time.
+   *
+   * `chrome.runtime.sendMessage` gives no timeout: if the service worker is
+   * terminated mid-run, or throws before responding, the callback never fires and
+   * the awaiting promise stays pending for the life of the page. That is how a
+   * run could sit "Generating…" for fifteen minutes with nothing to click.
+   *
+   * The timeout is generous and progress-aware — it is a backstop against a DEAD
+   * worker, not a limit on slow generation, so it only fires when the run has
+   * also gone silent.
+   */
+  function withGenerationTimeout(promise, { hardMs = 45 * 60 * 1000 } = {}) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      // Its OWN clock. Reading GenerationStatus._startedAt would be 0 whenever the
+      // status panel is not running — Epic Mode suppresses it — making elapsed
+      // time epoch-sized and firing the timeout on the first tick.
+      const startedAt = Date.now();
+      const done = (fn) => (v) => { if (!settled) { settled = true; clearInterval(poll); fn(v); } };
+
+      const poll = setInterval(() => {
+        if (settled) return;
+        const elapsed = Date.now() - startedAt;
+        // Only give up when the run is BOTH silent and long — a local model can
+        // legitimately take many minutes between planner steps. The stall signal
+        // only exists while the status panel is live; without it, fall back to
+        // the hard ceiling alone rather than treating "no events" as a stall.
+        const stalled = GenerationStatus.isActive() ? GenerationStatus._stalledMs() : 0;
+        const silentTooLong = stalled > 10 * 60 * 1000;
+        if (elapsed > hardMs || silentTooLong) {
+          settled = true;
+          clearInterval(poll);
+          reject(new Error(
+            silentTooLong
+              ? 'Generation stopped responding — no progress for over 10 minutes. The extension service worker may have been terminated. Check chrome://extensions → QAtalyst → service worker for errors, then try again.'
+              : 'Generation exceeded the maximum run time and was abandoned.'
+          ));
+        }
+      }, 5000);
+
+      promise.then(done(resolve), done(reject));
+    });
+  }
+
+  async function cancelGeneration() {
+    try {
+      await chrome.runtime.sendMessage({ action: 'stopMultiAgentGeneration' });
+    } catch (e) {
+      console.warn('[QAtalyst] cancel request failed:', e.message);
+    }
+    try {
+      if (currentStreamingRequestId) {
+        await chrome.runtime.sendMessage({ action: 'stopGeneration', requestId: currentStreamingRequestId });
+      }
+    } catch (_) {}
+
+    suppressAgentProgress = true;
+    GenerationStatus.stop();
+    isStreaming = false;
+    currentStreamingRequestId = null;
+
+    const container = document.getElementById('results-container');
+    if (container) {
+      container.innerHTML = '';
+      const msg = document.createElement('div');
+      msg.className = 'qatalyst-warning-box';
+      msg.dataset.testid = 'generation-cancelled';
+      msg.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px;margin:10px 0;color:#856404;';
+      msg.textContent = 'Generation stopped. Any partial results were discarded — run it again when ready.';
+      container.appendChild(msg);
+    }
+    const btn = document.getElementById('test-cases-btn');
+    if (btn) {
+      btn.disabled = false;
+      if (btn.dataset.originalLabel) btn.innerHTML = btn.dataset.originalLabel;
+    }
+    setActivityIndicator(false);
+  }
+
   function handleAgentProgress(progress) {
     if (suppressAgentProgress) return;
     const resultsContainer = document.getElementById('results-container');
     if (!resultsContainer) return;
 
     const { agent, step, total, status, description, count, error } = progress;
+
+    // Route into the single generation surface so planner steps, mining and the
+    // final validation all update ONE panel in place.
+    if (GenerationStatus.isActive() && status !== 'error' && !error) {
+      GenerationStatus.update({
+        phase: agent ? `${agent}` : 'Planning coverage',
+        detail: description || '',
+        step: Number.isFinite(step) ? step : null,
+        total: Number.isFinite(total) ? total : null,
+        count: Number.isFinite(count) ? count : null
+      });
+      return;
+    }
     
     // Progress is only meaningful when both step and total are numbers.
     const hasProgress = Number.isFinite(step) && Number.isFinite(total) && total > 0;
@@ -799,42 +1038,7 @@
     resultsContainer.innerHTML = agentProgressHTML;
   }
   
-  function handleEvolutionProgress(progress) {
-    const resultsContainer = document.getElementById('results-container');
-    if (!resultsContainer) return;
-    
-    const { generation, total, status, bestFitness } = progress;
-    
-    // Update evolution progress display
-    const evolutionProgressHTML = `
-      <div class="evolution-progress-container">
-        <div class="evolution-header">
-          <h3>🧬 Evolutionary Optimization</h3>
-          <div class="evolution-status ${status}">${status === 'completed' ? '✅ Complete' : '⚡ Evolving'}</div>
-        </div>
-        <div class="evolution-info">
-          <div class="evolution-stat">
-            <span class="stat-label">Generation:</span>
-            <span class="stat-value">${generation}/${total}</span>
-          </div>
-          <div class="evolution-stat">
-            <span class="stat-label">Best Fitness:</span>
-            <span class="stat-value">${bestFitness}/100</span>
-          </div>
-        </div>
-        <div class="evolution-progress-bar">
-          <div class="evolution-progress-fill" style="width: ${(generation / total) * 100}%"></div>
-        </div>
-        <div class="evolution-desc">
-          Applying genetic algorithm mutations to improve test coverage...
-        </div>
-      </div>
-    `;
-    
-    resultsContainer.innerHTML = evolutionProgressHTML;
-  }
-  
-  /**
+/**
    * Handle context quality assessment from background script
    * Shows real-time quality indicator during test generation
    */
@@ -947,9 +1151,23 @@
     resultsContainer.innerHTML = enhancementHTML;
   }
 
-  function handleHistoricalMiningProgress(status) {
+  function handleHistoricalMiningProgress(progress) {
+    // Accept both the {phase} object the worker sends and a bare status string.
+    const phase = (progress && typeof progress === 'object') ? progress.phase : progress;
+    const status = (phase === 'done' || phase === 'complete') ? 'complete' : 'analyzing';
     const resultsContainer = document.getElementById('results-container');
     if (!resultsContainer) return;
+
+    // While a generation run owns the panel, mining is a PHASE of it — not a
+    // replacement for it. Overwriting the container here is what left the user
+    // staring at "✅ Mining complete" for the rest of the run.
+    if (GenerationStatus.isActive()) {
+      GenerationStatus.update({
+        phase: status === 'analyzing' ? 'Mining historical bugs' : 'Historical mining complete',
+        detail: status === 'analyzing' ? 'searching past issues for regression risks' : ''
+      });
+      return;
+    }
 
     const historicalHTML = `
       <div class="historical-mining-progress-container">
@@ -1520,6 +1738,22 @@
     if (docTexts.length > 0) {
       ticketData.documentAttachments = docTexts;
       console.log(`📄 Extracted text from ${docTexts.length} document(s) for LLM context`);
+
+      // F24: an image-only PDF is passed to a vision model as an image rather
+      // than being dropped — previously its base64 was produced and discarded.
+      const scanned = docTexts.filter(d => d.isScannedPdf && d.base64);
+      if (scanned.length) {
+        ticketData.imageAttachments = (ticketData.imageAttachments || []).concat(
+          scanned.map(d => ({ data: `data:${d.mimeType};base64,${d.base64}`, fileName: d.fileName }))
+        );
+      }
+    }
+    // F24: attachments we could NOT read are recorded on the ticket so generation
+    // and the panel can say a requirement may be missing, instead of treating an
+    // unreadable spec as no spec.
+    if (docTexts.unreadable && docTexts.unreadable.length) {
+      ticketData.unreadableAttachments = docTexts.unreadable;
+      console.warn(`⚠️ ${docTexts.unreadable.length} attachment(s) could not be read`);
     }
   }
 
@@ -1534,29 +1768,55 @@
     console.log(`📄 Found ${docAttachments.length} document attachment(s) to extract`);
     const results = [];
 
-    for (const att of docAttachments.slice(0, 5)) { // cap at 5 to avoid token overload
+    // F24: report every attachment, including the ones we could not read. The old
+    // loop kept only successful non-empty results and dropped the rest on the
+    // floor — so the base64 fallback for an image-only PDF was never delivered,
+    // and a spec nobody could read looked identical to no spec at all.
+    const skipped = [];
+
+    for (const att of docAttachments.slice(0, 10)) {
+      const fileName = att.fileName || att.name || 'document';
       try {
         const result = await new Promise(resolve => {
           chrome.runtime.sendMessage({
             action: 'fetchDocument',
             url: att.url,
-            fileName: att.fileName || att.name || 'document',
+            fileName,
             jiraEmail,
             jiraApiToken
           }, response => resolve(response || { success: false, error: 'No response' }));
         });
 
-        if (result.success && result.text) {
-          console.log(`✅ Extracted ${result.text.length} chars from ${att.fileName}`);
-          results.push({ fileName: att.fileName || att.name, text: result.text, type: result.type });
+        if (result.text) {
+          console.log(`✅ Extracted ${result.text.length} chars from ${fileName}`);
+          results.push({ fileName, text: result.text, type: result.type, status: result.status });
+        } else if (result.base64 && result.isScannedPdf) {
+          // Image-only PDF: hand the bytes to a vision-capable model rather than
+          // discarding the document entirely.
+          console.log(`🖼️ ${fileName} has no text layer — passing as an image for vision extraction`);
+          results.push({
+            fileName, text: '', type: result.type, status: result.status,
+            base64: result.base64, mimeType: result.mimeType, isScannedPdf: true
+          });
         } else {
-          console.warn(`⚠️ Could not extract ${att.fileName}: ${result.error}`);
+          console.warn(`⚠️ Could not extract ${fileName}: ${result.note || result.error}`);
+          skipped.push({ fileName, reason: result.note || result.error || 'unknown error', status: result.status });
         }
       } catch (err) {
-        console.warn(`⚠️ Error extracting ${att.fileName}:`, err.message);
+        console.warn(`⚠️ Error extracting ${fileName}:`, err.message);
+        skipped.push({ fileName, reason: err.message, status: 'error' });
       }
     }
 
+    // Anything beyond the cap is an omission the user should know about.
+    if (docAttachments.length > 10) {
+      skipped.push({
+        fileName: `${docAttachments.length - 10} further attachment(s)`,
+        reason: 'not processed — attachment limit reached', status: 'skipped'
+      });
+    }
+
+    results.unreadable = skipped;
     return results;
   }
 
@@ -1913,7 +2173,7 @@
         }
 
         const response = await new Promise((resolve, reject) => {
-          pendingStreamCompletions.set('analyze', { resolve, reject });
+          pendingStreamCompletions.set('analyze', { resolve, reject, ticketKey });
           chrome.runtime.sendMessage({
             action: 'analyzeRequirementsStream',
             data: { ticketKey, ticketData, settings, crawledContext }
@@ -2046,7 +2306,7 @@
         }
 
         const response = await new Promise((resolve, reject) => {
-          pendingStreamCompletions.set('scope', { resolve, reject });
+          pendingStreamCompletions.set('scope', { resolve, reject, ticketKey });
           chrome.runtime.sendMessage({
             action: 'generateTestScopeStream',
             data: { ticketKey, ticketData, settings, crawledContext }
@@ -2118,7 +2378,11 @@
   async function handleTestCases(ticketKey, ticketData) {
     const resultsContainer = document.getElementById('results-container');
     const btn = document.getElementById('test-cases-btn');
+    // The disabled button was the only signal a run had started, and a greyed-out
+    // button reads as "unavailable", not "working".
+    btn.dataset.originalLabel = btn.dataset.originalLabel || btn.innerHTML;
     btn.disabled = true;
+    btn.innerHTML = '<span class="btn-icon">⏳</span><span>Generating…</span>';
     setActivityIndicator(true);
     
     try {
@@ -2131,6 +2395,10 @@
         'coverageTarget', 'dedupThreshold', 'relevanceThreshold', 'enabledCategories', 'testCount',
         'useCrawledDataForTests',
         'enableHistoricalMining', 'historicalMaxResults', 'historicalJqlFilters',
+        // F14: none of these were loaded for generation, so the worker's
+        // existing-suite dedup branch was unreachable no matter what the user set.
+        'dedupeAgainstExistingSuite',
+        'testrailUrl', 'testrailUsername', 'testrailApiKey', 'testrailProjectId', 'testrailSuiteId',
         'jiraBaseUrl', 'jiraEmail', 'jiraApiToken',
         'figmaToken', 'googleApiKey'
       ]);
@@ -2148,6 +2416,8 @@
       }
 
       // Extract app context from crawled knowledge graphs (if enabled)
+      currentTicketData = ticketData;
+
       let appContext = null;
       if (settings.useCrawledDataForTests !== false) { // Enabled by default
         console.log('🔍 [CRAWL DATA] Feature enabled - extracting app context from crawled data...');
@@ -2155,12 +2425,12 @@
         currentAppContext = appContext; // Store globally for UI display
         if (appContext) {
           console.log(`✅ [CRAWL DATA] Successfully extracted app context:`);
+          const kg = appContext.knowledgeGraph || {};
           console.log(`   📱 App URL: ${appContext.appUrl}`);
-          console.log(`   📄 Total Pages: ${appContext.totalPages || 0}`);
-          console.log(`   📝 Forms: ${appContext.forms?.length || 0}`);
-          console.log(`   🔌 APIs: ${appContext.apis?.length || 0}`);
-          console.log(`   📄 Page details: ${appContext.pages?.length || 0}`);
-          console.log(`   🔘 Features: ${appContext.features?.length || 0}`);
+          console.log(`   📄 Total Pages: ${appContext.pageCount || 0}`);
+          console.log(`   📄 Pages transferred: ${appContext.transferPageCount || 0}`);
+          console.log(`   📝 Forms: ${kg.forms?.length || 0}`);
+          console.log(`   🔌 APIs: ${kg.apis?.length || 0}`);
         } else {
           console.log('⚠️ [CRAWL DATA] No crawled app context found - proceeding without it');
           console.log('   💡 Tip: Crawl your app first using the popup or settings page');
@@ -2234,10 +2504,11 @@
         const genAction = 'generateTestCasesAgentic';
         suppressAgentProgress = false; // allow progress updates for this run
         console.log('🚀 Starting agentic planner test case generation...');
-        resultsContainer.innerHTML = '<div class="qatalyst-loading">🧭 Planning grounded test coverage...</div>';
+        GenerationStatus.start('Generating test cases…');
+        GenerationStatus.update({ phase: 'Planning grounded test coverage', detail: 'reading the ticket and crawl evidence' });
 
         console.log('📤 Sending message to background script...');
-        const response = await new Promise((resolve, reject) => {
+        const response = await withGenerationTimeout(new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: genAction,
             data: {
@@ -2245,8 +2516,15 @@
               ticketData,
               settings,
               baseUrl: window.location.origin,
-              externalSources: currentAnalysisData?.externalSources, // Pass external sources if available
-              appContext: appContext // Add crawled app context
+              externalSources: currentAnalysisData?.externalSources, // source COUNTS only — see F09
+              appContext: appContext, // Add crawled app context
+              // F23: the reviewed analysis and test scope are edited in this
+              // panel and were then thrown away — generation rebuilt its own
+              // interpretation from the raw ticket. A user could correct an
+              // ambiguity or exclude a feature in the review step and still get
+              // tests based on the original reading, while the UI presented a
+              // connected QA workflow.
+              reviewedContext: buildReviewedContext()
             }
           }, response => {
             console.log('📥 Received response from background script:', response);
@@ -2266,11 +2544,12 @@
               resolve(response);
             }
           });
-        });
+        }));
 
         // Render final results and stop accepting progress updates so a late
         // "done" message cannot overwrite the test-case list.
         suppressAgentProgress = true;
+        GenerationStatus.stop();
         displayTestCasesResults(response);
       }
       // Use streaming or regular based on settings
@@ -2279,10 +2558,11 @@
         streamingContent = '';
         isStreaming = true;
         currentStreamingRequestId = `testcases-${Date.now()}`;
-        resultsContainer.innerHTML = '<div class="qatalyst-loading">🤖 Generating test cases (streaming enabled)...</div>';
+        GenerationStatus.start('Generating test cases…');
+        GenerationStatus.update({ phase: 'Streaming from the model', detail: 'output is validated before it is shown' });
         
         const response = await new Promise((resolve, reject) => {
-          pendingStreamCompletions.set('testcases', { resolve, reject });
+          pendingStreamCompletions.set('testcases', { resolve, reject, ticketKey });
           chrome.runtime.sendMessage({
             action: 'generateTestCasesStream',
             data: { ticketKey, ticketData, settings, appContext }
@@ -2303,7 +2583,8 @@
         displayTestCasesResults(response);
       } else {
         // Regular non-streaming (single-agent)
-        resultsContainer.innerHTML = '<div class="qatalyst-loading">🤖 Generating test cases...</div>';
+        GenerationStatus.start('Generating test cases…');
+        GenerationStatus.update({ phase: 'Asking the model', detail: 'this usually takes 30-90 seconds' });
         
         const response = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
@@ -2329,16 +2610,21 @@
           });
         });
 
+        GenerationStatus.stop();
         displayTestCasesResults(response);
       }
-      
+
     } catch (error) {
       isStreaming = false;
       currentStreamingRequestId = null;
       resultsContainer.innerHTML = '';
       resultsContainer.appendChild(createSafeErrorMessage(error.message));
     } finally {
+      // The status must never outlive the run — a spinner still ticking after a
+      // failure is worse than no spinner at all.
+      GenerationStatus.stop();
       btn.disabled = false;
+      if (btn.dataset.originalLabel) btn.innerHTML = btn.dataset.originalLabel;
       setActivityIndicator(false);
     }
   }
@@ -2348,6 +2634,31 @@
   let currentTestScopeData = null;
   let currentTestCasesData = null;
   let currentAppContext = null; // Store crawled app context for UI display
+  // F03: the ticket behind the current suite, so regeneration can be validated
+  // against the original requirements rather than only the previous output.
+  let currentTicketData = null;
+
+  /**
+   * F23: package the user's REVIEWED analysis and scope so generation consumes
+   * the decisions they made, not just the raw ticket. Returns null when neither
+   * step has been run — generation then behaves exactly as before.
+   *
+   * Model output is a PROPOSAL: it is passed as reviewed interpretation, and the
+   * prompt is explicit that the ticket remains the source of truth, so an
+   * unsupported inference in the analysis cannot silently become a requirement.
+   */
+  function buildReviewedContext() {
+    const analysis = currentAnalysisData && (currentAnalysisData.analysis || currentAnalysisData.content);
+    const scope = currentTestScopeData && (currentTestScopeData.testScope || currentTestScopeData.scope || currentTestScopeData.content);
+    if (!analysis && !scope) return null;
+    return {
+      analysis: typeof analysis === 'string' ? analysis.slice(0, 6000) : null,
+      scope: typeof scope === 'string' ? scope.slice(0, 6000) : null,
+      // Whether the user actually edited/regenerated these, or just saw them.
+      analysisReviewed: !!(currentAnalysisData && currentAnalysisData.reviewed),
+      scopeReviewed: !!(currentTestScopeData && currentTestScopeData.reviewed)
+    };
+  }
   let currentQualityReports = null; // Store quality reports from background
 
   // Display functions
@@ -2500,15 +2811,17 @@
     // Render context summary box
     const contextSummaryHtml = renderContextSummaryBox(data.externalSources || {}, currentAppContext);
 
-    // Calculate statistics from test cases
-    const stats = {
-      total: data.total || data.testCases?.length || 0,
-      positive: data.byCategory?.Positive || data.testCases?.filter(tc => tc.category === 'Positive').length || 0,
-      negative: data.byCategory?.Negative || data.testCases?.filter(tc => tc.category === 'Negative').length || 0,
-      edge: data.byCategory?.Edge || data.testCases?.filter(tc => tc.category === 'Edge').length || 0,
-      regression: data.byCategory?.Regression || data.testCases?.filter(tc => tc.category === 'Regression').length || 0,
-      integration: data.byCategory?.Integration || data.testCases?.filter(tc => tc.category === 'Integration').length || 0
-    };
+    // F15: one category registry across prompts, distribution, UI and export.
+    // The chips were a hardcoded five, so Security and Accessibility tests — which
+    // the distribution module can and does generate — were produced but had no
+    // filter and were invisible in the counts.
+    const allCases = data.testCases || [];
+    const registry = (typeof DynamicDistribution !== 'undefined' && DynamicDistribution.CATEGORIES)
+      || ['Positive', 'Negative', 'Edge', 'Regression', 'Integration', 'Security', 'Accessibility'];
+    // Registry order first, then any category the model actually emitted.
+    const categories = [...new Set([...registry, ...allCases.map(tc => tc.category).filter(Boolean)])];
+    const countFor = (cat) => data.byCategory?.[cat] ?? allCases.filter(tc => tc.category === cat).length;
+    const stats = { total: data.total || allCases.length || 0 };
 
     // Enhancement badges
     let enhancementBadges = '';
@@ -2574,36 +2887,22 @@
       }
     }
 
-    // Evolution status badge
-    let evolutionBadge = '';
-    if (data.evolutionPending && !data.finalEvolution) {
-      evolutionBadge = `
-        <div class="evolution-pending-badge">
-          ⏳ Evolutionary optimization in progress... Base test cases shown below.
-        </div>
-      `;
-    } else if (data.finalEvolution) {
-      evolutionBadge = `
-        <div class="evolution-complete-badge">
-          ✨ Enhanced with evolutionary optimization ${data.improvement ? `(+${data.improvement} tests)` : ''}
-        </div>
-      `;
-    }
+    // F21: the "evolutionary optimization" badges were removed — that generation
+    // path was retired and nothing sets `evolutionPending`/`finalEvolution` any
+    // more, so the UI could only ever have shown a status the system no longer
+    // produces. Real quality status is rendered by renderQualityStatus() below.
+    const qualityStatusHtml = renderQualityStatus(data);
 
     container.innerHTML = `
       <div class="qatalyst-result">
         <h4>✅ Generated Test Cases</h4>
         ${contextSummaryHtml}
-        ${evolutionBadge}
+        ${qualityStatusHtml}
         ${enhancementBadges}
         ${historicalBadge}
         <div class="test-stats" data-testid="test-stats">
           <button class="stat-filter active" data-filter="all" data-testid="filter-all">Total: ${stats.total}</button>
-          <button class="stat-filter" data-filter="Positive" data-testid="filter-Positive">Positive: ${stats.positive}</button>
-          <button class="stat-filter" data-filter="Negative" data-testid="filter-Negative">Negative: ${stats.negative}</button>
-          <button class="stat-filter" data-filter="Edge" data-testid="filter-Edge">Edge: ${stats.edge}</button>
-          <button class="stat-filter" data-filter="Regression" data-testid="filter-Regression">Regression: ${stats.regression}</button>
-          <button class="stat-filter" data-filter="Integration" data-testid="filter-Integration">Integration: ${stats.integration}</button>
+          ${categories.map(cat => `<button class="stat-filter" data-filter="${escapeHtml(cat)}" data-testid="filter-${escapeHtml(cat)}">${escapeHtml(cat)}: ${countFor(cat)}</button>`).join('')}
         </div>
 
         <!-- Enhanced Filter Controls -->
@@ -2717,6 +3016,9 @@
     });
 
     // Filter functionality
+    // §15.1: make the per-case review controls live.
+    bindReviewDecisionButtons();
+
     const filterButtons = document.querySelectorAll('.stat-filter');
 
     // Ensure only 'Total' button is active initially and reset filter state
@@ -2868,6 +3170,9 @@
     });
   }
   
+  // F15: renderQualityStatus lives in content-format.js (pure + unit-tested);
+  // content.js calls it exactly as it would a local function.
+
   function renderContextSummaryBox(externalSources, appContext = null) {
     const jiraStatus = '✅ Yes'; // Jira is always the primary context
     const confluenceStatus = externalSources.confluence > 0 ? '✅ Yes' : '❌ No';
@@ -2916,6 +3221,50 @@
 
   // renderMarkdown, inlineMarkdown, formatAnalysis, formatTestScope → content-format.js
 
+  /**
+   * §15.1: record what the reviewer decided about a case, so the decision
+   * survives the next run instead of having to be made again. Scoped to the
+   * project and the requirement revision, so it cannot leak across projects or
+   * outlive the requirement it was about.
+   */
+  async function recordDecision(testCase, verdict, reason) {
+    try {
+      const key = currentTicketData && currentTicketData.key;
+      const res = await chrome.runtime.sendMessage({
+        action: 'recordReviewDecision',
+        data: {
+          testCase, verdict,
+          project: key ? String(key).split('-')[0] : 'default',
+          meta: {
+            reason: reason || '',
+            requirementIds: testCase.requirementIds || [],
+            requirementRevision: (currentTicketData && (currentTicketData.updated || currentTicketData.version)) || null
+          }
+        }
+      });
+      return !!(res && res.success);
+    } catch (e) {
+      console.warn('[QAtalyst] could not record review decision:', e.message);
+      return false;
+    }
+  }
+
+  /** Wire the per-case review controls rendered by formatTestCases. */
+  function bindReviewDecisionButtons() {
+    document.querySelectorAll('[data-decision]').forEach(btn => {
+      if (btn.dataset.bound) return;
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', async () => {
+        const idx = Number(btn.dataset.caseIndex);
+        const tc = ((currentTestCasesData && currentTestCasesData.testCases) || [])[idx];
+        if (!tc) return;
+        const ok = await recordDecision(tc, btn.dataset.decision);
+        btn.textContent = ok ? '✓ noted' : '✗ failed';
+        btn.disabled = true;
+      });
+    });
+  }
+
   function formatTestCases(testCases) {
     return testCases.map((tc, idx) => {
       // Handle both camelCase and snake_case property names
@@ -2933,6 +3282,26 @@
         ? `<span class="source-badge historical">🛡️ Bug Prevention</span>`
         : '';
 
+      // F15: per-case quality flags. The pipeline records these on every case
+      // (unresolved references, no crawl to verify against, a questionable
+      // assertion, an asserted behaviour with no supporting API) but the panel
+      // rendered none of them, so an unverified case was visually identical to a
+      // fully grounded one.
+      const warnings = [
+        tc._grounding === 'unresolved'
+          ? 'References app elements that could not be found in the crawl — verify before executing.' : '',
+        tc._grounding === 'unverified'
+          ? 'Not verified against a crawled app — grounding could not run.' : '',
+        tc._assertionWarning || '',
+        ...(Array.isArray(tc._behaviorWarnings) ? tc._behaviorWarnings : [])
+      ].filter(Boolean);
+      const qualityBadge = warnings.length
+        ? `<span class="tc-quality-badge ${tc._grounding === 'unresolved' ? 'unresolved' : 'review'}" title="${escapeHtml(warnings.join(' '))}">👁️ Review</span>`
+        : '';
+      const warningsHtml = warnings.length
+        ? `<div class="tc-warnings">${warnings.map(w => `<div class="tc-warning">⚠️ ${escapeHtml(w)}</div>`).join('')}</div>`
+        : '';
+
       const ref = escapeHtml(tc.historicalReference || '');
       const historicalInfo = tc.historicalReference
         ? `<div class="historical-ref">📚 Based on: <a href="${escapeHtml(window.location.origin)}/browse/${ref}" target="_blank" rel="noopener noreferrer">${ref}</a></div>`
@@ -2945,13 +3314,15 @@
         : '';
 
       return `
-      <div class="test-case ${tc.source === 'historical' ? 'historical-test' : ''}" data-testid="test-case-${idx}">
+      <div class="test-case ${tc.source === 'historical' ? 'historical-test' : ''}${warnings.length ? ' needs-review' : ''}" data-testid="test-case-${idx}">
         <div class="tc-header">
           <span class="tc-id">${escapeHtml(tc.id || '')}</span>
           <span class="tc-priority ${escapeHtml(tc.priority || '')}">${escapeHtml(tc.priority || '')}</span>
           <span class="tc-category">${escapeHtml(tc.category || '')}</span>
           ${sourceBadge}
+          ${qualityBadge}
         </div>
+        ${warningsHtml}
         <div class="tc-title">${inlineMarkdown(tc.title)}</div>
         ${tc.preventionReason ? `<div class="prevention-reason">🛡️ ${inlineMarkdown(tc.preventionReason)}</div>` : ''}
         ${historicalInfo}
@@ -2963,6 +3334,15 @@
         ${testData ? `<div class="tc-data"><strong>Test Data:</strong> ${inlineMarkdown(testData)}</div>` : ''}
         <div class="tc-expected">
           <strong>Expected Result:</strong> ${inlineMarkdown(expectedResult)}
+        </div>
+        <div class="tc-decisions">
+          <span class="tc-decisions-label">Not useful?</span>
+          <button type="button" class="tc-decision-btn" data-decision="irrelevant" data-case-index="${idx}"
+                  title="Do not propose this scenario again for this ticket">Irrelevant</button>
+          <button type="button" class="tc-decision-btn" data-decision="incorrect_expectation" data-case-index="${idx}"
+                  title="The expected result is wrong">Wrong expectation</button>
+          <button type="button" class="tc-decision-btn" data-decision="not_executable" data-case-index="${idx}"
+                  title="This cannot be run as written">Not executable</button>
         </div>
       </div>
     `;
@@ -3605,7 +3985,13 @@
             type: 'testCases',
             originalContent: JSON.stringify(currentTestCasesData.testCases),
             userReview: userReview,
-            settings
+            settings,
+            // F03: send the original ticket + crawl evidence too. Regeneration
+            // was previously given only the previous output and the review
+            // comment, so the regenerated suite could not be checked for
+            // relevance or grounding against anything.
+            ticketData: currentTicketData,
+            appContext: currentAppContext
           }
         }, response => {
           if (chrome.runtime.lastError) {
@@ -3634,66 +4020,6 @@
   function showHelp() {
     // Open options page with Help tab selected
     chrome.runtime.sendMessage({ action: 'openOptionsPage', tab: 'help' });
-  }
-
-  // Handle evolution completion
-  function handleEvolutionComplete(data) {
-    console.log('Evolution complete, updating UI with evolved tests');
-
-    if (!currentTestCasesData) {
-      console.warn('No current test cases data to update');
-      return;
-    }
-
-    // Update current data with evolved results
-    currentTestCasesData.testCases = data.testCases;
-    currentTestCasesData.total = data.statistics.total;
-    currentTestCasesData.byCategory = data.statistics.byCategory;
-    currentTestCasesData.byPriority = data.statistics.byPriority;
-    currentTestCasesData.evolved = true;
-    currentTestCasesData.finalEvolution = true;
-    currentTestCasesData.improvement = data.improvement;
-
-    // Re-display results with evolved tests
-    displayTestCasesResults(currentTestCasesData);
-
-    // Show success notification
-    const container = document.getElementById('results-container');
-    if (container) {
-      const notification = document.createElement('div');
-      notification.className = 'qatalyst-success';
-      notification.style.marginBottom = '16px';
-      notification.innerHTML = `
-        ✅ <strong>Evolutionary Optimization Complete!</strong><br>
-        ${data.improvement > 0 ? `Added ${data.improvement} optimized tests through genetic algorithm.` : 'Test suite optimized for better coverage.'}
-      `;
-
-      container.insertBefore(notification, container.firstChild);
-
-      // Auto-remove after 5 seconds
-      setTimeout(() => notification.remove(), 5000);
-    }
-  }
-
-  // Handle evolution error
-  function handleEvolutionError(error) {
-    console.error('Evolution error:', error);
-
-    const container = document.getElementById('results-container');
-    if (!container) return;
-
-    // Replace evolution progress with error message
-    const existing = container.querySelector('.evolution-progress-container');
-    if (existing) {
-      const notification = document.createElement('div');
-      notification.className = 'qatalyst-warning';
-      notification.innerHTML = `
-        ⚠️ <strong>Evolution Optimization Failed</strong><br>
-        ${error}<br>
-        <small>Base test cases are still available and valid.</small>
-      `;
-      existing.replaceWith(notification);
-    }
   }
 
   /**
@@ -3743,13 +4069,8 @@
       <div style="font-size: 12px; color: #495057;">${items.join(' &nbsp;|&nbsp; ')}</div>
     `;
 
-    // Insert before evolution progress or at end
-    const evolutionContainer = container.querySelector('.evolution-progress-container');
-    if (evolutionContainer) {
-      container.insertBefore(reportHTML, evolutionContainer);
-    } else {
-      container.appendChild(reportHTML);
-    }
+    // F21: the evolution-progress container no longer exists — nothing renders it.
+    container.appendChild(reportHTML);
   }
 
   // Initialize
@@ -4233,13 +4554,68 @@
       // Pass ticketData for smart keyword-based filtering
       console.log('[CRAWL DATA] 📡 Requesting knowledge graph with ticket context...');
 
-      const kgResponse = await chrome.runtime.sendMessage({
-        action: 'loadEmbeddings',
-        data: {
-          appUrl: matchedApp.url,
-          ticketData: ticketData // Pass ticket for smart filtering
+      // Query EVERY relevant crawl, not just the best one.
+      //
+      // Only the top-ranked app was loaded, so with a 257-page help-site crawl
+      // and a 70-page app crawl, one of them was silently ignored — and a rule
+      // documented only in the help centre, or a control present only in the app,
+      // was invisible to generation depending on which won.
+      //
+      // Each graph is filtered to the ticket's relevant pages first (the worker
+      // does that), so combining them stays bounded rather than shipping both
+      // crawls wholesale.
+      const ranked = (typeof rankMatchingApps === 'function')
+        ? rankMatchingApps(response.apps, ticketData)
+        : [matchedApp];
+      const toLoad = ranked.slice(0, 3); // bounded: primary + supporting evidence
+
+      const loaded = [];
+      for (const app of toLoad) {
+        const res = await chrome.runtime.sendMessage({
+          action: 'loadEmbeddings',
+          data: { appUrl: app.url, ticketData }
+        });
+        if (res && res.success && res.result && res.result.knowledgeGraph) {
+          const pageCount = Object.keys(res.result.knowledgeGraph.pages || {}).length;
+          // A crawl that contributes no ticket-relevant page adds nothing but noise.
+          if (pageCount > 0) {
+            loaded.push({ app, result: res.result, pageCount });
+            console.log(`   + ${app.url}: ${pageCount} relevant page(s)`);
+          } else {
+            console.log(`   - ${app.url}: no ticket-relevant pages, skipped`);
+          }
         }
-      });
+      }
+
+      let kgResponse;
+      if (loaded.length === 0) {
+        // Fall back to the primary so the "no relevant pages" path still reports.
+        kgResponse = await chrome.runtime.sendMessage({
+          action: 'loadEmbeddings',
+          data: { appUrl: matchedApp.url, ticketData }
+        });
+      } else if (loaded.length === 1) {
+        kgResponse = { success: true, result: loaded[0].result };
+      } else {
+        // Combine the filtered graphs so grounding sees the app AND the docs.
+        const merged = await chrome.runtime.sendMessage({
+          action: 'mergeGraphsInMemory',
+          data: { graphs: loaded.map(l => l.result.knowledgeGraph) }
+        });
+        if (merged && merged.success && merged.knowledgeGraph) {
+          const primary = loaded[0].result;
+          kgResponse = { success: true, result: {
+            ...primary,
+            knowledgeGraph: merged.knowledgeGraph,
+            appUrl: primary.appUrl,
+            combinedFrom: loaded.map(l => l.app.url),
+            transferPageCount: Object.keys(merged.knowledgeGraph.pages || {}).length
+          } };
+          console.log(`🔀 Combined ${loaded.length} crawls for grounding: ${loaded.map(l => l.app.url).join(', ')}`);
+        } else {
+          kgResponse = { success: true, result: loaded[0].result };
+        }
+      }
 
       console.log('[CRAWL DATA] 📨 loadEmbeddings response:', kgResponse ? 'received' : 'null');
 
@@ -4272,13 +4648,23 @@
 
       // Create app context with raw knowledge graph
       // ContextAnalysisAgent will analyze this in the orchestrator (Agent 1/8)
+      const r = kgResponse.result;
       const context = {
-        appUrl: kgResponse.result.appUrl,
+        appUrl: r.appUrl,
         knowledgeGraph: knowledgeGraph,
         hasContext: hasContext,
-        crawledAt: kgResponse.result.crawledAt,
-        pageCount: kgResponse.result.pageCount,
-        transferPageCount: kgResponse.result.transferPageCount
+        crawledAt: r.crawledAt,
+        pageCount: r.pageCount,
+        transferPageCount: r.transferPageCount,
+        // F01: these evidence flags were dropped here, so the worker's
+        // stale / thin-relevance degradation warnings could never fire — the
+        // suite looked fully grounded even against a months-old or unrelated
+        // crawl. They live on `result` (not on the graph) — carry both.
+        stale: r.stale,
+        stalenessDays: r.stalenessDays,
+        staleAfterDays: r.staleAfterDays,
+        lowRelevance: knowledgeGraph?.lowRelevance,
+        noRelevantPages: knowledgeGraph?.noRelevantPages
       };
 
       console.log('✅ [CRAWL DATA] App context prepared successfully:');

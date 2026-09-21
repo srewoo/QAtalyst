@@ -1,7 +1,16 @@
 // Options page script
 
 // Model options - keep in sync with popup.js
+/**
+ * OFFLINE FALLBACK ONLY. The real list is discovered from the provider with the
+ * user's own key (model-registry.js), because a hardcoded list is wrong in both
+ * directions: it offers models an account may not have access to — which fails
+ * at generation time, after the user has waited — and hides models the account
+ * does have, including anything released since this list was last edited.
+ * Used before a key is entered, and when discovery fails.
+ */
 const modelOptions = {
+  ollama: [],
   openai: [
     { value: 'gpt-5.2',      label: 'GPT-5.2 (Recommended)' },
     { value: 'gpt-5.2-mini', label: 'GPT-5.2 Mini (Fast & Cheap)' },
@@ -54,6 +63,7 @@ const modelOptions = {
 };
 
 const keyLinks = {
+  ollama: 'https://ollama.com/download',
   openai: 'https://platform.openai.com/api-keys',
   claude: 'https://console.anthropic.com/settings/keys',
   gemini: 'https://aistudio.google.com/app/apikey',
@@ -176,6 +186,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const settings = await chrome.storage.sync.get([
     'llmProvider',
     'llmModel',
+    'ollamaBaseUrl',
     'apiKey',
     'bedrockAccessKeyId',
     'bedrockSecretKey',
@@ -188,6 +199,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'coverageTarget',
     'testCount',
     'enableHistoricalMining',
+    'dedupeAgainstExistingSuite',
     'historicalMaxResults',
     'historicalJqlFilters',
     'jiraBaseUrl',
@@ -275,9 +287,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateKeyLink('openai');
   }
 
-  if (settings.llmModel) {
-    document.getElementById('llmModel').value = settings.llmModel;
+  if (settings.ollamaBaseUrl) {
+    document.getElementById('ollamaBaseUrl').value = settings.ollamaBaseUrl;
   }
+
+  if (settings.llmModel) {
+    const sel = document.getElementById('llmModel');
+    // The saved model may not be in the built-in list (a fine-tune, a private
+    // deployment, a local Ollama tag). Keep it selectable rather than silently
+    // dropping the user's choice; discovery below replaces the list anyway.
+    if (!Array.from(sel.options).some(o => o.value === settings.llmModel)) {
+      const opt = document.createElement('option');
+      opt.value = settings.llmModel;
+      opt.textContent = settings.llmModel;
+      sel.appendChild(opt);
+    }
+    sel.value = settings.llmModel;
+  }
+
+  // Discover what this key can really use, without blocking page load.
+  refreshModels({ silent: true });
 
   if (settings.apiKey) {
     document.getElementById('apiKey').value = settings.apiKey;
@@ -318,6 +347,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Historical Mining
   document.getElementById('enableHistoricalMining').checked = settings.enableHistoricalMining || false;
+  // F14: this setting existed in the worker but had no control and was never
+  // loaded, so existing-suite deduplication could never actually run.
+  document.getElementById('dedupeAgainstExistingSuite').checked = settings.dedupeAgainstExistingSuite || false;
   document.getElementById('historicalMaxResults').value = settings.historicalMaxResults || 20;
   document.getElementById('historicalJqlFilters').value = settings.historicalJqlFilters || '';
   document.getElementById('jiraBaseUrl').value = settings.jiraBaseUrl || '';
@@ -455,23 +487,206 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 });
 
+/**
+ * Reasoning models ignore temperature and need a larger output budget. Saying so
+ * next to the controls is better than silently overriding the user's value and
+ * letting them wonder why their setting had no effect.
+ */
+function updateModelCapabilityHint() {
+  const model = document.getElementById('llmModel').value;
+  const provider = document.getElementById('llmProvider').value;
+  const tempInput = document.getElementById('temperature');
+  const tokensInput = document.getElementById('maxTokens');
+  let hint = document.getElementById('modelCapabilityHint');
+
+  if (typeof modelCapabilities !== 'function' || !model) return;
+  const caps = modelCapabilities(model, provider);
+
+  if (!hint) {
+    hint = document.createElement('p');
+    hint.id = 'modelCapabilityHint';
+    hint.className = 'help-text';
+    hint.dataset.testid = 'model-capability-hint';
+    hint.style.cssText = 'margin-top:6px;color:#974f0c;';
+    (tempInput?.parentElement || document.body).appendChild(hint);
+  }
+
+  const notes = [];
+  // A local model on the agentic path is the single most common cause of a run
+  // that looks hung. Say so at SELECTION time, not after a ten-minute wait.
+  if (provider === 'ollama' && typeof providerTuning === 'function' && typeof estimateRuntime === 'function') {
+    const settingsNow = { testCount: Number(document.getElementById('testCount')?.value) || 30,
+                          maxTokens: Number(tokensInput?.value) || 4096 };
+    const t = providerTuning('ollama', settingsNow);
+    notes.push(`Local models are much slower than hosted ones: the planner will use ${t.maxSteps} steps with larger batches, expected to take ${estimateRuntime('ollama', t).label}. Turn off multi-agent mode in Test Case Settings for a single faster call.`);
+  }
+  if (!caps.supportsTemperature) {
+    notes.push(`${model} is a reasoning model: it uses its own temperature, so the value above has no effect.`);
+  }
+  if (caps.minOutputTokens && Number(tokensInput?.value || 0) < caps.minOutputTokens) {
+    notes.push(`It also spends part of the output budget thinking — requests will use at least ${caps.minOutputTokens} max tokens so the answer is not cut off.`);
+  }
+  hint.textContent = notes.join(' ');
+  hint.style.display = notes.length ? 'block' : 'none';
+}
+
+document.getElementById('llmModel').addEventListener('change', updateModelCapabilityHint);
+
+/**
+ * §14: read the imported evidence files and hand them to the worker.
+ *
+ * These importers existed and were unit-tested but nothing ever reached them —
+ * a capability with no caller, which is the same defect as a setting with no
+ * control. File import keeps it account-free, per fix2.md §14.1.
+ */
+const readFileText = (input) => new Promise((resolve) => {
+  const file = input && input.files && input.files[0];
+  if (!file) { resolve(null); return; }
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result || ''));
+  reader.onerror = () => resolve(null);
+  reader.readAsText(file);
+});
+
+document.getElementById('importEvidenceBtn')?.addEventListener('click', async () => {
+  const out = document.getElementById('importEvidenceResult');
+  out.textContent = 'Reading files…';
+
+  const imports = {
+    openapi: await readFileText(document.getElementById('importOpenApi')),
+    projectProfile: await readFileText(document.getElementById('importProfile')),
+    changeContext: await readFileText(document.getElementById('importChange')),
+    executionResults: await readFileText(document.getElementById('importExecution')),
+    runtimeErrors: await readFileText(document.getElementById('importRuntime'))
+  };
+  for (const k of Object.keys(imports)) if (!imports[k]) delete imports[k];
+
+  if (!Object.keys(imports).length) {
+    out.textContent = 'Choose at least one file to import.';
+    return;
+  }
+
+  const res = await chrome.runtime.sendMessage({ action: 'importEvidence', data: imports });
+  if (!res || !res.success) {
+    out.textContent = `❌ ${(res && res.error) || 'Import failed'}`;
+    return;
+  }
+  // A partly-failed import must say which source failed, not report success.
+  const failed = (res.failures || []).map(f => `${f.source} (${f.error})`);
+  out.textContent = `✅ Imported ${res.sources.join(', ')} — ${res.obligations} obligation(s) available to generation.` +
+    (failed.length ? `  ⚠️ Could not read: ${failed.join('; ')}` : '');
+});
+
 // Provider change handler
 document.getElementById('llmProvider').addEventListener('change', (e) => {
   updateModelOptions(e.target.value);
   updateKeyLink(e.target.value);
-  toggleBedrockFields(e.target.value);
+  toggleProviderFields(e.target.value);
+  // Ask the provider what this key can actually use.
+  refreshModels({ silent: true });
 });
 
-function toggleBedrockFields(provider) {
+// Re-discover when the credential changes — a new key can mean new access.
+document.getElementById('apiKey').addEventListener('change', () => refreshModels({ silent: true }));
+document.getElementById('refreshModelsBtn').addEventListener('click', () => refreshModels({ silent: false }));
+const ollamaUrlInput = document.getElementById('ollamaBaseUrl');
+if (ollamaUrlInput) ollamaUrlInput.addEventListener('change', () => refreshModels({ silent: true }));
+
+function toggleProviderFields(provider) {
   const apiKeyGroup = document.getElementById('apiKeyGroup');
   const bedrockGroup = document.getElementById('bedrockCredentialsGroup');
-  if (provider === 'bedrock') {
-    apiKeyGroup.style.display = 'none';
-    bedrockGroup.style.display = 'block';
-  } else {
-    apiKeyGroup.style.display = 'block';
-    bedrockGroup.style.display = 'none';
+  const ollamaGroup = document.getElementById('ollamaGroup');
+
+  const isBedrock = provider === 'bedrock';
+  const isOllama = provider === 'ollama';
+  // Ollama is local: it needs a URL, not a credential. Showing an API Key field
+  // would imply one is required.
+  apiKeyGroup.style.display = (isBedrock || isOllama) ? 'none' : 'block';
+  bedrockGroup.style.display = isBedrock ? 'block' : 'none';
+  if (ollamaGroup) ollamaGroup.style.display = isOllama ? 'block' : 'none';
+}
+// Kept as an alias so any existing caller keeps working.
+const toggleBedrockFields = toggleProviderFields;
+
+/**
+ * Populate the Model dropdown from the PROVIDER, using the user's own
+ * credentials, and say plainly where the list came from. A stale hardcoded list
+ * silently offering an inaccessible model is worse than a short accurate one.
+ */
+async function refreshModels({ silent = false } = {}) {
+  const provider = document.getElementById('llmProvider').value;
+  const modelSelect = document.getElementById('llmModel');
+  const hint = document.getElementById('modelSourceHint');
+  const btn = document.getElementById('refreshModelsBtn');
+  const previous = modelSelect.value;
+
+  const setHint = (html) => {
+    if (!hint) return;
+    hint.innerHTML = '';
+    const span = document.createElement('span');
+    span.innerHTML = html;
+    hint.appendChild(span);
+    hint.appendChild(document.createTextNode(' '));
+    if (btn) hint.appendChild(btn);
+  };
+
+  if (typeof discoverModels !== 'function') return;
+
+  let apiKey = document.getElementById('apiKey').value;
+  // Stored keys are encrypted; the field may hold a masked placeholder.
+  if (apiKey && /^[•*]+$/.test(apiKey.trim())) {
+    const stored = await loadAndDecryptStoredKey();
+    if (stored) apiKey = stored;
   }
+
+  if (!silent && btn) btn.textContent = '↻ Checking…';
+  setHint('Checking which models your credentials can use…');
+
+  const settings = {
+    apiKey,
+    ollamaBaseUrl: (document.getElementById('ollamaBaseUrl') || {}).value,
+    openaiBaseUrl: ''
+  };
+  const fallback = (modelOptions[provider] || []).map(o => ({ id: o.value, label: o.label }));
+  const result = await discoverModels(provider, settings, fallback);
+
+  modelSelect.innerHTML = '';
+  for (const m of result.models) {
+    const option = document.createElement('option');
+    option.value = m.id;
+    option.textContent = m.label || m.id;
+    modelSelect.appendChild(option);
+  }
+  // Keep the user's saved choice when the provider still offers it.
+  if (previous && result.models.some(m => m.id === previous)) modelSelect.value = previous;
+
+  if (btn) btn.textContent = '↻ Refresh model list';
+  updateModelCapabilityHint();
+  if (result.source === 'discovered') {
+    setHint(`✅ ${result.models.length} model(s) available to your ${provider === 'ollama' ? 'local Ollama' : 'account'}.`);
+  } else if (!result.models.length) {
+    setHint(`⚠️ Could not list models: ${escapeForHint(result.error || 'unknown error')}`);
+  } else {
+    setHint(`⚠️ Showing a built-in list — could not confirm your access (${escapeForHint(result.error || '')}). Some models here may not work.`);
+  }
+}
+
+function escapeForHint(text) {
+  const d = document.createElement('div');
+  d.textContent = String(text || '');
+  return d.innerHTML;
+}
+
+/** Read back the saved (encrypted) key so discovery works without re-typing it. */
+async function loadAndDecryptStoredKey() {
+  try {
+    const stored = await chrome.storage.sync.get(['apiKey']);
+    if (!stored.apiKey) return '';
+    if (typeof securityManager !== 'undefined' && securityManager.decrypt) {
+      return await securityManager.decrypt(stored.apiKey);
+    }
+    return stored.apiKey;
+  } catch (_) { return ''; }
 }
 
 // Show/hide the session token warning hint based on Access Key ID prefix
@@ -519,6 +734,7 @@ document.getElementById('testConnectionBtn').addEventListener('click', async () 
     provider,
     model,
     apiKey: document.getElementById('apiKey').value.trim(),
+    ollamaBaseUrl: (document.getElementById('ollamaBaseUrl') || {}).value || 'http://localhost:11434',
     bedrockAccessKeyId: document.getElementById('bedrockAccessKeyId').value.trim(),
     bedrockSecretKey: document.getElementById('bedrockSecretKey').value.trim(),
     bedrockSessionToken: document.getElementById('bedrockSessionToken').value.trim(),
@@ -536,7 +752,8 @@ document.getElementById('testConnectionBtn').addEventListener('click', async () 
       showTestResult(result, false, 'Temporary credentials (ASIA...) require a Session Token. Please enter it above.');
       return;
     }
-  } else {
+  } else if (provider !== 'ollama') {
+    // Ollama is local — it has no API key, so demanding one would block the test.
     if (!credentials.apiKey) {
       showTestResult(result, false, 'Please enter your API key.');
       return;
@@ -583,6 +800,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     // API Settings
     llmProvider: document.getElementById('llmProvider').value,
     llmModel: document.getElementById('llmModel').value,
+    ollamaBaseUrl: (document.getElementById('ollamaBaseUrl') || {}).value || 'http://localhost:11434',
     apiKey: document.getElementById('apiKey').value,
     bedrockAccessKeyId: document.getElementById('bedrockAccessKeyId').value,
     bedrockSecretKey: document.getElementById('bedrockSecretKey').value,
@@ -597,6 +815,7 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
 
     // Historical Mining
     enableHistoricalMining: document.getElementById('enableHistoricalMining').checked,
+    dedupeAgainstExistingSuite: document.getElementById('dedupeAgainstExistingSuite').checked,
     historicalMaxResults: parseInt(document.getElementById('historicalMaxResults').value),
     historicalJqlFilters: document.getElementById('historicalJqlFilters').value.trim(),
     jiraBaseUrl: document.getElementById('jiraBaseUrl').value.trim(),

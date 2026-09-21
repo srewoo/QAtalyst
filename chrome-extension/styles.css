@@ -955,56 +955,13 @@
 }
 
 /* Evolution Progress Styles */
-.evolution-progress-container {
-  background: linear-gradient(135deg, #faf5ff 0%, #f3e8ff 100%);
-  border-radius: 8px;
-  padding: 20px;
-  margin: 10px 0;
-  border: 2px solid #a78bfa;
-}
 
-.evolution-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
 
-.evolution-header h3 {
-  margin: 0;
-  color: #7c3aed;
-  font-size: 16px;
-  font-weight: 600;
-}
 
-.evolution-status {
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 600;
-}
 
-.evolution-status.evolving {
-  background: #fef3c7;
-  color: #d97706;
-}
 
-.evolution-status.completed {
-  background: #d1fae5;
-  color: #059669;
-}
 
-.evolution-info {
-  display: flex;
-  gap: 24px;
-  margin-bottom: 16px;
-}
 
-.evolution-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
 
 .stat-label {
   font-size: 12px;
@@ -1018,64 +975,16 @@
   font-weight: 700;
 }
 
-.evolution-progress-bar {
-  width: 100%;
-  height: 10px;
-  background: #e9d5ff;
-  border-radius: 5px;
-  overflow: hidden;
-  margin-bottom: 12px;
-}
 
-.evolution-progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #7c3aed 0%, #a78bfa 50%, #c4b5fd 100%);
-  transition: width 0.5s ease;
-  border-radius: 5px;
-  animation: shimmer 2s infinite;
-}
 
 @keyframes shimmer {
   0% { background-position: -100% 0; }
   100% { background-position: 200% 0; }
 }
 
-.evolution-desc {
-  font-size: 13px;
-  color: #64748b;
-  text-align: center;
-  font-style: italic;
-}
 
 /* Evolution Status Badges */
-.evolution-pending-badge {
-  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-  border: 2px solid #f59e0b;
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin: 12px 0;
-  font-size: 14px;
-  color: #92400e;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  animation: pulse 2s ease-in-out infinite;
-}
 
-.evolution-complete-badge {
-  background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
-  border: 2px solid #10b981;
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin: 12px 0;
-  font-size: 14px;
-  color: #065f46;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 
 /* Historical Insights Section */
 .historical-insights-section {
@@ -1462,3 +1371,192 @@
     gap: 6px;
   }
 }
+
+/* ── F15: visible quality status ───────────────────────────────────────────
+   The pipeline computes degradations, requirement coverage, rejection reasons
+   and per-case grounding warnings; before F15 none of it was rendered. */
+.qatalyst-panel .quality-status {
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qatalyst-panel .quality-block {
+  border: 1px solid #dfe1e6;
+  border-left: 3px solid #6b778c;
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: #f4f5f7;
+  font-size: 12px;
+}
+.qatalyst-panel .quality-block.quality-warn {
+  border-left-color: #ff991f;
+  background: #fffae6;
+}
+.qatalyst-panel .quality-block.quality-ok {
+  border-left-color: #36b37e;
+  background: #e3fcef;
+}
+.qatalyst-panel .quality-block h5 {
+  margin: 0 0 4px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #172b4d;
+}
+.qatalyst-panel .quality-block ul {
+  margin: 4px 0 0 0;
+  padding-left: 18px;
+}
+.qatalyst-panel .quality-block li { margin: 2px 0; line-height: 1.4; }
+.qatalyst-panel .quality-block summary { cursor: pointer; color: #0052cc; margin-top: 4px; }
+.qatalyst-panel .quality-note { margin: 4px 0 0 0; color: #5e6c84; }
+.qatalyst-panel .quality-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.qatalyst-panel .quality-chip {
+  background: #dfe1e6;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: #42526e;
+}
+
+/* Per-case review markers */
+.qatalyst-panel .test-case.needs-review { border-left: 3px solid #ff991f; }
+.qatalyst-panel .tc-quality-badge {
+  background: #ff991f;
+  color: #fff;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.qatalyst-panel .tc-quality-badge.unresolved { background: #de350b; }
+.qatalyst-panel .tc-warnings { margin: 4px 0; }
+.qatalyst-panel .tc-warning {
+  font-size: 11px;
+  color: #974f0c;
+  background: #fffae6;
+  border-radius: 3px;
+  padding: 3px 6px;
+  margin-top: 2px;
+}
+
+/* ── Persistent "generating" status ───────────────────────────────────────
+   Generation can run for minutes. Before this, the mining panel and the agent
+   panel each overwrote the results container, so once mining finished the user
+   was left looking at "✅ Mining complete" with no sign the run was still going. */
+.qatalyst-panel .qatalyst-generating {
+  border: 1px solid #bae6fd;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 10px 0;
+  font-size: 13px;
+  color: #075985;
+}
+.qatalyst-panel .gen-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.qatalyst-panel .gen-elapsed {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: #0369a1;
+  opacity: 0.85;
+}
+/* A spinner that keeps moving proves the run is alive between sparse events. */
+.qatalyst-panel .gen-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #bae6fd;
+  border-top-color: #0284c7;
+  border-radius: 50%;
+  display: inline-block;
+  animation: qatalyst-gen-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes qatalyst-gen-spin { to { transform: rotate(360deg); } }
+.qatalyst-panel .gen-phase { margin-bottom: 6px; }
+.qatalyst-panel .gen-detail { color: #0369a1; opacity: 0.9; }
+.qatalyst-panel .gen-bar {
+  height: 6px;
+  background: #bae6fd;
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.qatalyst-panel .gen-fill {
+  height: 100%;
+  background: #0284c7;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.qatalyst-panel .gen-count { font-weight: 600; margin-top: 4px; }
+.qatalyst-panel .gen-done {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #047857;
+}
+.qatalyst-panel .gen-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #0369a1;
+  opacity: 0.8;
+}
+@media (prefers-reduced-motion: reduce) {
+  .qatalyst-panel .gen-spinner { animation: none; }
+}
+
+/* A stalled run must look different from a working one. */
+.qatalyst-panel .qatalyst-generating.gen-stalled {
+  border-color: #fbbf24;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  color: #92400e;
+}
+.qatalyst-panel .gen-stall-warning {
+  margin-top: 8px;
+  padding: 8px;
+  background: #fef3c7;
+  border-left: 3px solid #f59e0b;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #92400e;
+}
+/* Cancel is available at any point, not only once a run looks stuck. */
+.qatalyst-panel .gen-cancel {
+  margin-top: 10px;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #475569;
+  cursor: pointer;
+}
+.qatalyst-panel .gen-cancel:hover { background: #f1f5f9; border-color: #94a3b8; }
+
+/* §15.1: per-case review decisions — kept quiet so they do not compete with the
+   test content, but always available. */
+.qatalyst-panel .tc-decisions {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.qatalyst-panel .tc-decisions-label { font-size: 11px; color: #94a3b8; }
+.qatalyst-panel .tc-decision-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  color: #64748b;
+  cursor: pointer;
+}
+.qatalyst-panel .tc-decision-btn:hover { background: #f1f5f9; color: #334155; }
+.qatalyst-panel .tc-decision-btn:disabled { opacity: 0.6; cursor: default; }

@@ -269,7 +269,69 @@
   /**
    * Find matching crawled app based on ticket content
    */
+  /**
+   * Is this crawl a documentation/help site rather than the product itself?
+   * A help centre describes the app; it is not the app. Grounding a UI test
+   * against docs finds none of the product's controls.
+   */
+  function isDocsSite(url) {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      return /^(help|docs?|support|kb|knowledge|guide|learn|academy|community)\./.test(host) ||
+             /\.(readthedocs|gitbook|zendesk|freshdesk|helpscout)\./.test(host);
+    } catch (_) { return false; }
+  }
+
+  /**
+   * ALL crawls relevant to this ticket, best first — not just one.
+   *
+   * findMatchingApp returns a single app, so with a 257-page help-site crawl and
+   * a 70-page app crawl, generation saw one of them and silently ignored the
+   * other. Worse, it was first-match-wins on base domain: both hosts end in
+   * mindtickle.com, so the help site won purely by list order, and UI tests were
+   * grounded against documentation that contains none of the app's controls.
+   *
+   * @returns {Array} apps ordered by how likely they are to be THIS ticket's app
+   */
+  function rankMatchingApps(apps, ticketData) {
+    const ticketText = `${ticketData.summary || ''} ${ticketData.description || ''}`.toLowerCase();
+
+    const scored = (apps || []).map(app => {
+      let score = 0;
+      let reason = 'fallback';
+      try {
+        const host = new URL(app.url).hostname.toLowerCase();
+        const parts = host.split('.');
+        const base = parts.length >= 2 ? parts.slice(-2).join('.') : host;
+        const product = parts[parts.length - 2];
+
+        if (ticketText.includes(host)) { score += 100; reason = 'exact host named in ticket'; }
+        else if (ticketText.includes(base)) { score += 40; reason = 'base domain named in ticket'; }
+        else if (product && product.length > 3 && ticketText.includes(product)) { score += 30; reason = 'product name in ticket'; }
+
+        // A docs site is evidence about documentation, not about the product UI.
+        // It stays available — a rule may only be written down there — but it must
+        // not outrank the application itself.
+        if (isDocsSite(app.url)) { score -= 35; reason += ' (docs site)'; }
+
+        // Richer crawls break ties, but only as a tiebreaker.
+        score += Math.min(10, (app.pages || 0) / 50);
+        if (app.url.startsWith('merged_')) { score += 15; reason = 'merged graph'; }
+      } catch (_) { /* unparseable url scores 0 */ }
+      return { app, score, reason };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    scored.forEach(s => console.log(`   ${s.score.toFixed(1).padStart(6)}  ${s.app.url}  (${s.reason})`));
+    return scored.map(s => s.app);
+  }
+
   function findMatchingApp(apps, ticketData) {
+    // Ranked rather than first-match-wins: two hosts sharing a base domain used
+    // to be decided by list order, which let a help site outrank the app.
+    const ranked = rankMatchingApps(apps, ticketData);
+    if (ranked.length) return ranked[0];
+
     // Strategy 1: Look for URLs in ticket description
     const ticketText = `${ticketData.summary} ${ticketData.description}`.toLowerCase();
 
@@ -769,6 +831,8 @@ Expected Result: ${expectedResult}`;
     extractTicketKeywords,
     calculateRelevanceScore,
     findMatchingApp,
+    rankMatchingApps,
+    isDocsSite,
     extractRelevantContext,
     formatAppContextForPrompt,
     validateSettingsUI,

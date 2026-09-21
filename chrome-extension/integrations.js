@@ -265,19 +265,35 @@ class IntegrationManager {
         .map(page => page.url);
     }
 
-    // Fallback: Extract URLs from ticket description and comments if no linkedPages
-    if (confluenceUrls.length === 0 && figmaUrls.length === 0 && googleDocsUrls.length === 0) {
-      console.log('🔗 [IntegrationManager] No linkedPages found, extracting from text');
+    // F25: ALWAYS scan the ticket text too, and union per integration.
+    //
+    // This used to run only when ALL THREE lists were empty — so a single
+    // Confluence link in linkedPages suppressed discovery of a Figma URL that
+    // existed solely in a comment, and of a Google Doc linked in the description.
+    // Discovery for one source must not depend on what another source found.
+    {
       const allText = [
         ticketData.description || '',
-        ...(ticketData.comments || []).map(c => c.text || '') // Use c.text for comment content
+        ...(ticketData.comments || []).map(c => c.text || c.body || '')
       ].join('\n');
-      console.log('🔗 [IntegrationManager] Extracted text length:', allText.length);
+      console.log('🔗 [IntegrationManager] Scanning ticket text for links, length:', allText.length);
 
-      // Extract all URLs using regex patterns
-      confluenceUrls = this.confluence.extractUrls(allText);
-      figmaUrls = this.figma.extractUrls(allText);
-      googleDocsUrls = this.googleDocs.extractUrls(allText);
+      const union = (a, b) => {
+        const seen = new Set();
+        const out = [];
+        for (const u of [...(a || []), ...(b || [])]) {
+          // Normalize so the same page linked in the DOM and in text is one source.
+          const key = String(u || '').trim().replace(/[#?].*$/, '').replace(/\/+$/, '').toLowerCase();
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          out.push(u);
+        }
+        return out;
+      };
+
+      confluenceUrls = union(confluenceUrls, this.confluence.extractUrls(allText));
+      figmaUrls = union(figmaUrls, this.figma.extractUrls(allText));
+      googleDocsUrls = union(googleDocsUrls, this.googleDocs.extractUrls(allText));
     }
 
     console.log('🔗 [IntegrationManager] Extracted URLs:', {
@@ -295,13 +311,12 @@ class IntegrationManager {
 
     if (confluenceUrls.length > 0) {
       console.log(`📄 [IntegrationManager] Processing ${confluenceUrls.length} Confluence URLs`);
+      // Never log any part of a credential — a token prefix is still token
+      // material, and these logs are readable by anything with console access.
       console.log(`📄 [IntegrationManager] Confluence configuration:`, {
         hasUrl: !!this.settings.confluenceUrl,
         hasEmail: !!this.settings.confluenceEmail,
-        hasToken: !!this.settings.confluenceToken,
-        url: this.settings.confluenceUrl || 'undefined',
-        email: this.settings.confluenceEmail || 'undefined',
-        tokenFirst10: this.settings.confluenceToken ? this.settings.confluenceToken.substring(0, 10) + '...' : 'undefined'
+        hasToken: !!this.settings.confluenceToken
       });
 
       // Only fetch if Confluence is properly configured
@@ -317,7 +332,6 @@ class IntegrationManager {
     if (figmaUrls.length > 0) {
       console.log(`🎨 [IntegrationManager] Processing ${figmaUrls.length} Figma URLs`);
       console.log(`🎨 [IntegrationManager] Figma token present:`, !!this.settings.figmaToken);
-      console.log(`🎨 [IntegrationManager] Figma token value (first 10 chars):`, this.settings.figmaToken ? this.settings.figmaToken.substring(0, 10) + '...' : 'undefined');
 
       // Only fetch if Figma is properly configured
       if (this.settings.figmaToken) {
@@ -458,8 +472,8 @@ class ConfluenceIntegration {
       hasEmail: !!this.email,
       hasToken: !!this.token,
       baseUrl: this.baseUrl || 'undefined',
-      email: this.email || 'undefined',
-      tokenFirst10: this.token ? this.token.substring(0, 10) + '...' : 'undefined'
+      email: this.email || 'undefined'
+      // No token material in logs, not even a prefix.
     });
 
     if (!this.baseUrl || !this.email || !this.token) {
@@ -1649,28 +1663,93 @@ class TestRailIntegration {
    * [{ id, title }]. Best-effort: returns [] on any error or missing config.
    * Handles both the paginated ({cases:[...]}) and legacy (array) responses.
    */
-  async getCases(suiteId) {
-    if (!this.baseUrl || !this.projectId) return [];
+  /**
+   * Fetch the existing suite for deduplication.
+   *
+   * F14: this made ONE request and kept only title + preconditions. TestRail
+   * paginates get_cases at 250, so on any real project the "existing suite" was
+   * its first page — a duplicate on page two was never detected. And it mapped
+   * every failure (auth, 500, network) onto `[]`, which downstream read as
+   * "the team has no existing tests", the most dangerous possible default.
+   *
+   * Now: follows pagination to exhaustion, keeps the fields needed to compare
+   * BEHAVIOUR rather than only titles, and reports failure as failure.
+   *
+   * @returns {Promise<{cases: object[], ok: boolean, error?: string, pages: number}>}
+   */
+  async getCases(suiteId, { maxPages = 40 } = {}) {
+    if (!this.baseUrl || !this.projectId) {
+      return { cases: [], ok: false, error: 'TestRail is not configured', pages: 0 };
+    }
+    const out = [];
+    let offset = 0, pages = 0;
+    const LIMIT = 250;
+
     try {
-      let url = `${this.baseUrl}/index.php?/api/v2/get_cases/${this.projectId}`;
-      if (suiteId) url += `&suite_id=${suiteId}`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-      const response = await fetch(url, { method: 'GET', headers: this.getAuthHeaders(), signal: controller.signal });
-      clearTimeout(timeoutId);
-      if (!response.ok) {
-        console.warn(`⚠️ TestRail get_cases failed: HTTP ${response.status}`);
-        return [];
+      while (pages < maxPages) {
+        let url = `${this.baseUrl}/index.php?/api/v2/get_cases/${this.projectId}&limit=${LIMIT}&offset=${offset}`;
+        if (suiteId) url += `&suite_id=${suiteId}`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        const response = await fetch(url, { method: 'GET', headers: this.getAuthHeaders(), signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const error = `TestRail get_cases failed: HTTP ${response.status}`;
+          console.warn(`⚠️ ${error}`);
+          // Partial results are still usable, but the caller MUST know the
+          // import was incomplete so it doesn't claim uniqueness it can't prove.
+          return { cases: out, ok: false, error, pages };
+        }
+
+        const data = await response.json();
+        const batch = Array.isArray(data) ? data : (Array.isArray(data.cases) ? data.cases : []);
+        out.push(...batch);
+        pages++;
+
+        // TestRail returns {_links:{next}} on paginated responses; older
+        // instances return a bare array (no pagination at all).
+        const hasNext = !Array.isArray(data) && data._links && data._links.next;
+        if (!hasNext && batch.length < LIMIT) break;
+        offset += LIMIT;
       }
-      const data = await response.json();
-      const cases = Array.isArray(data) ? data : (Array.isArray(data.cases) ? data.cases : []);
-      return cases
-        .map(c => ({ id: c.id ? `C${c.id}` : '', title: c.title || '', description: c.custom_preconds || '' }))
-        .filter(c => c.title);
+
+      return { cases: out.map(c => TestRailIntegration.normalizeExistingCase(c)).filter(c => c.title), ok: true, pages };
     } catch (e) {
       console.warn('⚠️ TestRail get_cases error:', e.message);
-      return [];
+      return { cases: out.map(c => TestRailIntegration.normalizeExistingCase(c)).filter(c => c.title), ok: false, error: e.message, pages };
     }
+  }
+
+  /**
+   * F14: map a TestRail case onto the canonical fields the duplicate checks read,
+   * so an existing case can be compared by BEHAVIOUR (steps, outcome) and not
+   * just by an exactly matching title.
+   */
+  static normalizeExistingCase(c) {
+    if (!c || typeof c !== 'object') return { title: '' };
+    // TestRail stores steps either as a text blob or as a structured
+    // custom_steps_separated array of {content, expected}.
+    const sep = Array.isArray(c.custom_steps_separated) ? c.custom_steps_separated : [];
+    const steps = sep.length
+      ? sep.map(s => String(s.content || '').trim()).filter(Boolean)
+      : String(c.custom_steps || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    const expected = sep.length
+      ? sep.map(s => String(s.expected || '').trim()).filter(Boolean).join('; ')
+      : String(c.custom_expected || '');
+    return {
+      id: c.id ? `C${c.id}` : '',
+      title: c.title || '',
+      description: c.custom_preconds || '',
+      preconditions: c.custom_preconds || '',
+      steps,
+      expected_result: expected,
+      refs: c.refs || '',
+      sectionId: c.section_id,
+      suiteId: c.suite_id,
+      _source: 'testrail'
+    };
   }
 
   /**
@@ -2116,23 +2195,47 @@ class TestRailIntegration {
   /**
    * Get existing test cases in a section for deduplication
    */
-  async getExistingTestCases(sectionId) {
+  /**
+   * F14: paginated, and it reports whether the import actually completed.
+   * Previously a single 250-case page, with every failure mapped to `[]` — so a
+   * duplicate on page two was uploaded again, and an auth failure looked exactly
+   * like an empty project.
+   * @returns {Promise<{cases: object[], ok: boolean, error?: string}>}
+   */
+  async getExistingTestCases(sectionId, { maxPages = 40 } = {}) {
+    const out = [];
+    let offset = 0, pages = 0;
+    const LIMIT = 250;
     try {
-      const response = await this.rateLimitedFetch(
-        `${this.baseUrl}/index.php?/api/v2/get_cases/${this.projectId}&section_id=${sectionId}&limit=250`,
-        { headers: this.getAuthHeaders() }
-      );
+      while (pages < maxPages) {
+        const response = await this.rateLimitedFetch(
+          `${this.baseUrl}/index.php?/api/v2/get_cases/${this.projectId}&section_id=${sectionId}&limit=${LIMIT}&offset=${offset}`,
+          { headers: this.getAuthHeaders() }
+        );
 
-      if (!response.ok) {
-        console.warn('⚠️  Failed to fetch existing test cases for deduplication, will skip deduplication');
-        return [];
+        if (!response.ok) {
+          const error = `HTTP ${response.status} fetching existing test cases`;
+          console.warn(`⚠️  ${error}`);
+          return { cases: out, ok: false, error };
+        }
+
+        const data = await response.json();
+        const batch = Array.isArray(data) ? data : (data.cases || []);
+        out.push(...batch);
+        pages++;
+
+        const hasNext = !Array.isArray(data) && data._links && data._links.next;
+        if (!hasNext && batch.length < LIMIT) break;
+        offset += LIMIT;
       }
-
-      const data = await response.json();
-      return Array.isArray(data) ? data : (data.cases || []);
+      // F14: normalize here too. This path used to return RAW TestRail objects
+      // while getCases() returned mapped ones, so the duplicate checks saw
+      // title-only cases on the upload path and could never compare behaviour.
+      // One import shape, one set of comparison rules.
+      return { cases: out.map(c => TestRailIntegration.normalizeExistingCase(c)), ok: true };
     } catch (error) {
-      console.warn('⚠️  Error fetching existing test cases, will skip deduplication:', error.message);
-      return [];
+      console.warn('⚠️  Error fetching existing test cases:', error.message);
+      return { cases: out.map(c => TestRailIntegration.normalizeExistingCase(c)), ok: false, error: error.message };
     }
   }
 
@@ -2142,11 +2245,35 @@ class TestRailIntegration {
   async deduplicateTestCases(sectionId, testCases) {
     console.log('🔍 Checking for duplicate test cases...');
 
-    const existingCases = await this.getExistingTestCases(sectionId);
+    // F14: consult the export ledger FIRST. A case we already confirmed writing
+    // is skipped without a second request, and a case whose previous write timed
+    // out is verified against the destination rather than blindly re-sent.
+    let ledgerPlan = null, ledger = null;
+    const LedgerCtor = (typeof ExportLedger !== 'undefined') ? ExportLedger
+      : (typeof self !== 'undefined' && self.ExportLedger);
+    if (LedgerCtor && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      try {
+        ledger = new LedgerCtor(chrome.storage.local, `testrail:${this.projectId}:${sectionId}`);
+        await ledger.load();
+        ledgerPlan = ledger.plan(testCases);
+      } catch (e) { console.warn('[TestRail] export ledger unavailable:', e.message); }
+    }
+
+    const res = await this.getExistingTestCases(sectionId);
+    const existingCases = Array.isArray(res) ? res : (res.cases || []);
+    const importOk = Array.isArray(res) ? true : res.ok;
+
+    // F14: an import FAILURE is not an empty suite. Saying "no existing cases"
+    // after a 401 is how the same case gets uploaded twice.
+    if (!importOk) {
+      console.warn('⚠️  Existing-case import was incomplete — duplicates may not be detected.');
+    }
 
     if (existingCases.length === 0) {
-      console.log('✅ No existing test cases found, will upload all');
-      return { toAdd: testCases, skipped: [] };
+      console.log(importOk
+        ? '✅ No existing test cases found, will upload all'
+        : '⚠️  Could not read existing test cases — uploading all, duplicates possible');
+      return { toAdd: testCases, skipped: [], importOk, importError: importOk ? undefined : (res && res.error) };
     }
 
     // Create map of existing titles (case-insensitive)
@@ -2157,19 +2284,61 @@ class TestRailIntegration {
     const toAdd = [];
     const skipped = [];
 
-    testCases.forEach(testCase => {
+    // F14: reconcile uncertain writes against what the destination actually
+    // holds before deciding to retry them.
+    let candidates = testCases;
+    if (ledgerPlan && ledger) {
+      for (const done of ledgerPlan.alreadyExported) {
+        skipped.push({
+          title: done.testCase.title, existingId: done.remoteId,
+          existingUrl: done.remoteId ? `${this.baseUrl}/index.php?/cases/view/${String(done.remoteId).replace(/^C/, '')}` : '',
+          reason: 'Already exported in a previous run'
+        });
+      }
+      const { confirmed, toSend } = ledger.reconcile(ledgerPlan.needsVerification, existingCases);
+      for (const c of confirmed) {
+        skipped.push({
+          title: c.testCase.title, existingId: c.remoteId,
+          existingUrl: '', reason: 'A previous export was uncertain but the case exists — not created again'
+        });
+      }
+      candidates = ledgerPlan.toSend.concat(toSend);
+      await ledger.save();
+    }
+
+    candidates.forEach(testCase => {
       const normalizedTitle = (testCase.title || '').toLowerCase().trim();
       if (caseMap.has(normalizedTitle)) {
         const existing = caseMap.get(normalizedTitle);
         skipped.push({
           title: testCase.title,
           existingId: existing.id,
-          existingUrl: `${this.baseUrl}/index.php?/cases/view/${existing.id}`,
+          existingUrl: existing.id ? `${this.baseUrl}/index.php?/cases/view/${String(existing.id).replace(/^C/, '')}` : '',
           reason: 'Duplicate title'
         });
-      } else {
-        toAdd.push(testCase);
+        return;
       }
+
+      // F14: exact-title matching alone missed a paraphrase of a case already in
+      // the suite ("User logs in" vs "Successful user login"). Fall back to the
+      // shipped scenario-equivalence check, which also refuses to collapse
+      // provably distinct pairs (opposite outcome, different actor/boundary).
+      const equivalent = this.findEquivalentExisting(testCase, existingCases);
+      if (equivalent) {
+        skipped.push({
+          title: testCase.title,
+          existingId: equivalent.id,
+          existingUrl: equivalent.id ? `${this.baseUrl}/index.php?/cases/view/${String(equivalent.id).replace(/^C/, '')}` : '',
+          reason: 'Equivalent to an existing case'
+        });
+        return;
+      }
+
+      toAdd.push(testCase);
+      // F14: extend the map with what we are about to upload, so two duplicates
+      // WITHIN one batch don't both get created.
+      if (normalizedTitle) caseMap.set(normalizedTitle, { id: '(this batch)', title: testCase.title });
+      existingCases.push(testCase);
     });
 
     console.log(`✅ Deduplication complete: ${toAdd.length} to add, ${skipped.length} skipped as duplicates`);
@@ -2179,7 +2348,29 @@ class TestRailIntegration {
       skipped.forEach(s => console.log(`   - "${s.title}" (ID: ${s.existingId})`));
     }
 
-    return { toAdd, skipped };
+    return { toAdd, skipped, importOk, ledger };
+  }
+
+  /**
+   * F14: find an existing case that already covers this scenario, beyond an
+   * exactly matching title. Uses the shipped SemanticDuplicateDetector so the
+   * export path applies the SAME equivalence rules as generation — including the
+   * hard distinction checks, so an existing "Owner can delete" never suppresses
+   * a new "Viewer cannot delete".
+   * Returns null when the detector is unavailable (worker-only module).
+   */
+  findEquivalentExisting(testCase, existingCases) {
+    const Detector = (typeof SemanticDuplicateDetector !== 'undefined') ? SemanticDuplicateDetector
+      : (typeof self !== 'undefined' && self.SemanticDuplicateDetector);
+    if (!Detector || !testCase) return null;
+    const det = new Detector(0.75); // stricter than generation: this suppresses an upload
+    for (const existing of existingCases) {
+      if (!existing || !existing.title) continue;
+      if (typeof Detector.distinctionReason === 'function' && Detector.distinctionReason(testCase, existing)) continue;
+      const groups = det.detectDuplicates([testCase, existing]) || [];
+      if (groups.some(g => (g.duplicates || []).length > 0)) return existing;
+    }
+    return null;
   }
 
   /**

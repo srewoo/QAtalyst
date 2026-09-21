@@ -89,7 +89,13 @@ class StorageManager {
           crawledAt: embeddingData.crawledAt
         },
         knowledgeGraph: embeddingData.knowledgeGraph,
-        crawledAt: Date.now(),
+        // F19: preserve the ORIGINAL observation time when one is supplied (e.g.
+        // an imported graph, or a graph built from batches saved earlier). Only
+        // fall back to now when the evidence genuinely has no recorded origin.
+        crawledAt: embeddingData.crawledAt
+          || (embeddingData.knowledgeGraph && embeddingData.knowledgeGraph.crawledAt)
+          || Date.now(),
+        savedAt: Date.now(),
         version: '11.0.0'
       };
 
@@ -142,7 +148,18 @@ class StorageManager {
           lastUpdated: Date.now()
         };
 
-        existingData.crawledAt = Date.now();
+        // F19: `crawledAt` is when the APP WAS OBSERVED, not when we wrote the
+        // record. Stamping it on every save made an imported months-old graph
+        // look freshly crawled, which silently defeated the staleness warning —
+        // tests were grounded against stale evidence and presented as current.
+        // Save time is recorded separately.
+        existingData.savedAt = Date.now();
+        if (incrementalData.crawledAt) {
+          // A real new observation moves the observation time forward.
+          existingData.crawledAt = incrementalData.crawledAt;
+        } else if (!existingData.crawledAt) {
+          existingData.crawledAt = Date.now();
+        }
 
         // Save updated data
         const putRequest = store.put(existingData);
@@ -849,6 +866,45 @@ class StorageManager {
   /**
    * Get storage statistics
    */
+  /**
+   * List stored crawls WITHOUT deserializing their graphs.
+   *
+   * getStats() loads every full record (getAllEmbeddings) and JSON.stringify's
+   * each one just to estimate a size. With a 70-page / 1353-API crawl that is
+   * tens of megabytes of work to render a few list rows — slow enough to look
+   * like the list simply never loaded. A listing only needs the summary fields.
+   */
+  async listApps() {
+    if (!this.db) await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction([this.storeName], 'readonly');
+      const store = tx.objectStore(this.storeName);
+      const out = [];
+      const cursorReq = store.openCursor();
+
+      cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (!cursor) { resolve(out); return; }
+        const d = cursor.value || {};
+        const kg = d.knowledgeGraph || {};
+        out.push({
+          url: d.appUrl,
+          embeddingCount: (d.embeddings || []).length,
+          // Fall back to counting pages when totalPages was never written.
+          pages: kg.totalPages || (Array.isArray(kg.pages) ? kg.pages.length
+                 : (kg.pages ? Object.keys(kg.pages).length : 0)),
+          features: (kg.stats && kg.stats.totalFeatures) || 0,
+          apis: (kg.stats && kg.stats.totalApis) || 0,
+          crawledAt: d.crawledAt ? new Date(d.crawledAt).toLocaleString() : 'unknown',
+          savedAt: d.savedAt || null,
+          isMerged: !!kg.isMerged
+        });
+        cursor.continue();
+      };
+      cursorReq.onerror = () => reject(new Error('Failed to list stored crawls'));
+    });
+  }
+
   async getStats() {
     const apps = await this.getAllApps();
     const allData = await this.getAllEmbeddings();

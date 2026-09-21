@@ -82,21 +82,39 @@ class GraphFilter {
   }
 
   /**
-   * Strip unnecessary data from a page to reduce size
-   * Keeps only what's needed for test generation: forms, APIs, metadata
+   * Strip a page down to the evidence test generation actually grounds against.
+   *
+   * F02: this used to read `page.metadata?.title/url` — a shape the crawler never
+   * produces (pageData is flat: {url, title, description, features, apis, …}) — so
+   * every transferred page arrived with an undefined title and NO url. It also
+   * kept only `type === 'form'` features, which silently deleted every button,
+   * link and table: a button-only feature could not be grounded at all. Keep the
+   * real fields, bounded, and preserve the identity of the page.
+   *
    * @param {Object} page - Page object
    * @returns {Object} Stripped page object
    */
   static stripPageData(page) {
+    if (!page || typeof page !== 'object') return page;
+    const url = page.url || page.metadata?.url;
+    const title = page.title || page.metadata?.title;
+    const description = page.description || page.metadata?.description;
+    const feats = Array.isArray(page.features) ? page.features : [];
     return {
-      metadata: {
-        title: page.metadata?.title,
-        description: page.metadata?.description,
-        url: page.metadata?.url
-      },
-      features: page.features?.filter(f => f.type === 'form'), // Only forms
-      apis: page.apis?.slice(0, 20) || [] // Max 20 APIs per page
-      // Removed: buttons, links, tables, navigation, etc. (not needed for test gen)
+      url,
+      title,
+      description,
+      // Keep metadata too: some older stored graphs and consumers read it.
+      metadata: { url, title, description },
+      // Forms first (richest evidence), then the other interactive entities.
+      features: [
+        ...feats.filter(f => f && f.type === 'form'),
+        ...feats.filter(f => f && f.type !== 'form').slice(0, 60)
+      ],
+      apis: (Array.isArray(page.apis) ? page.apis : []).slice(0, 20),
+      textContent: typeof page.textContent === 'string' ? page.textContent.slice(0, 1500) : undefined,
+      _pageHints: page._pageHints,
+      _apiSchemas: page._apiSchemas
     };
   }
 
@@ -191,4 +209,9 @@ class GraphFilter {
 // Make available globally
 if (typeof window !== 'undefined') {
   window.GraphFilter = GraphFilter;
+}
+
+// CommonJS export so the transfer-stripping contract is unit-testable.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = GraphFilter;
 }

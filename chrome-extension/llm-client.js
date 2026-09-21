@@ -21,8 +21,69 @@ const MAX_STREAMING_ITERATIONS = 50000;
 // Shared with background.js's stop/diagnostic handlers (same Map instance).
 const activeStreams = (typeof self !== 'undefined') ? (self.activeStreams = self.activeStreams || new Map()) : new Map();
 
-async function callBedrock(systemMessage, userContent, settings, retries = MAX_RETRIES) {
+/**
+ * F17: one place that creates the per-request AbortController, so a caller's
+ * cancellation actually reaches the in-flight HTTP request.
+ *
+ * Every provider created a bare `new AbortController()` for its timeout only.
+ * The planner's cancel flag was checked BETWEEN iterations, so cancelling during
+ * a long generation waited for that call — and its retries — to finish first.
+ * `settings._abortSignal` now aborts the live request immediately.
+ */
+/**
+ * Ollama speaks the OpenAI chat-completions protocol, so it reuses that path
+ * entirely — only the base URL and the (absent) credential differ. Keeping this
+ * in one helper means local models get every fix the OpenAI path gets, instead of
+ * becoming a second implementation that drifts.
+ */
+/** Is the shared capability helper loaded? (It lives in model-registry.js.) */
+function applyModelParamsAvailable() {
+  return typeof applyModelParams === 'function';
+}
+
+/**
+ * Add temperature/token parameters to a request body using the model's real
+ * capabilities. Falls back to the chat-model shape when model-registry.js is not
+ * loaded (e.g. a unit test importing this module standalone).
+ */
+function withModelParams(body, settings) {
+  if (applyModelParamsAvailable()) {
+    const { adjustments } = applyModelParams(body, settings, settings.llmProvider);
+    if (adjustments.length) console.warn('[AI Stream] model parameter adjustments:', adjustments.join(' '));
+    return body;
+  }
+  body.temperature = settings.temperature ?? APP_CONFIG.DEFAULT_TEMPERATURE;
+  body.max_tokens = settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS;
+  return body;
+}
+
+function openAiCompatibleEndpoint(settings) {
+  if (settings.llmProvider === 'ollama') {
+    const base = (settings.ollamaBaseUrl || 'http://localhost:11434').replace(/\/+$/, '');
+    return {
+      url: `${base}/v1/chat/completions`,
+      headers: { 'Content-Type': 'application/json' } // local: no API key
+    };
+  }
+  const base = (settings.openaiBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  return {
+    url: `${base}/chat/completions`,
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` }
+  };
+}
+
+function requestController(settings) {
   const controller = new AbortController();
+  const external = settings && settings._abortSignal;
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', () => { try { controller.abort(); } catch (_) {} }, { once: true });
+  }
+  return controller;
+}
+
+async function callBedrock(systemMessage, userContent, settings, retries = MAX_RETRIES) {
+  const controller = requestController(settings);
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
@@ -167,7 +228,7 @@ async function callBedrock(systemMessage, userContent, settings, retries = MAX_R
 }
 
 async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RETRIES) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
@@ -207,30 +268,52 @@ async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RE
 
     const requestBody = {
       model: settings.llmModel || 'gpt-4.1',
-      messages: messages,
-      // `?? 0.7` (not `|| 0.7`) so an explicit temperature of 0 is honored
-      // rather than silently bumped to 0.7 — matters for structured JSON gen (F9).
-      temperature: settings.temperature ?? 0.7,
-      max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
+      messages: messages
     };
 
-    // Enable JSON mode when all user content is text (test generation agents)
+    // Reasoning models (o-series, GPT-5) reject `max_tokens` and any non-default
+    // `temperature` outright — a 400, not a warning — and they spend part of the
+    // output budget thinking. applyModelParams sets the right parameter names and
+    // guarantees enough headroom; `?? 0.7` inside it keeps an explicit 0 honored
+    // for chat models, which matters for structured JSON generation (F9).
+    const applied = (typeof applyModelParams === 'function')
+      ? applyModelParams(requestBody, settings, settings.llmProvider)
+      : { adjustments: [], caps: { supportsJsonMode: true } };
+    if (applied.adjustments.length) {
+      console.warn('[AI Call] model parameter adjustments:', applied.adjustments.join(' '));
+    }
+    if (!applyModelParamsAvailable()) {
+      requestBody.temperature = settings.temperature ?? 0.7;
+      requestBody.max_tokens = settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS;
+    }
+
+
+    // Enable JSON mode when all user content is text (test generation agents).
+    // Some reasoning models do not support response_format; the prompt already
+    // asks for raw JSON and parseRobustJSON tolerates the difference.
     const hasImages = userContent.some(p => p.type === 'image_url');
-    if (!hasImages && settings._jsonMode) {
+    if (!hasImages && settings._jsonMode && applied.caps.supportsJsonMode !== false) {
       requestBody.response_format = { type: 'json_object' };
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const endpoint = openAiCompatibleEndpoint(settings);
+    // Per-call timing: when a run feels stuck, the console should show whether
+    // it is one slow model call or many.
+    const __t0 = Date.now();
+    const response = await fetch(endpoint.url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.apiKey}`
-      },
+      headers: endpoint.headers,
       body: JSON.stringify(requestBody),
       signal: controller.signal
     });
     
     clearTimeout(timeoutId);
+    const __ms = Date.now() - __t0;
+    if (__ms > 15000) {
+      console.warn(`⏱️ [AI Call] ${settings.llmProvider}/${settings.llmModel} took ${(__ms / 1000).toFixed(1)}s — the agentic planner makes one call per step, so this multiplies.`);
+    } else {
+      console.log(`⏱️ [AI Call] ${settings.llmModel} responded in ${(__ms / 1000).toFixed(1)}s`);
+    }
 
     // Handle rate limiting (429) with retry
     if (response.status === 429 && retries > 0) {
@@ -283,7 +366,7 @@ async function callOpenAI(systemMessage, userContent, settings, retries = MAX_RE
 }
 
 async function callGemini(systemMessage, userContent, settings, retries = MAX_RETRIES) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
@@ -390,7 +473,7 @@ async function callGemini(systemMessage, userContent, settings, retries = MAX_RE
 }
 
 async function callClaude(systemMessage, userContent, settings, retries = MAX_RETRIES) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
   try {
@@ -540,7 +623,10 @@ async function callAI(systemMessage, userContent, settings) {
 
   try {
     const dispatch = () => {
-      if (settings.llmProvider === 'openai') return callOpenAI(systemMessage, userContent, settings);
+      // Ollama is OpenAI-protocol-compatible — same code path, local endpoint.
+      if (settings.llmProvider === 'openai' || settings.llmProvider === 'ollama') {
+        return callOpenAI(systemMessage, userContent, settings);
+      }
       if (settings.llmProvider === 'gemini') return callGemini(systemMessage, userContent, settings);
       if (settings.llmProvider === 'claude') return callClaude(systemMessage, userContent, settings);
       if (settings.llmProvider === 'bedrock') return callBedrock(systemMessage, userContent, settings);
@@ -578,7 +664,7 @@ async function callAI(systemMessage, userContent, settings) {
 }
 
 async function callBedrockStream(systemMessage, userContent, settings, onChunk, requestId) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   activeStreams.set(requestId, controller);
 
   let reader = null;
@@ -767,7 +853,7 @@ async function callBedrockStream(systemMessage, userContent, settings, onChunk, 
 }
 
 async function callOpenAIStream(systemMessage, userContent, settings, onChunk, requestId) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   activeStreams.set(requestId, controller);
 
   let reader = null;
@@ -779,19 +865,17 @@ async function callOpenAIStream(systemMessage, userContent, settings, onChunk, r
     }
     messages.push({ role: 'user', content: userContent });
 
-    const response = await fetch(APP_CONFIG.ENDPOINTS.openai, {
+    // Same helper as the non-streaming path, so Ollama streams locally too.
+    const streamEndpoint = openAiCompatibleEndpoint(settings);
+    const response = await fetch(streamEndpoint.url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.apiKey}`
-      },
-      body: JSON.stringify({
-        model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.openai,
-        messages: messages,
-        stream: true,
-        temperature: settings.temperature || APP_CONFIG.DEFAULT_TEMPERATURE,
-        max_tokens: settings.maxTokens || APP_CONFIG.DEFAULT_MAX_TOKENS
-      }),
+      headers: streamEndpoint.headers,
+      // Same capability handling as the non-streaming path, so a reasoning model
+      // selected from the discovered list streams instead of 400-ing.
+      body: JSON.stringify(withModelParams(
+        { model: settings.llmModel || APP_CONFIG.DEFAULT_MODELS.openai, messages, stream: true },
+        settings
+      )),
       signal: controller.signal
     });
 
@@ -867,7 +951,7 @@ async function callOpenAIStream(systemMessage, userContent, settings, onChunk, r
 }
 
 async function callClaudeStream(systemMessage, userContent, settings, onChunk, requestId) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   activeStreams.set(requestId, controller);
 
   let reader = null;
@@ -992,7 +1076,7 @@ async function callClaudeStream(systemMessage, userContent, settings, onChunk, r
 }
 
 async function callGeminiStream(systemMessage, userContent, settings, onChunk, requestId) {
-  const controller = new AbortController();
+  const controller = requestController(settings);
   activeStreams.set(requestId, controller);
 
   let reader = null;
@@ -1123,7 +1207,7 @@ async function callAIStream(systemMessage, userContent, settings, onChunk, reque
 
   try {
     let result;
-    if (settings.llmProvider === 'openai') {
+    if (settings.llmProvider === 'openai' || settings.llmProvider === 'ollama') {
       result = await callOpenAIStream(systemMessage, userContent, settings, onChunk, requestId);
     } else if (settings.llmProvider === 'gemini') {
       result = await callGeminiStream(systemMessage, userContent, settings, onChunk, requestId);

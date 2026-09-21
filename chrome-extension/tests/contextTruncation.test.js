@@ -107,3 +107,31 @@ describe('ContextManager._truncateText (real source)', () => {
     });
   });
 });
+
+describe('F21 — configuration matches actual behaviour', () => {
+  test('an unknown model gets CONSERVATIVE limits, not the most permissive row', () => {
+    const cm = new ContextManager('some-model-we-have-never-heard-of');
+    // Pre-fix the fallback was gpt-4.1 at ~1,047,576 input tokens, so an
+    // unrecognised model was assumed to have a million-token context and
+    // truncation never fired — the provider rejected the oversized request.
+    expect(cm.limits.maxInput).toBeLessThan(MODEL_LIMITS['gpt-4.1'].maxInput);
+    expect(cm.limitsSource).toBe('unknown');
+  });
+
+  test('a known model still gets its real limits', () => {
+    const cm = new ContextManager('gpt-4.1');
+    expect(cm.limits).toEqual(MODEL_LIMITS['gpt-4.1']);
+    expect(cm.limitsSource).toBe('exact');
+  });
+
+  test('a dated variant of a known family resolves by prefix', () => {
+    const cm = new ContextManager('gpt-4.1-mini-2025-04-14');
+    expect(cm.limitsSource).toBe('prefix');
+    expect(cm.limits).toEqual(MODEL_LIMITS['gpt-4.1-mini']);
+  });
+
+  test('the most specific family prefix wins', () => {
+    // 'gpt-4.1-mini' must beat 'gpt-4.1' for a mini id.
+    expect(resolveModelLimits('gpt-4.1-mini-preview').limits).toEqual(MODEL_LIMITS['gpt-4.1-mini']);
+  });
+});

@@ -71,11 +71,54 @@ function classifyTicket(ticketData) {
  * @param {string[]} [opts.enabledCategories] restrict to these categories
  * @returns {{weights: object, primary: string, shapes: object[]}}
  */
+/**
+ * What the ticket TYPE implies, before a single keyword is read.
+ *
+ * issueType was only blended into the keyword blob, so "Bug" competed with every
+ * other word in the description and had no structural effect: a defect got the
+ * same generic 30/22/16 split as a task, with regression at 10%. But a defect is
+ * the one case where regression is the point — you are proving the fix holds AND
+ * that the fix broke nothing — and the failure condition itself is a negative
+ * case, not a happy path.
+ */
+const TYPE_PRIORS = {
+  bug:     { Regression: 0.30, Negative: 0.12, Positive: -0.10 },
+  defect:  { Regression: 0.30, Negative: 0.12, Positive: -0.10 },
+  incident:{ Regression: 0.30, Negative: 0.15, Positive: -0.12 },
+  hotfix:  { Regression: 0.32, Negative: 0.12, Positive: -0.12 },
+  // An epic's children carry the detail; the parent needs the seams between them.
+  epic:    { Integration: 0.18, Regression: 0.06 },
+  story:   {},
+  task:    {},
+  'sub-task': {},
+  subtask: {}
+};
+
+function typePrior(ticketData) {
+  const raw = String((ticketData && (ticketData.issueType || ticketData.type)) || '').toLowerCase().trim();
+  if (!raw) return null;
+  if (TYPE_PRIORS[raw]) return { key: raw, prior: TYPE_PRIORS[raw] };
+  // Jira types are customisable ("Production Bug", "Sub-bug"): match on substring.
+  for (const [key, prior] of Object.entries(TYPE_PRIORS)) {
+    if (key && raw.includes(key)) return { key, prior };
+  }
+  return null;
+}
+
 function deriveDistribution(ticketData, opts = {}) {
   const { shapes, primary } = classifyTicket(ticketData);
 
   // Start from baseline.
   const weights = { ...BASELINE };
+
+  // The ticket type applies FIRST, so keyword shapes adjust a type-appropriate
+  // starting point rather than a one-size-fits-all one.
+  const typed = typePrior(ticketData);
+  if (typed) {
+    for (const [cat, delta] of Object.entries(typed.prior)) {
+      weights[cat] = Math.max(0.02, (weights[cat] || 0) + delta);
+    }
+  }
 
   // Apply boosts from every detected shape, scaled by its relative strength.
   const totalScore = shapes.reduce((s, x) => s + x.score, 0) || 1;
@@ -97,7 +140,11 @@ function deriveDistribution(ticketData, opts = {}) {
   const filtered = {};
   cats.forEach(c => { filtered[c] = weights[c] || 0; });
 
-  return { weights: normalize(filtered), primary, shapes };
+  return {
+    weights: normalize(filtered), primary, shapes,
+    // Which type prior was applied, so the run can explain the shape it chose.
+    issueType: typed ? typed.key : null
+  };
 }
 
 /**
@@ -169,7 +216,7 @@ function normalize(weights) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { classifyTicket, deriveDistribution, allocateCounts, refineWithLLM, CATEGORIES, BASELINE };
+  module.exports = { classifyTicket, deriveDistribution, allocateCounts, refineWithLLM, CATEGORIES, BASELINE, TYPE_PRIORS, typePrior };
 }
 if (typeof self !== 'undefined') {
   self.DynamicDistribution = { classifyTicket, deriveDistribution, allocateCounts, refineWithLLM, CATEGORIES };

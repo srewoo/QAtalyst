@@ -215,16 +215,82 @@ describe('NetworkMonitor.ingestResponseBody (item 5: response bodies)', () => {
 describe('NetworkMonitor.start/stop with chrome.webRequest', () => {
   test('toggles monitoring flag and tracks tab id without throwing', async () => {
     // The shared chrome mock's webRequest listeners only expose addListener;
-    // stop() calls removeListener, so add no-op removeListener stubs on the
-    // mock object (not the harness file) for this test only.
-    chrome.webRequest.onBeforeRequest.removeListener = () => {};
-    chrome.webRequest.onCompleted.removeListener = () => {};
-
+    // The chrome mock's webRequest events now track listeners faithfully, so the
+    // old no-op removeListener stubs are gone — they permanently replaced the
+    // mock's method and left every later test unable to detach anything.
     const m = new NetworkMonitor();
     await m.start(42);
     expect(m.isMonitoring).toBe(true);
     expect(m.tabId).toBe(42);
     m.stop();
     expect(m.isMonitoring).toBe(false);
+  });
+});
+
+describe('F18 — observation lifecycle and attribution', () => {
+  function listenerCounts() {
+    return {
+      before: chrome.webRequest.onBeforeRequest._listeners?.length ?? 0,
+      completed: chrome.webRequest.onCompleted._listeners?.length ?? 0
+    };
+  }
+
+  test('repeated start/stop leaves no extra listeners', async () => {
+    const m = new NetworkMonitor();
+    const base = listenerCounts();
+    for (let i = 0; i < 3; i++) { await m.start(1); m.stop(); }
+    const after = listenerCounts();
+    // Pre-fix: stop() passed the UNBOUND prototype method to removeListener, so
+    // it matched nothing and every cycle leaked a pair.
+    expect(after.before).toBe(base.before);
+    expect(after.completed).toBe(base.completed);
+  });
+
+  test('a second start() without a stop() does not stack listeners', async () => {
+    const m = new NetworkMonitor();
+    const base = listenerCounts();
+    await m.start(1);
+    await m.start(1);
+    const during = listenerCounts();
+    expect(during.before - base.before).toBe(1);
+    m.stop();
+    expect(listenerCounts().before).toBe(base.before);
+  });
+
+  test("page A's API is not attributed to page B", () => {
+    const m = newMonitor();
+    const hit = (id, url) => m.handleRequest({ requestId: id, url, method: 'GET', type: 'xmlhttprequest', timeStamp: Date.now() });
+
+    m.beginPage('https://app/a');
+    hit('1', 'https://app/api/alpha');
+    const pageA = m.takeApiCallsForPage();
+
+    m.beginPage('https://app/b');
+    hit('2', 'https://app/api/beta');
+    const pageB = m.takeApiCallsForPage();
+
+    expect(pageA.map(a => a.url)).toEqual(['https://app/api/alpha']);
+    // Pre-fix crawlPage read the cumulative list, so page B claimed alpha too.
+    expect(pageB.map(a => a.url)).toEqual(['https://app/api/beta']);
+  });
+
+  test('without a page boundary the full list is still returned', () => {
+    const m = newMonitor();
+    m.handleRequest({ requestId: '1', url: 'https://app/api/x', method: 'GET', type: 'xmlhttprequest', timeStamp: 1 });
+    expect(m.getApiCalls()).toHaveLength(1);
+  });
+
+  test('a bare /graphql path is treated as an API by both layers', () => {
+    const m = new NetworkMonitor();
+    expect(m.isApiRequest('https://x.com/graphql')).toBe(true);
+    // The MAIN-world interceptor's matcher previously required a trailing slash.
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'network-interceptor.js'), 'utf8');
+    const match = src.match(/function isApiish[\s\S]*?\n  \}/);
+    expect(match).toBeTruthy();
+    const isApiish = new Function('location', 'URL', `${match[0]}; return isApiish;`)(
+      { href: 'https://x.com/' }, URL);
+    expect(isApiish('https://x.com/graphql')).toBe(true);
+    expect(isApiish('https://x.com/api/users')).toBe(true);
+    expect(isApiish('https://x.com/about')).toBe(false);
   });
 });

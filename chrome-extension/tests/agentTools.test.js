@@ -72,3 +72,126 @@ describe('parseTestArray', () => {
     expect(v[0].title).toBe('a');
   });
 });
+
+describe('F09 — retrieved evidence reaches the generator', () => {
+  // A graph whose ticket-relevant page sits well past the first fixed slice.
+  const manyPages = Array.from({ length: 40 }, (_, i) => ({
+    url: `https://app.example.com/filler/${i}`,
+    title: `Filler ${i}`,
+    features: [
+      { type: 'form', selector: `#f${i}`, inputs: [{ name: `fillerField${i}` }] },
+      { type: 'button', text: `Filler action ${i}` }
+    ],
+    apis: [{ method: 'GET', endpoint: `/api/filler/${i}` }]
+  }));
+  const targetPage = {
+    url: 'https://app.example.com/invoices/export',
+    title: 'Export invoices',
+    features: [
+      { type: 'form', selector: '#export-form', inputs: [{ name: 'exportFormat' }] },
+      { type: 'button', text: 'Download CSV' }
+    ],
+    apis: [{ method: 'POST', endpoint: '/api/invoices/export' }]
+  };
+  const KG = { pages: [...manyPages, targetPage] };
+
+  const makeRegistry = (extra = {}) => new AgentToolRegistry({
+    knowledgeGraph: KG,
+    ticketData: { summary: 'Export invoices to CSV' },
+    verifierIndex: new (require('../grounded-verifier.js').GroundedVerifier)(KG).index,
+    ...extra
+  });
+
+  test('a retrieved page outranks the arbitrary first-N slice', async () => {
+    const reg = makeRegistry();
+    await reg.execute('bm25_search', { query: 'export invoices csv' });
+    const ctx = reg.groundingContext();
+    // Pre-fix: the generator got the first 40 fields / 30 buttons in index order,
+    // so the page retrieval had just found for it might not appear at all.
+    expect(ctx).toContain('exportformat');
+    expect(ctx).toContain('download csv');
+    expect(ctx).toContain('MOST RELEVANT PAGES');
+    expect(ctx).toContain('/invoices/export');
+  });
+
+  test('retrieval results are retained, not just summarised into one observation', async () => {
+    const reg = makeRegistry();
+    await reg.execute('bm25_search', { query: 'export invoices csv' });
+    expect(reg.evidence.pages.size).toBeGreaterThan(0);
+    const entry = [...reg.evidence.pages.values()][0];
+    expect(entry.url).toBeTruthy();
+    expect(entry.retrievedAt).toBeGreaterThan(0);
+  });
+
+  test('a document fetched by the planner reaches proposal generation', async () => {
+    let seenPrompt = '';
+    const reg = makeRegistry({
+      confluenceFetch: async () => 'SPEC: Exports above 100 MB must be queued and emailed, not downloaded inline.',
+      settings: {},
+      callAI: async (system, content) => { seenPrompt = content[0].text; return JSON.stringify({ tests: [] }); }
+    });
+    await reg.execute('fetch_confluence', { url: 'https://wiki/spec' });
+    await reg.execute('propose_tests', { category: 'Positive', count: 2 });
+    // Pre-fix fetch_confluence returned an excerpt to the PLANNER only — the
+    // generator never saw a word of it.
+    expect(seenPrompt).toContain('RETRIEVED DOCUMENT EVIDENCE');
+    expect(seenPrompt).toContain('must be queued and emailed');
+  });
+
+  test('a failed document fetch is distinguished from an empty document', async () => {
+    const reg = makeRegistry({ confluenceFetch: async () => { throw new Error('403'); } });
+    const obs = await reg.execute('fetch_confluence', { url: 'https://wiki/secret' });
+    expect(obs.fetched).toBe(false);
+    expect(reg.evidence.docs).toHaveLength(0);
+  });
+});
+
+describe('F23 — the reviewed analysis and scope reach generation', () => {
+  const KG = { pages: [{ url: 'https://app/x', title: 'X',
+    features: [{ type: 'button', text: 'Submit', selector: '#s' }], apis: [] }] };
+
+  const build = (reviewedContext) => {
+    let prompt = '';
+    const reg = new AgentToolRegistry({
+      knowledgeGraph: KG,
+      ticketData: { summary: 'Bulk upload', description: 'Users can bulk upload records.' },
+      verifierIndex: new (require('../grounded-verifier.js').GroundedVerifier)(KG).index,
+      reviewedContext,
+      settings: {},
+      callAI: async (_s, content) => { prompt = content[0].text; return JSON.stringify({ tests: [] }); }
+    });
+    return { reg, read: () => prompt };
+  };
+
+  test("a user's exclusion in the reviewed scope reaches the generator", async () => {
+    const { reg, read } = build({
+      scope: 'OUT OF SCOPE: CSV imports — handled by a separate ticket.',
+      scopeReviewed: true
+    });
+    await reg.execute('propose_tests', { category: 'Positive', count: 2 });
+    // Pre-fix currentTestScopeData was stored in the panel and never sent, so a
+    // user could exclude a feature and still get tests for it.
+    expect(read()).toContain('OUT OF SCOPE: CSV imports');
+    expect(read()).toContain('edited by the user');
+  });
+
+  test('a clarification in the reviewed analysis reaches the generator', async () => {
+    const { reg, read } = build({ analysis: 'CLARIFIED: the 100-row limit is inclusive.' });
+    await reg.execute('propose_tests', { category: 'Edge', count: 2 });
+    expect(read()).toContain('the 100-row limit is inclusive');
+  });
+
+  test('the ticket remains the source of truth over model-authored analysis', async () => {
+    const { reg, read } = build({ analysis: 'Some inferred behaviour.' });
+    await reg.execute('propose_tests', { category: 'Positive', count: 1 });
+    // A proposal must not be promoted to a requirement just by passing through
+    // the review panel.
+    expect(read()).toMatch(/the TICKET wins/);
+  });
+
+  test('generation is unchanged when neither review step was run', async () => {
+    const { reg, read } = build(null);
+    await reg.execute('propose_tests', { category: 'Positive', count: 1 });
+    expect(read()).not.toContain('REVIEWED INTERPRETATION');
+  });
+});

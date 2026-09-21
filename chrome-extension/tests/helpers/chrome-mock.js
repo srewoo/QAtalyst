@@ -7,10 +7,13 @@
  * to keep state isolated.
  */
 function createChromeMock(initialStorage = {}) {
-  const store = { ...initialStorage };
+  const sharedStore = { ...initialStorage };
+  const store = sharedStore; // kept for helpers below that read the default keyspace
   const messageListeners = [];
 
-  const area = () => ({
+  const area = (ownStore) => {
+   const store = ownStore || sharedStore;
+   return ({
     get: (keys, cb) => {
       let out;
       if (keys == null) out = { ...store };
@@ -38,12 +41,27 @@ function createChromeMock(initialStorage = {}) {
       if (cb) { cb(); return; }
       return Promise.resolve();
     },
+   });
+  };
+
+  const makeEvent = () => ({
+    _listeners: [],
+    addListener(fn) { this._listeners.push(fn); },
+    removeListener(fn) {
+      const i = this._listeners.indexOf(fn);
+      if (i >= 0) this._listeners.splice(i, 1);
+    },
+    hasListener(fn) { return this._listeners.includes(fn); },
   });
 
   const chrome = {
     _store: store,
     _messageListeners: messageListeners,
-    storage: { sync: area(), local: area(), onChanged: { addListener() {} } },
+    // `session` is a real area here (F17): the worker checkpoints recoverable
+    // partial suites into it, and without it those writes silently no-opped in
+    // tests. Each area keeps its OWN keyspace so a session checkpoint can't be
+    // mistaken for a setting.
+    storage: { sync: area(), local: area(), session: area({}), onChanged: { addListener() {} } },
     runtime: {
       lastError: null,
       id: 'test-extension-id',
@@ -66,10 +84,13 @@ function createChromeMock(initialStorage = {}) {
     action: { onClicked: { addListener() {} } },
     notifications: { create() {}, clear() {} },
     declarativeNetRequest: { updateDynamicRules: () => Promise.resolve() },
+    // webRequest events TRACK their listeners (F18). No-op add/remove made a
+    // listener-leak test pass vacuously — the very bug it was meant to catch was
+    // invisible to it.
     webRequest: {
-      onBeforeRequest: { addListener() {}, removeListener() {} },
-      onCompleted: { addListener() {}, removeListener() {} },
-      onErrorOccurred: { addListener() {}, removeListener() {} },
+      onBeforeRequest: makeEvent(),
+      onCompleted: makeEvent(),
+      onErrorOccurred: makeEvent(),
     },
   };
 

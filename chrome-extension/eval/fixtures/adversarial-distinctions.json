@@ -1,0 +1,71 @@
+{
+  "key": "ADV-DISTINCT",
+  "_comment": "fix2.md §10 regression matrix as a labeled corpus. Each protected pair is a case that quality heuristics MUST NOT collapse: merging one destroys a real obligation while improving the visible duplicate rate. Every pair here was merged by the pre-F05 gate at its default 0.68 threshold.",
+  "ticket": {
+    "summary": "Invoice management permissions and upload limits",
+    "description": "Acceptance Criteria:\n- Owner can delete an invoice\n- Viewer cannot delete an invoice\n- Uploads up to 100 KB are accepted\n- Uploads above 100 KB are rejected"
+  },
+  "protectedDistinctions": [
+    {
+      "reason": "different operations (export vs archive)",
+      "cases": [
+        { "title": "Export invoices", "category": "Positive", "steps": ["Open the invoices list", "Click the \"Export\" button"], "expected_result": "The invoices are exported to a CSV file" },
+        { "title": "Archive invoices", "category": "Positive", "steps": ["Open the invoices list", "Click the \"Archive\" button"], "expected_result": "The invoices are archived" }
+      ]
+    },
+    {
+      "reason": "opposite expected outcomes (allow vs deny)",
+      "cases": [
+        { "title": "Owner can delete an invoice", "category": "Positive", "steps": ["Log in as Owner", "Click Delete on an invoice"], "expected_result": "The invoice is deleted" },
+        { "title": "Viewer cannot delete an invoice", "category": "Negative", "steps": ["Log in as Viewer", "Click Delete on an invoice"], "expected_result": "Deletion is denied and the invoice remains" }
+      ]
+    },
+    {
+      "reason": "different actors (admin vs guest) on the same operation",
+      "cases": [
+        { "title": "Admin opens the billing settings", "category": "Positive", "steps": ["Log in as admin", "Open billing settings"], "expected_result": "The billing settings page is displayed" },
+        { "title": "Guest opens the billing settings", "category": "Negative", "steps": ["Log in as guest", "Open billing settings"], "expected_result": "Access is forbidden" }
+      ]
+    },
+    {
+      "reason": "boundary partitions at/below/above the documented limit",
+      "cases": [
+        { "title": "Upload respects the size limit", "category": "Edge", "steps": ["Upload a 100 KB file"], "expected_result": "The upload is accepted" },
+        { "title": "Upload respects the size limit", "category": "Edge", "steps": ["Upload a 101 KB file"], "expected_result": "The upload is rejected" }
+      ]
+    },
+    {
+      "reason": "create vs update are distinct lifecycle operations",
+      "cases": [
+        { "title": "Create a new invoice", "category": "Positive", "steps": ["Click New invoice", "Fill the form", "Save"], "expected_result": "The new invoice appears in the list" },
+        { "title": "Update an existing invoice", "category": "Positive", "steps": ["Open an invoice", "Edit the amount", "Save"], "expected_result": "The updated amount appears in the list" }
+      ]
+    },
+    {
+      "reason": "enabled vs disabled flag produce different behaviour",
+      "cases": [
+        { "title": "Reminders enabled sends a reminder", "category": "Functional", "steps": ["Enable reminders", "Wait for the due date"], "expected_result": "A reminder is shown" },
+        { "title": "Reminders disabled sends no reminder", "category": "Functional", "steps": ["Disable reminders", "Wait for the due date"], "expected_result": "No reminder is shown" }
+      ]
+    },
+    {
+      "reason": "sparse cases: missing information must not read as equivalence",
+      "cases": [
+        { "title": "Update billing address", "expected_result": "The billing address is updated" },
+        { "title": "Delete saved payment card", "expected_result": "The saved card is removed" }
+      ]
+    }
+  ],
+  "generatedSuite": [
+    { "title": "Owner can delete an invoice", "category": "Positive", "priority": "P0", "steps": ["Log in as Owner", "Click Delete on an invoice"], "expected_result": "The invoice is deleted" },
+    { "title": "Viewer cannot delete an invoice", "category": "Negative", "priority": "P0", "steps": ["Log in as Viewer", "Click Delete on an invoice"], "expected_result": "Deletion is denied and the invoice remains" },
+    { "title": "Upload of 100 KB is accepted", "category": "Edge", "priority": "P1", "steps": ["Upload a 100 KB file"], "expected_result": "The upload is accepted" },
+    { "title": "Upload above 100 KB is rejected", "category": "Edge", "priority": "P1", "steps": ["Upload a 101 KB file"], "expected_result": "The upload is rejected with a size error" }
+  ],
+  "expertSuite": [
+    { "title": "Owner can delete an invoice", "expected_result": "The invoice is deleted" },
+    { "title": "Viewer cannot delete an invoice", "expected_result": "Deletion is denied" },
+    { "title": "Upload at the 100 KB limit is accepted", "expected_result": "The upload is accepted" },
+    { "title": "Upload above the 100 KB limit is rejected", "expected_result": "The upload is rejected" }
+  ]
+}

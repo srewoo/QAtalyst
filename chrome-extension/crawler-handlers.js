@@ -104,21 +104,57 @@ async function handleStartCrawl(data) {
       cost: 0,
       provider: null
     });
+
+    // F26: the graph is committed — only NOW is it safe to drop the page batches
+    // it was assembled from. buildKnowledgeGraph() used to delete them before
+    // this save ran, so a failure here lost the entire crawl.
+    if (activeCrawler && typeof activeCrawler.releasePageBatches === 'function') {
+      await activeCrawler.releasePageBatches();
+    }
+    // F26: the crawl completed — its resume state is no longer a recovery point.
+    if (activeCrawler && typeof activeCrawler.clearResumeState === 'function') {
+      await activeCrawler.clearResumeState();
+    }
     console.log(`✅ Saved knowledge graph with ${knowledgeGraph.totalPages} pages`);
 
-    // Invalidate stale BM25 index and build a fresh one eagerly so the first
-    // query after a crawl doesn't pay the build cost.
+    // Index eagerly so the first query after a crawl doesn't pay the build cost —
+    // and, on an incremental crawl, re-vectorise ONLY the pages that changed.
+    // Rebuilding the whole index re-tokenises every page in the graph, which on a
+    // large app is the most expensive part of the run, so "only crawl what
+    // changed" was still paying the full indexing cost every time.
     try {
-      await storageManager.deleteBm25Index(config.startUrl);
-      const bm25 = BM25Index.build(knowledgeGraph.pages);
+      const pages = Array.isArray(knowledgeGraph.pages)
+        ? knowledgeGraph.pages : Object.values(knowledgeGraph.pages || {});
+      const changed = pages.filter(p => p && !p._reused);
+      const reused = pages.length - changed.length;
+
+      let bm25 = null;
+      if (reused > 0 && changed.length < pages.length) {
+        const saved = await storageManager.loadBm25Index(config.startUrl).catch(() => null);
+        if (saved) {
+          bm25 = BM25Index.update(BM25Index.deserialize(saved), changed,
+            // Drop anything the graph no longer contains, so the corpus
+            // statistics cannot drift against pages that are gone.
+            [...new Set(Object.keys(BM25Index.deserialize(saved).docs || {}))]
+              .filter(u => !pages.some(p => (p.url || p.metadata?.url) === u)));
+          console.log(`♻️  BM25 updated incrementally: ${changed.length} re-indexed, ${reused} reused`);
+        }
+      }
+      if (!bm25) {
+        await storageManager.deleteBm25Index(config.startUrl);
+        bm25 = BM25Index.build(knowledgeGraph.pages);
+        console.log(`✅ BM25 index built (${bm25.N} docs)`);
+      }
       await storageManager.saveBm25Index(config.startUrl, bm25.serialize());
-      console.log(`✅ BM25 index built eagerly (${bm25.N} docs)`);
     } catch (e) {
       console.warn('⚠️ BM25 index build failed (will retry on first query):', e.message);
     }
 
     const result = {
       pages: knowledgeGraph.totalPages,
+      // Report what was actually looked at, so "50 pages" cannot hide the fact
+      // that only 3 were crawled this time.
+      incremental: knowledgeGraph.incremental || null,
       features: knowledgeGraph.stats.totalFeatures,
       apis: knowledgeGraph.stats.totalApis,
       appUrl: config.startUrl,
@@ -261,6 +297,17 @@ async function handleLoadEmbeddings(data) {
       };
     }
 
+    // F02: the crawler emits `pages` as an ARRAY, but every lookup below (and in
+    // GraphFilter / the verifier / coverage) is BY URL. Normalize once, here, so
+    // `allPages[url]` resolves instead of silently returning undefined for every
+    // hit — which transferred ZERO pages for any graph over MAX_PAGES_TO_SEND.
+    if (embeddingData.knowledgeGraph) {
+      embeddingData.knowledgeGraph = {
+        ...embeddingData.knowledgeGraph,
+        pages: pagesByUrl(embeddingData.knowledgeGraph.pages)
+      };
+    }
+
     // Calculate knowledge graph size
     const fullPageCount = embeddingData.knowledgeGraph?.pages
       ? Object.keys(embeddingData.knowledgeGraph.pages).length
@@ -377,7 +424,7 @@ async function handleLoadEmbeddings(data) {
     // Send filtered knowledge graph to content script
     // ContextAnalysisAgent will run in orchestrator (every time tests are generated)
     console.log(`[LOAD GRAPH] 📨 Sending filtered knowledge graph to content script`);
-    console.log(`   Pages: ${wasFiltered ? MAX_PAGES_TO_SEND : fullPageCount} / ${fullPageCount}`);
+    console.log(`   Pages: ${Object.keys(knowledgeGraphToSend?.pages || {}).length} / ${fullPageCount}`);
 
     return {
       success: true,
@@ -389,7 +436,10 @@ async function handleLoadEmbeddings(data) {
         stale,                   // F19
         staleAfterDays,          // F19
         pageCount: fullPageCount,
-        transferPageCount: wasFiltered ? MAX_PAGES_TO_SEND : fullPageCount,
+        // F02: report what was ACTUALLY transferred. This was hard-coded to
+        // MAX_PAGES_TO_SEND whenever filtering ran, so a transfer of 3 relevant
+        // pages (or of 0) was reported to the UI as 30.
+        transferPageCount: Object.keys(knowledgeGraphToSend?.pages || {}).length,
         knowledgeGraph: knowledgeGraphToSend, // Send full filtered graph (will be analyzed by orchestrator)
         hasContext: !!knowledgeGraphToSend
       }
@@ -663,10 +713,15 @@ async function handleDeleteAllEmbeddings() {
  */
 async function handleGetAllApps() {
   try {
-    const stats = await storageManager.getStats();
+    // Lightweight listing: the old path loaded and stringified every stored
+    // graph to render a few rows, which on a large crawl was slow enough to look
+    // like the list had simply failed.
+    const apps = typeof storageManager.listApps === 'function'
+      ? await storageManager.listApps()
+      : (await storageManager.getStats()).apps;
     return {
       success: true,
-      apps: stats.apps
+      apps
     };
   } catch (error) {
     return {
@@ -865,7 +920,11 @@ async function handleMergeKnowledgeGraphs(data) {
  */
 async function handleGetMergeableApps() {
   try {
-    const stats = await storageManager.getStats();
+    // Same lightweight listing as handleGetAllApps — the merge dialog only needs
+    // summary counts, not every graph deserialized.
+    const stats = { apps: typeof storageManager.listApps === 'function'
+      ? await storageManager.listApps()
+      : (await storageManager.getStats()).apps };
 
     // Filter to only apps that have knowledge graphs.
     // Use the real page/feature counts from the knowledge graph — NOT
@@ -896,14 +955,21 @@ async function handleGetMergeableApps() {
  * Handle incremental page processing - save pages as we crawl
  * This allows large crawls to process data progressively instead of all at once
  */
+/**
+ * F26: this handler SAVES NOTHING. Its body was a bare `return {success:true}`
+ * under a comment claiming it saved the page — so every caller was told a page
+ * had been persisted when nothing had. Real durability comes from the crawler's
+ * page batches (checkAndSaveBatch) and the final graph commit.
+ *
+ * It is kept as an explicit no-op acknowledgement rather than silently claiming
+ * a successful save.
+ */
 async function handleProcessPageIncremental(pageData, crawlId, crawlStartTime) {
-  try {
-    // Just save page to knowledge graph (no embeddings needed)
-    return { success: true };
-  } catch (error) {
-    console.error('Error in handleProcessPageIncremental:', error);
-    return { success: false, error: error.message };
-  }
+  return {
+    success: true,
+    persisted: false,
+    note: 'no-op: page durability is provided by streamed page batches and the final graph commit'
+  };
 }
 
 /**

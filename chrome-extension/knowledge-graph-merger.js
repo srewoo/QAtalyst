@@ -95,9 +95,22 @@ class KnowledgeGraphMerger {
       sources: graph1.sources || []
     };
 
-    // Build page maps for matching
-    const pages1 = Object.entries(graph1.pages || {});
-    const pages2 = Object.entries(graph2.pages || {});
+    // F02 (again): the crawler emits `pages` as an ARRAY, and Object.entries on
+    // an array yields ["0", page] — so this keyed pages by their INDEX and merged
+    // by POSITION. Page 0 of one graph "matched" page 0 of the other regardless
+    // of URL, so merging two 2-page graphs produced 2 pages instead of 3 and
+    // silently discarded real ones. Normalize to a URL-keyed map first.
+    const asEntries = (pages) => {
+      if (!pages) return [];
+      if (Array.isArray(pages)) {
+        return pages
+          .filter(p => p && typeof p === 'object')
+          .map((p, i) => [p.url || (p.metadata && p.metadata.url) || `page:${i}`, p]);
+      }
+      return Object.entries(pages);
+    };
+    const pages1 = asEntries(graph1.pages);
+    const pages2 = asEntries(graph2.pages);
 
     // Track matched pages
     const matched2 = new Set();
@@ -467,3 +480,11 @@ class KnowledgeGraphMerger {
     };
   }
 }
+
+// Exported so the merge can be tested. It previously had no export of any kind —
+// available as a global via importScripts in the worker, and therefore untestable,
+// which is why a feature that silently produces a wrong graph had no coverage.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = KnowledgeGraphMerger;
+}
+if (typeof self !== 'undefined') self.KnowledgeGraphMerger = KnowledgeGraphMerger;

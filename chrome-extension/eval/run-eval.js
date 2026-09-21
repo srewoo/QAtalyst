@@ -49,10 +49,22 @@ function main() {
       pct(r.duplicateRate),
       pct(r.precision),
       pct(r.recall),
-      String(r.score).padStart(6),
+      // F20: an unscoreable fixture prints "n/a", never a number that reads as
+      // a grade. Missing evidence is not a result.
+      String(r.score == null ? 'n/a' : r.score).padStart(6),
       r.pass ? '  ✅ PASS' : '  ❌ FAIL'
     ].join(' '));
     if (!r.pass) r.failures.forEach(f => console.log(`                 └─ ${f}`));
+    // F20: report false merges separately — a low duplicate rate achieved by
+    // deleting distinct obligations is a failure, not a success.
+    if (r.falseMerges && r.falseMerges.length) {
+      r.falseMerges.forEach(f => console.log(`                 ✗ false merge: "${f.a}" + "${f.b}" (${f.reason})`));
+    } else if (r.falseMerges) {
+      console.log(`                 protected distinctions: all preserved`);
+    }
+    if (r.groundingDetail && r.groundingDetail.unresolved) {
+      console.log(`                 ⚠ ${r.groundingDetail.unresolved} case(s) have unresolved app references (not counted as grounded)`);
+    }
     if (r.requirementDetail && r.requirementDetail.uncovered && r.requirementDetail.uncovered.length) {
       const u = r.requirementDetail.uncovered.slice(0, 5).map(x => x.text.slice(0, 60));
       console.log(`                 uncovered reqs: ${u.join(' | ')}`);

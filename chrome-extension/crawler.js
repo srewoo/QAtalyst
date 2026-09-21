@@ -108,7 +108,12 @@ class WebAppCrawler {
 
     // Incremental crawl: Load previously crawled pages if available
     this.previouslyCrawled = new Set();
-    this.loadPreviousCrawl(config.startUrl);
+    // F19/F26: the constructor cannot await. Keep the promise so crawl() can wait
+    // for it — previously this raced the crawl, so the "previously crawled" set
+    // was often still empty when the first pages were queued and incremental mode
+    // silently degraded to a full re-crawl.
+    this.previousCrawlReady = this.loadPreviousCrawl(config.startUrl)
+      .catch(() => { /* no previous crawl is a normal, non-fatal state */ });
 
     // MEMORY OPTIMIZATION: Track cleanup intervals
     this.lastMemoryCleanup = Date.now();
@@ -127,17 +132,42 @@ class WebAppCrawler {
         data: { appUrl }
       });
 
-      if (response && response.success && response.knowledgeGraph && response.knowledgeGraph.pages) {
-        const pages = response.knowledgeGraph.pages;
-        const pageCount = Object.keys(pages).length;
+      // F19: the handler returns the graph under `result`, not at the top level,
+      // so this condition was never true — the whole incremental-crawl path was
+      // dead and every crawl re-crawled everything from scratch. Accept both
+      // shapes so older/newer handler builds both work.
+      const graph = (response && response.success)
+        ? ((response.result && response.result.knowledgeGraph) || response.knowledgeGraph)
+        : null;
+
+      if (graph && graph.pages) {
+        // Pages may be an array (raw crawl) or a URL-keyed map (F02).
+        const pages = graph.pages;
+        const urls = Array.isArray(pages)
+          ? pages.map(p => p && p.url).filter(Boolean)
+          : Object.keys(pages);
+        const pageCount = urls.length;
 
         if (pageCount > 0) {
           console.log(`📚 Found previous crawl with ${pageCount} pages`);
 
-          // Store previously crawled URLs
-          for (const url of Object.keys(pages)) {
+          // Retain the previous PAGE RECORDS, not just their URLs.
+          // Incremental mode skipped a known URL and then built the new graph from
+          // freshly-crawled pages only — so every skipped page vanished from the
+          // result. Turning on incremental crawling destroyed the evidence it was
+          // supposed to preserve. Carry them forward instead.
+          this.previousPages = new Map();
+          const pageList = Array.isArray(pages) ? pages : Object.values(pages);
+          for (const page of pageList) {
+            if (page && page.url) this.previousPages.set(page.url, page);
+          }
+          for (const url of urls) {
             this.previouslyCrawled.add(url);
           }
+          // F19: "we have seen this URL before" is NOT "its content is unchanged".
+          // Record when the evidence was observed so a caller can decide whether
+          // skipping it is still safe.
+          this.previousCrawlObservedAt = (response.result && response.result.crawledAt) || graph.crawledAt || null;
 
           // Ask user if they want incremental crawl
           const incrementalMode = CONFIG.get('crawler.incremental.enabled', true);
@@ -157,6 +187,15 @@ class WebAppCrawler {
    * @returns {Promise<Object>} Crawl results with knowledge graph
    */
   async crawl() {
+    // F19/F26: don't start until the previous-crawl load has settled.
+    if (this.previousCrawlReady) {
+      try { await this.previousCrawlReady; } catch (_) {}
+    }
+
+    // F18: install the API interceptor BEFORE the first navigation, so bootstrap
+    // requests are captured rather than missed.
+    await this.registerEarlyInterceptor(this.startUrl);
+
     console.log(`🕷️ Starting crawl from ${this.startUrl}`);
     console.log(`📊 Config: maxPages=${this.maxPages}, maxDepth=${this.maxDepth}`);
     console.log(`⚡ Optimizations: Parallel=${this.parallelEnabled}, Selective=${this.selectiveEnabled}`);
@@ -228,6 +267,10 @@ class WebAppCrawler {
       // ALWAYS cleanup - even if crawl errors or is stopped
       console.log('🧹 Cleaning up crawler resources...');
 
+      // F18: remove the document_start registration, so the interceptor does not
+      // keep instrumenting the user's browsing after the crawl.
+      await this.unregisterEarlyInterceptor();
+
       // Stop network monitoring
       this.networkMonitor.stop();
 
@@ -262,12 +305,17 @@ class WebAppCrawler {
         continue;
       }
 
-      // Incremental crawl: Skip if previously crawled
+      // Incremental crawl: re-crawl only what is NEW or CHANGED.
       const incrementalMode = CONFIG.get('crawler.incremental.enabled', true);
       if (incrementalMode && this.previouslyCrawled.has(url)) {
-        console.log(`⏩ Skipping previously crawled: ${url}`);
-        this.visited.add(url);
-        continue;
+        const decision = await this.shouldRecrawl(url);
+        if (!decision.recrawl) {
+          console.log(`⏩ Unchanged, reusing previous crawl: ${url} (${decision.reason})`);
+          this.carryForwardPage(url);
+          this.visited.add(url);
+          continue;
+        }
+        console.log(`🔄 Changed since last crawl, re-crawling: ${url} (${decision.reason})`);
       }
 
       try {
@@ -334,12 +382,17 @@ class WebAppCrawler {
           return Promise.resolve();
         }
 
-        // Incremental crawl: Skip if previously crawled
+        // Incremental crawl: re-crawl only what is NEW or CHANGED (parallel path).
         const incrementalMode = CONFIG.get('crawler.incremental.enabled', true);
         if (incrementalMode && this.previouslyCrawled.has(url)) {
-          console.log(`⏩ Skipping previously crawled: ${url}`);
-          this.visited.add(url);
-          return Promise.resolve();
+          const decision = await this.shouldRecrawl(url);
+          if (!decision.recrawl) {
+            console.log(`⏩ Unchanged, reusing previous crawl: ${url} (${decision.reason})`);
+            this.carryForwardPage(url);
+            this.visited.add(url);
+            return Promise.resolve();
+          }
+          console.log(`🔄 Changed since last crawl, re-crawling: ${url} (${decision.reason})`);
         }
 
         // CRITICAL FIX: Validate tab before crawling, recreate if invalid
@@ -474,6 +527,12 @@ class WebAppCrawler {
       throw new Error(`Tab ${tabId} no longer exists`);
     }
 
+    // F18: open this page's capture window BEFORE navigating, so requests fired
+    // during navigation belong to the page that caused them.
+    if (this.networkMonitor && typeof this.networkMonitor.beginPage === 'function') {
+      this.networkMonitor.beginPage(url);
+    }
+
     // Navigate to page
     await this.navigate(url, tabId);
 
@@ -533,8 +592,12 @@ class WebAppCrawler {
     // into the network monitor before reading the API list (item 5: response bodies).
     await this.drainApiCaptures(tabId);
 
-    // Get API calls captured during page load
-    const apis = this.networkMonitor.getApiCalls();
+    // F18: only the API calls captured for THIS page. getApiCalls() returns the
+    // whole crawl's cumulative list, so every page after the first was credited
+    // with every earlier page's endpoints.
+    const apis = typeof this.networkMonitor.takeApiCallsForPage === 'function'
+      ? this.networkMonitor.takeApiCallsForPage()
+      : this.networkMonitor.getApiCalls();
 
     // Discover new links (traditional)
     const links = await this.discoverLinks(tabId);
@@ -686,8 +749,23 @@ class WebAppCrawler {
       _pageHints: pageHints && Object.keys(pageHints).length > 0 ? pageHints : undefined,
       _apiSchemas: apiSummary.endpoints && apiSummary.endpoints.length > 0 ? apiSummary.endpoints : undefined,
       _apiErrors: apiSummary.errors && apiSummary.errors.length > 0 ? apiSummary.errors : undefined,
-      _pagination: apiSummary.pagination && apiSummary.pagination.length > 0 ? apiSummary.pagination : undefined
+      _pagination: apiSummary.pagination && apiSummary.pagination.length > 0 ? apiSummary.pagination : undefined,
+      // Freshness fingerprint, so the NEXT crawl can tell whether this page
+      // changed instead of re-crawling it blindly or skipping it blindly.
+      _contentHash: WebAppCrawler.hashContent(
+        [metadata.title, textContent, JSON.stringify(features || [])].join('\n'))
     };
+
+    // Server-supplied validators are far cheaper to check than a re-render, so
+    // capture them when the origin provides them.
+    try {
+      const head = await fetch(actualUrl, { method: 'HEAD', credentials: 'include' });
+      const etag = head.headers.get('etag');
+      const lastModified = head.headers.get('last-modified');
+      if (etag || lastModified) pageData._validators = { etag, lastModified };
+    } catch (_) {
+      // Not all origins answer HEAD; the content hash covers those.
+    }
 
     // WEEK 1: Track page load time for adaptive scaling
     this.trackPageLoadTime(metadata.loadTime || 1000);
@@ -1202,6 +1280,51 @@ class WebAppCrawler {
    * crawler can capture API response bodies (webRequest can't read them).
    * Idempotent in-page; safe to call once per page load. Best-effort.
    */
+  /**
+   * F18: register the interceptor to run at DOCUMENT_START for the crawl's own
+   * origin, before any page script executes.
+   *
+   * Per-page injection happens after waitForPageLoad(), so every request the page
+   * fires while loading — which on most apps is the bootstrap data fetch, i.e.
+   * the most informative call on the page — had already completed before the
+   * interceptor existed. Its response body was therefore never captured, and the
+   * knowledge graph recorded the endpoint with `responseBody: null`.
+   *
+   * Best-effort: registration can fail on restricted origins, and the per-page
+   * injection below remains as the fallback.
+   */
+  async registerEarlyInterceptor(startUrl) {
+    if (CONFIG.get('network.responseBodyCapture.enabled', true) === false) return;
+    if (!chrome.scripting || !chrome.scripting.registerContentScripts) return;
+    try {
+      const origin = new URL(startUrl).origin;
+      this._earlyScriptId = `qatalyst-net-${Date.now()}`;
+      await chrome.scripting.registerContentScripts([{
+        id: this._earlyScriptId,
+        matches: [`${origin}/*`],
+        js: ['network-interceptor.js'],
+        runAt: 'document_start',
+        world: 'MAIN',
+        persistAcrossSessions: false
+      }]);
+      console.log(`🌐 Early API interceptor registered for ${origin} (document_start)`);
+    } catch (error) {
+      this._earlyScriptId = null;
+      console.debug?.(`Early interceptor registration skipped: ${error.message}`);
+    }
+  }
+
+  /** F18: remove the document_start registration when the crawl ends. */
+  async unregisterEarlyInterceptor() {
+    if (!this._earlyScriptId || !chrome.scripting || !chrome.scripting.unregisterContentScripts) return;
+    try {
+      await chrome.scripting.unregisterContentScripts({ ids: [this._earlyScriptId] });
+    } catch (error) {
+      console.debug?.(`Early interceptor cleanup skipped: ${error.message}`);
+    }
+    this._earlyScriptId = null;
+  }
+
   async injectNetworkInterceptor(tabId) {
     if (CONFIG.get('network.responseBodyCapture.enabled', true) === false) return;
     try {
@@ -1487,6 +1610,168 @@ class WebAppCrawler {
    * Build knowledge graph from crawled pages
    * P0.1: Loads all batches from IndexedDB if streaming save was used
    */
+  /**
+   * F26: drop the streamed page batches. Call ONLY after the assembled knowledge
+   * graph has been committed — until then the batches are the crawl's only
+   * durable record.
+   */
+  /**
+   * Has this page CHANGED since the last crawl?
+   *
+   * Incremental mode previously skipped any URL it had seen before, so a page
+   * whose content had been rewritten was never re-crawled and the graph kept
+   * describing an app that no longer existed. A URL is an identifier, not a
+   * version.
+   *
+   * The check is deliberately cheap — a conditional HTTP request, no tab, no
+   * render — so skipping stays much faster than crawling. It errs toward
+   * RE-CRAWLING: when we cannot prove a page is unchanged we crawl it, because a
+   * redundant crawl costs seconds and stale evidence costs correctness.
+   *
+   * @returns {Promise<{recrawl: boolean, reason: string}>}
+   */
+  async shouldRecrawl(url) {
+    const previous = this.previousPages && this.previousPages.get(url);
+    if (!previous) return { recrawl: true, reason: 'no previous record' };
+
+    // A page that errored last time has no usable evidence to reuse.
+    if (previous.error) return { recrawl: true, reason: 'previous crawl failed for this page' };
+
+    // Refresh anything older than the configured TTL, so a site without
+    // validators still gets revisited eventually.
+    const maxAgeDays = CONFIG.get('crawler.incremental.maxAgeDays', 14);
+    const observedAt = previous.timestamp || this.previousCrawlObservedAt;
+    if (observedAt && Date.now() - observedAt > maxAgeDays * 86400000) {
+      return { recrawl: true, reason: `evidence older than ${maxAgeDays} days` };
+    }
+
+    // Conditional request: the server tells us whether it changed.
+    const validators = previous._validators;
+    if (validators && (validators.etag || validators.lastModified)) {
+      try {
+        const headers = {};
+        if (validators.etag) headers['If-None-Match'] = validators.etag;
+        if (validators.lastModified) headers['If-Modified-Since'] = validators.lastModified;
+        const res = await fetch(url, { method: 'GET', headers, credentials: 'include', cache: 'no-cache' });
+        if (res.status === 304) return { recrawl: false, reason: 'server reported 304 Not Modified' };
+        if (res.ok) {
+          const etag = res.headers.get('etag');
+          const lastMod = res.headers.get('last-modified');
+          if (etag && validators.etag && etag === validators.etag) {
+            return { recrawl: false, reason: 'ETag unchanged' };
+          }
+          if (!etag && lastMod && validators.lastModified === lastMod) {
+            return { recrawl: false, reason: 'Last-Modified unchanged' };
+          }
+          return { recrawl: true, reason: etag ? 'ETag changed' : 'content validators changed' };
+        }
+      } catch (e) {
+        // A failed probe proves nothing — crawl rather than assume unchanged.
+        return { recrawl: true, reason: `could not verify freshness (${e.message})` };
+      }
+    }
+
+    // Content hash as a fallback for servers that send no validators.
+    if (previous._contentHash) {
+      try {
+        const res = await fetch(url, { credentials: 'include', cache: 'no-cache' });
+        if (!res.ok) return { recrawl: true, reason: `freshness probe returned HTTP ${res.status}` };
+        const body = await res.text();
+        const hash = WebAppCrawler.hashContent(body);
+        return hash === previous._contentHash
+          ? { recrawl: false, reason: 'content hash unchanged' }
+          : { recrawl: true, reason: 'content hash changed' };
+      } catch (e) {
+        return { recrawl: true, reason: `could not fetch to compare (${e.message})` };
+      }
+    }
+
+    // Nothing to compare against — an SPA route, or a record from before
+    // fingerprinting existed. Re-crawl once so it gains a fingerprint.
+    return { recrawl: true, reason: 'no freshness fingerprint stored' };
+  }
+
+  /**
+   * Reuse a previous page record unchanged, so an incremental crawl PRESERVES
+   * evidence instead of quietly discarding everything it skipped.
+   */
+  carryForwardPage(url) {
+    const previous = this.previousPages && this.previousPages.get(url);
+    if (!previous) return false;
+    this.pages.push({ ...previous, _reused: true, _reusedAt: Date.now() });
+    this.reusedPageCount = (this.reusedPageCount || 0) + 1;
+    return true;
+  }
+
+  /** Stable, cheap content fingerprint (FNV-1a). Not cryptographic — a change detector. */
+  static hashContent(text) {
+    const s = String(text || '');
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(36);
+  }
+
+  /**
+   * F26: a RESUMABLE checkpoint — the queue and the visited set, not a count.
+   *
+   * The previous checkpoint saved page/queue COUNTS, which cannot restart
+   * anything: on resume there was no way to know which URLs were done or what
+   * was still pending, and no reader existed anyway. This persists the state a
+   * resume actually needs, bounded so a large crawl cannot blow the quota.
+   */
+  async saveResumeState() {
+    if (!this.crawlId) return;
+    try {
+      const MAX = 2000;
+      await chrome.storage.local.set({
+        [`crawl_resume_${this.crawlId}`]: {
+          crawlId: this.crawlId,
+          startUrl: this.startUrl,
+          savedAt: Date.now(),
+          visited: [...this.visited].slice(-MAX),
+          queue: this.queue.slice(0, MAX).map(q => ({ url: q.url, depth: q.depth, priority: q.priority })),
+          batchNumber: this.batchNumber,
+          // Truthful about its own limits: a bounded snapshot is not the whole
+          // crawl, and a resume must not claim pages it cannot account for.
+          truncated: this.visited.size > MAX || this.queue.length > MAX,
+          pagesInMemory: this.pages.length
+        }
+      });
+    } catch (e) {
+      console.warn('⚠️ Could not save resume state:', e.message);
+    }
+  }
+
+  /** F26: read back a resumable crawl, or null when there is nothing to resume. */
+  static async loadResumeState(crawlId) {
+    try {
+      const key = `crawl_resume_${crawlId}`;
+      const all = await chrome.storage.local.get(key);
+      return (all && all[key]) || null;
+    } catch (_) { return null; }
+  }
+
+  /** F26: drop the resume state once the crawl has been committed. */
+  async clearResumeState() {
+    if (!this.crawlId) return;
+    try { await chrome.storage.local.remove(`crawl_resume_${this.crawlId}`); } catch (_) {}
+  }
+
+  async releasePageBatches() {
+    if (!this.pendingBatchCleanup) return;
+    try {
+      console.log(`🗑️ Cleaning up ${this.batchNumber} page batches (graph committed)…`);
+      await storageManager.clearPageBatches(this.crawlId);
+      this.pendingBatchCleanup = false;
+    } catch (e) {
+      // Leaving batches behind is safe; deleting them early is not.
+      console.warn('⚠️ Page-batch cleanup failed, leaving them in place:', e.message);
+    }
+  }
+
   async buildKnowledgeGraph() {
     // P0.1: Load all page batches from IndexedDB if streaming save was enabled
     let allPages = this.pages; // Start with pages in memory
@@ -1525,15 +1810,62 @@ class WebAppCrawler {
 
     console.log(`  Total duration: ${(duration / 1000).toFixed(1)}s`);
 
-    // P0.1: Cleanup - delete page batches from IndexedDB after building graph
-    if (this.streamingSaveEnabled && this.batchNumber > 0) {
-      console.log(`🗑️ Cleaning up ${this.batchNumber} page batches...`);
-      await storageManager.clearPageBatches(this.crawlId);
+    // F26: do NOT delete the page batches here. This ran BEFORE the caller
+    // committed the assembled graph, so a failure in that final save destroyed
+    // both the graph and the only durable copy of the pages it was built from —
+    // an entire crawl lost at the last step. The caller cleans up once the graph
+    // is safely stored (see releasePageBatches()).
+    this.pendingBatchCleanup = this.streamingSaveEnabled && this.batchNumber > 0;
+
+    // F19: a crawl is a PARTIAL observation. Pages we deliberately did not visit
+    // — sampled-out URL patterns, structural duplicates, depth/budget cutoffs —
+    // are recorded as explicit exploration gaps. Without this, "not in the graph"
+    // and "does not exist in the app" were indistinguishable, and grounding
+    // treated an unexplored variant as a hallucination.
+    const reused = allPages.filter(p => p && p._reused).length;
+    if (reused) {
+      console.log(`♻️  Reused ${reused} unchanged page(s) from the previous crawl; ${allPages.length - reused} were new or changed.`);
     }
+
+    const explorationGaps = [];
+    if (this.parameterizedUrlTracking && this.parameterizedUrlTracking.size) {
+      for (const [pattern, count] of this.parameterizedUrlTracking.entries()) {
+        explorationGaps.push({
+          kind: 'sampled_url_pattern', pattern, sampled: count,
+          note: `Only ${count} sample(s) of this URL pattern were crawled; other instances were not observed.`
+        });
+      }
+    }
+    const dupSkipped = Math.max(0, this.pageSignatures.size - allPages.length);
+    if (dupSkipped) {
+      explorationGaps.push({
+        kind: 'structural_duplicates', count: dupSkipped,
+        note: `${dupSkipped} page(s) were skipped as structurally similar to an already-crawled page — their specific content was not observed.`
+      });
+    }
+    if (this.queue && this.queue.length) {
+      explorationGaps.push({
+        kind: 'budget_cutoff', remaining: this.queue.length,
+        note: `${this.queue.length} discovered page(s) were never visited because the page or depth budget was reached.`
+      });
+    }
+    // F19: roles/states are never enumerated by a single authenticated session.
+    explorationGaps.push({
+      kind: 'unexplored_dimensions',
+      note: 'This crawl observed one session: one role, one viewport, one feature-flag state. Permission, responsive and flag variants were not explored.'
+    });
 
     return {
       appUrl: this.startUrl,
       crawledAt: Date.now(),
+      explorationGaps,
+      // Incremental crawl accounting, so "50 pages" cannot hide the fact that
+      // only 3 were actually looked at this time.
+      incremental: {
+        reusedPages: reused,
+        freshPages: allPages.length - reused,
+        previousCrawlObservedAt: this.previousCrawlObservedAt || null
+      },
       duration: duration,
       totalPages: allPages.length,
       totalErrors: this.errors.length,
@@ -1625,6 +1957,15 @@ class WebAppCrawler {
    * Prevents memory exhaustion on large crawls (10,000+ pages)
    */
   async checkAndSaveBatch() {
+    // F26: the queue/visited snapshot is written alongside the page batch, so a
+    // recovered batch always has the crawl state that explains it. Best-effort:
+    // the BATCH is the durable record, and a snapshot failure must never cost us
+    // the pages themselves.
+    if (this.streamingSaveEnabled && typeof this.saveResumeState === 'function') {
+      try { await this.saveResumeState(); } catch (e) {
+        console.warn('⚠️ Resume snapshot skipped:', e.message);
+      }
+    }
     if (!this.streamingSaveEnabled) return;
 
     // Check if we've reached batch size
@@ -2230,6 +2571,9 @@ class WebAppCrawler {
   async stop() {
     this.isStopped = true;
     this.networkMonitor.stop();
+    // F18: a document_start registration outlives the crawl if we do not remove
+    // it, and would keep instrumenting the user's own browsing afterwards.
+    await this.unregisterEarlyInterceptor();
     await this.resourceBlocker.stop();
     await this.closeAllParallelTabs();
     console.log('⏹️ Crawler stopped');

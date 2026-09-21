@@ -71,13 +71,19 @@ function scoreSuite(fixture, opts = {}) {
   if (fixture.knowledgeGraph) {
     const v = new GroundedVerifier(fixture.knowledgeGraph);
     if (v.isApplicable()) {
-      let notRejected = 0, rejected = 0;
+      // F20: "not rejected" is not "grounded". A test with unresolved references
+      // (verdict 'unresolved') or one repaired but still carrying issues used to
+      // count as valid grounding, so a suite full of half-hallucinated entities
+      // scored 100% grounding. Only fully resolved references count.
+      let grounded = 0, unresolved = 0, rejected = 0;
       for (const t of suite) {
         const r = v.verify(t);
-        if (r.verdict === 'reject') rejected++; else notRejected++;
+        if (r.verdict === 'reject') rejected++;
+        else if (r.verdict === 'unresolved' || (r.issues && r.issues.length)) unresolved++;
+        else grounded++;
       }
-      groundingValidity = total ? notRejected / total : 1;
-      groundingDetail = { notRejected, rejected };
+      groundingValidity = total ? grounded / total : null;
+      groundingDetail = { grounded, unresolved, rejected };
     }
   }
 
@@ -89,6 +95,25 @@ function scoreSuite(fixture, opts = {}) {
     const groups = det.detectDuplicates(suite) || [];
     duplicateCount = groups.reduce((n, g) => n + ((g.duplicates && g.duplicates.length) || 0), 0);
     duplicateRate = duplicateCount / total;
+  }
+
+  // ── F20: false merges on labeled protected pairs ──
+  // Duplicate REMOVAL rate says nothing about whether the right cases were
+  // removed. A fixture may declare pairs of titles that must never be collapsed
+  // (opposite outcomes, different operations/actors, distinct boundary values);
+  // merging one of those is a quality FAILURE that a low duplicate rate hides.
+  let falseMerges = null;
+  const protectedPairs = Array.isArray(fixture.protectedDistinctions) ? fixture.protectedDistinctions : null;
+  if (protectedPairs && protectedPairs.length) {
+    const det = new SemanticDuplicateDetector(opts.dedupThreshold ?? 0.68);
+    falseMerges = [];
+    for (const pair of protectedPairs) {
+      const [a, b] = pair.cases || [];
+      if (!a || !b) continue;
+      const groups = det.detectDuplicates([a, b]) || [];
+      const merged = groups.some(g => (g.duplicates || []).length > 0);
+      if (merged) falseMerges.push({ reason: pair.reason || 'protected pair', a: a.title, b: b.title });
+    }
   }
 
   // ── precision / recall vs an expert suite (token-overlap proxy) ──
@@ -110,7 +135,18 @@ function scoreSuite(fixture, opts = {}) {
   parts.push([1 - Math.min(1, duplicateRate), 0.15]);
   if (precision != null) parts.push([(precision + recall) / 2, 0.15]);
   const wSum = parts.reduce((s, [, w]) => s + w, 0) || 1;
-  const score = Math.round((parts.reduce((s, [v, w]) => s + v * w, 0) / wSum) * 100);
+
+  // F20: a fixture with no requirements, no crawl and no expert suite has NOTHING
+  // to judge the output against — only the uniqueness term survives, and an empty
+  // suite trivially has no duplicates, so `evaluate({ticket:{},generatedSuite:[]})`
+  // returned score 100 / pass true. Missing evidence is not a perfect result.
+  const scoreable = total > 0 && (requirementCoverage != null || groundingValidity != null || precision != null);
+  const score = scoreable
+    ? Math.round((parts.reduce((s, [v, w]) => s + v * w, 0) / wSum) * 100)
+    : null;
+  const unscoreableReason = scoreable ? null
+    : (total === 0 ? 'empty suite — nothing to score'
+       : 'no requirements, crawl graph or expert suite to score against');
 
   return {
     key: fixture.key || '(fixture)',
@@ -123,6 +159,9 @@ function scoreSuite(fixture, opts = {}) {
     duplicateCount,
     precision,
     recall,
+    falseMerges,
+    scoreable,
+    unscoreableReason,
     score
   };
 }
@@ -133,11 +172,25 @@ const DEFAULT_THRESHOLDS = {
   groundingValidity: 0.8,
   duplicateRate: 0.15, // max
   score: 70
+  // NOTE (F20): precision/recall are deliberately NOT thresholded yet. They are
+  // token-overlap proxies against a single hand-written expert suite; fix2.md §9
+  // requires a representative labeled baseline (30-50 tickets) before any
+  // threshold on them would mean anything. They are reported, not gated.
 };
 
 function evaluate(fixture, thresholds = DEFAULT_THRESHOLDS, opts = {}) {
   const m = scoreSuite(fixture, opts);
   const failures = [];
+
+  // F20: never report a pass for something that was never actually judged.
+  if (!m.scoreable) {
+    return { ...m, pass: false, failures: [`not scoreable: ${m.unscoreableReason}`] };
+  }
+  // A merged protected pair is a hard failure regardless of the aggregate score.
+  if (m.falseMerges && m.falseMerges.length) {
+    failures.push(`${m.falseMerges.length} false merge(s) of protected distinct pairs: ` +
+      m.falseMerges.map(f => f.reason).join('; '));
+  }
   if (m.requirementCoverage != null && m.requirementCoverage < thresholds.requirementCoverage)
     failures.push(`requirementCoverage ${(m.requirementCoverage * 100).toFixed(0)}% < ${(thresholds.requirementCoverage * 100).toFixed(0)}%`);
   if (m.groundingValidity != null && m.groundingValidity < thresholds.groundingValidity)

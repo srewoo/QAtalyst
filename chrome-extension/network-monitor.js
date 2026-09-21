@@ -13,6 +13,10 @@ class NetworkMonitor {
     this.endpointSchemas = new Map();
     this.errorResponses = [];
     this.paginationPatterns = new Map();
+    // F18: per-page capture window (see beginPage/takeApiCallsForPage).
+    this.pageCursor = 0;
+    this.currentPageUrl = null;
+    this.boundHandlers = null;
   }
 
   /**
@@ -20,22 +24,37 @@ class NetworkMonitor {
    * @param {number} tabId - Chrome tab ID to monitor
    */
   async start(tabId) {
+    // F18: a second start() without a stop() used to stack another pair of
+    // listeners. Always detach first so start/stop is idempotent.
+    if (this.boundHandlers) this.stop();
+
     this.tabId = tabId;
     this.isMonitoring = true;
     this.requests = [];
+    this.pageCursor = 0;
 
     console.log('🌐 Network monitoring started');
 
     // Set up webRequest listeners
     if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
+      // F18: RETAIN the bound references. `.bind(this)` returns a NEW function
+      // every call, and stop() passed the unbound prototype method to
+      // removeListener — which matches nothing, so every start/stop cycle leaked
+      // a listener pair. On the next start they all fired again, double-counting
+      // every request for the rest of the crawl.
+      this.boundHandlers = {
+        request: this.handleRequest.bind(this),
+        response: this.handleResponse.bind(this)
+      };
+
       chrome.webRequest.onBeforeRequest.addListener(
-        this.handleRequest.bind(this),
+        this.boundHandlers.request,
         { urls: ["<all_urls>"], tabId: this.tabId },
         ["requestBody"]
       );
 
       chrome.webRequest.onCompleted.addListener(
-        this.handleResponse.bind(this),
+        this.boundHandlers.response,
         { urls: ["<all_urls>"], tabId: this.tabId },
         ["responseHeaders"]
       );
@@ -49,11 +68,16 @@ class NetworkMonitor {
     this.isMonitoring = false;
     console.log(`🌐 Network monitoring stopped: Captured ${this.requests.length} requests`);
 
-    // Remove listeners
-    if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
-      chrome.webRequest.onBeforeRequest.removeListener(this.handleRequest);
-      chrome.webRequest.onCompleted.removeListener(this.handleResponse);
+    // Remove listeners using the EXACT references that were added (F18).
+    if (chrome.webRequest && chrome.webRequest.onBeforeRequest && this.boundHandlers) {
+      try {
+        chrome.webRequest.onBeforeRequest.removeListener(this.boundHandlers.request);
+        chrome.webRequest.onCompleted.removeListener(this.boundHandlers.response);
+      } catch (e) {
+        console.warn('⚠️ Failed to detach network listeners:', e.message);
+      }
     }
+    this.boundHandlers = null;
   }
 
   /**
@@ -134,6 +158,9 @@ class NetworkMonitor {
       const urlObj = new URL(url);
 
       // Common API patterns from config
+      // F18: keep these in sync with network-interceptor.js's isApiish — the two
+      // matchers decide what gets captured at different layers, and a rule that
+      // holds in one but not the other produces requests with no response body.
       const apiPatternsConfig = CONFIG.get('network.endpoints.apiPatterns', [
         '/api/', '/rest/', '/graphql', '/v1/', '/v2/'
       ]);
@@ -210,10 +237,39 @@ class NetworkMonitor {
   }
 
   /**
+   * F18: mark the start of a new page's capture window.
+   *
+   * `this.requests` accumulates for the WHOLE crawl, and crawlPage() read the
+   * entire cumulative list for every page — so page 20's knowledge-graph entry
+   * claimed every API call pages 1-19 had made. Endpoint coverage looked
+   * excellent and the attribution was wrong everywhere but the first page.
+   */
+  beginPage(url) {
+    this.pageCursor = this.requests.length;
+    this.currentPageUrl = url || null;
+  }
+
+  /**
+   * API calls captured since the last beginPage(), and advance the cursor.
+   * Falls back to everything when no page boundary was ever marked, so callers
+   * that never call beginPage() keep the old behaviour.
+   */
+  takeApiCallsForPage() {
+    const from = Number.isInteger(this.pageCursor) ? this.pageCursor : 0;
+    const slice = this.requests.slice(from);
+    this.pageCursor = this.requests.length;
+    return this.mapApiCalls(slice);
+  }
+
+  /**
    * Get all captured API calls
    */
   getApiCalls() {
-    return this.requests.map(req => ({
+    return this.mapApiCalls(this.requests);
+  }
+
+  mapApiCalls(requests) {
+    return (requests || []).map(req => ({
       url: req.url,
       method: req.method,
       statusCode: req.statusCode,

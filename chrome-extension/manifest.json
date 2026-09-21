@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "QAtalyst - AI Test Case Generator",
-  "version": "13.8",
+  "version": "14.0",
   "description": "AI test case generator for Jira. Turn tickets, requirements & acceptance criteria into positive, negative & edge-case tests.",
   "permissions": [
     "storage",
@@ -20,6 +20,8 @@
     "https://*.jira.com/*",
     "https://*.confluence.com/*",
     "https://api.openai.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
     "https://api.anthropic.com/*",
     "https://api.figma.com/*",
     "https://generativelanguage.googleapis.com/*",
@@ -45,6 +47,8 @@
       ],
       "js": [
         "graph-filter.js",
+        "dynamic-distribution.js",
+        "semantic-duplicate-detector.js",
         "config.js",
         "logger.js",
         "security.js",
