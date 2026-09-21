@@ -25,6 +25,14 @@ const ACTOR_RE = /\b(admin(?:istrator)?|owner|viewer|editor|guest|anonymous|memb
 
 const NEGATIVE_RE = /\b(cannot|can't|cant|must not|should not|shouldn't|shall not|will not|won't|does not|doesn't|do not|don't|is not|isn't|are not|aren't|never|no longer|unable to|prevented from|denied|forbidden|prohibited|disallowed|blocked from|restricted from)\b/i;
 
+/**
+ * An explicit optionality MARKER qualifies the whole statement, so it must beat a
+ * modal verb inside it. "Good to have: the chat should move up" is optional — the
+ * `should` describes the behaviour, not its priority. Checking only
+ * `OPTIONAL && !MANDATORY` let one `should` promote a nice-to-have into a
+ * release obligation, which is precisely what fix2.md §7.1 forbids.
+ */
+const OPTIONAL_MARKER_RE = /\b(good to have|nice to have|optional|optionally|stretch goal|if time permits|future(?: release| enhancement)|out of scope for (?:this|now)|non[- ]blocking)\b/i;
 const OPTIONAL_RE = /\b(may|can optionally|optionally|nice to have|good to have|could|preferably|ideally)\b/i;
 const MANDATORY_RE = /\b(must|shall|should|will|is required to|needs? to|has to)\b/i;
 
@@ -41,6 +49,7 @@ function makeId(ticketKey, index) {
 
 function detectModality(text) {
   if (NEGATIVE_RE.test(text)) return 'must_not';
+  if (OPTIONAL_MARKER_RE.test(text)) return 'may';
   if (OPTIONAL_RE.test(text) && !MANDATORY_RE.test(text)) return 'may';
   return 'must';
 }
@@ -53,6 +62,8 @@ function detectStatus(text) {
     return 'out_of_scope';
   }
   if (/\b(superseded|replaced by|no longer applies|obsolete)\b/i.test(text)) return 'superseded';
+  // Marker first: it qualifies the sentence regardless of the verb inside it.
+  if (OPTIONAL_MARKER_RE.test(text)) return 'optional';
   if (OPTIONAL_RE.test(text) && !MANDATORY_RE.test(text)) return 'optional';
   return 'mandatory';
 }
@@ -166,7 +177,7 @@ function groupCompound(reqs) {
   return groups;
 }
 
-const api = { buildRequirements, mandatoryRequirements, groupCompound, splitCompound,
+const api = { buildRequirements, mandatoryRequirements, groupCompound, splitCompound, OPTIONAL_MARKER_RE,
               detectModality, detectStatus, detectOperation };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 if (typeof self !== 'undefined') Object.assign(self, api);

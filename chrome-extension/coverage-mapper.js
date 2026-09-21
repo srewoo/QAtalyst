@@ -259,7 +259,16 @@ class CoverageMapper {
       }
 
       const inlineM = bare.match(inlineReq);
-      if (inlineM && !isBullet(raw)) { capturing = false; items.push(inlineM[2].trim()); continue; }
+      if (inlineM && !isBullet(raw)) {
+        capturing = false;
+        // Keep the label. Dropping "Good to have:" discarded the only marker that
+        // says this is OPTIONAL, so a nice-to-have arrived downstream looking
+        // like a release obligation (fix2.md §7.1).
+        const label = inlineM[1].trim();
+        const body = inlineM[2].trim();
+        items.push(/good to have/i.test(label) ? `${label}: ${body}` : body);
+        continue;
+      }
 
       if (reqSection.test(bare) && !isBullet(raw)) { capturing = true; continue; }
       if (stopSection.test(bare) && !isBullet(raw)) { capturing = false; continue; }

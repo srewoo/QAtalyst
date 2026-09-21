@@ -644,8 +644,32 @@ class SemanticDuplicateDetector {
       //    title-only cases scoring high is thin evidence, not equivalence.
       const described = (t) => (Array.isArray(t.steps) && t.steps.length > 0) &&
         !!(t.expected_result || t.expectedResult);
+
+      // Positive evidence of the same subject, not merely a high score. Without
+      // this, two fully-described but unrelated cases merged on wording alone.
+      const subject = SemanticDuplicateDetector.subjectOverlap(a, b);
+      // ponytail: threshold calibrated on the observed separation between true
+      // paraphrases and the false merges found on real ticket data — it is a
+      // heuristic, not a measured optimum. The failure direction is deliberately
+      // safe: below it, both cases are KEPT and flagged, so a mis-set threshold
+      // costs a redundant case rather than a deleted obligation. fix2.md §9's
+      // labelled corpus is what would calibrate this properly.
+      const MIN_SUBJECT_OVERLAP = opts.minSubjectOverlap ?? 0.18;
+
+      if (described(a) && described(b) && subject >= MIN_SUBJECT_OVERLAP) {
+        return {
+          relation: 'equivalent',
+          reason: `same scenario (similarity ${sim.toFixed(2)}, subject overlap ${subject.toFixed(2)})`,
+          merge: true, similarity: sim
+        };
+      }
       if (described(a) && described(b)) {
-        return { relation: 'equivalent', reason: `same scenario (similarity ${sim.toFixed(2)})`, merge: true, similarity: sim };
+        // Scores alike, but they are about different things — keep both and say so.
+        return {
+          relation: 'overlapping',
+          reason: `similar wording (${sim.toFixed(2)}) but different subjects (overlap ${subject.toFixed(2)}) — both retained`,
+          merge: false, similarity: sim
+        };
       }
       return {
         relation: 'uncertain',
@@ -664,6 +688,71 @@ class SemanticDuplicateDetector {
     }
 
     return { relation: 'distinct', reason: 'no meaningful overlap', merge: false, similarity: sim };
+  }
+
+  /**
+   * Do these two cases talk about the SAME SUBJECT?
+   *
+   * Every hard distinction check requires BOTH sides to carry the signal — an
+   * operation, a number, an actor. When neither does, all of them skip and the
+   * similarity score decides alone, which is the thing F05 exists to prevent.
+   * On real data that merged "Full chat name visible on hover" into "Chat list
+   * paginates after 20 sessions" at 0.69: two unrelated obligations, one deleted.
+   *
+   * So `equivalent` now needs POSITIVE evidence of sameness rather than absence
+   * of proof of difference. Two cases testing the same behaviour share their
+   * distinctive nouns and verbs; two unrelated ones do not.
+   */
+  static SUBJECT_STOPWORDS = new Set([
+    'the','a','an','and','or','but','if','then','when','while','for','of','to','in','on','at','by',
+    'with','from','as','is','are','be','been','was','were','will','would','should','shall','can',
+    'could','may','might','must','that','this','these','those','it','its','their','they','user',
+    'users','able','ensure','system','not','all','any','each','via','into','onto','click','clicks',
+    'open','opens','see','sees','show','shows','shown','display','displays','displayed','verify',
+    'check','page','list','item','items','test','case','given','then','and','step','steps','http',
+    'https','com','example','api','www'
+  ]);
+
+  /**
+   * Crude stem so login/logs and successful/successfully compare equal.
+   * Applied until it converges: a single pass turned "successfully" into
+   * "successful" and "successful" into "success", so the two never matched.
+   */
+  static stem(w) {
+    let out = String(w);
+    for (let i = 0; i < 3; i++) {
+      const before = out;
+      out = out
+        .replace(/(ically|ingly|edly)$/, '')
+        .replace(/(ations?|ising|izing|ised|ized)$/, 'ise')
+        .replace(/(ness|ment|ion|ful|ly)$/, '')
+        .replace(/(ing|ed|es|s)$/, '');
+      if (out === before || out.length <= 3) break;
+    }
+    // Drop a trailing silent 'e' so paginate/paginates and delete/deletes agree
+    // ("paginates" loses "es" to give "paginat", which must match "paginate").
+    if (out.length > 4) out = out.replace(/e$/, '');
+    return out;
+  }
+
+  static subjectTokens(t) {
+    const text = [t.title, t.expected_result || t.expectedResult].filter(Boolean).join(' ').toLowerCase();
+    const words = text.match(/[a-z][a-z0-9-]{2,}/g) || [];
+    return new Set(
+      words.filter(w => !SemanticDuplicateDetector.SUBJECT_STOPWORDS.has(w))
+           .map(w => SemanticDuplicateDetector.stem(w))
+           .filter(w => w.length > 2)
+    );
+  }
+
+  /** Jaccard over distinctive subject words, in [0,1]. */
+  static subjectOverlap(a, b) {
+    const sa = SemanticDuplicateDetector.subjectTokens(a);
+    const sb = SemanticDuplicateDetector.subjectTokens(b);
+    if (!sa.size || !sb.size) return 0; // nothing to compare is not sameness
+    let shared = 0;
+    for (const w of sa) if (sb.has(w)) shared++;
+    return shared / (sa.size + sb.size - shared);
   }
 
   /** Normalized content fingerprint: scenario identity, not id or wording order. */

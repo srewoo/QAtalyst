@@ -194,3 +194,99 @@ describe('§10 row 13 — removing the sole covering case reopens its requiremen
     expect(none.uncovered).toHaveLength(none.total);
   });
 });
+
+describe('F05 — false merges found on real ticket data (RE-11256)', () => {
+  const fixture = require('../eval/fixtures/re-11256.json');
+  const find = (re) => fixture.generatedSuite.find(t => re.test(t.title));
+
+  // Every hard distinction check requires BOTH sides to carry the signal — an
+  // operation, a number, an actor. When neither does, all of them skipped and the
+  // similarity score decided alone, which is the thing F05 exists to prevent.
+  // These three pairs were merged at 0.68-0.71 on a real ticket.
+  const FALSE_MERGES = [
+    ['hover tooltip vs pagination', /hover/i, /paginates/i],
+    ['mobile responsiveness vs pagination', /responsive/i, /paginates/i],
+    ['one-time migration vs list rendering', /Migration/i, /chronological/i]
+  ];
+
+  test.each(FALSE_MERGES)('%s is not treated as equivalent', (_label, aRe, bRe) => {
+    const v = SemanticDuplicateDetector.classifyPair(find(aRe), find(bRe), { threshold: 0.68 });
+    expect(v.merge).toBe(false);
+    expect(v.relation).not.toBe('equivalent');
+  });
+
+  test('the whole real suite survives consolidation intact', () => {
+    const { kept, merged } = SemanticDuplicateDetector.consolidate(fixture.generatedSuite, { threshold: 0.68 });
+    expect(kept).toHaveLength(fixture.generatedSuite.length);
+    expect(merged).toHaveLength(0);
+  });
+
+  test('similar-but-different pairs are flagged for review, not silently kept apart', () => {
+    const { review } = SemanticDuplicateDetector.consolidate(fixture.generatedSuite, { threshold: 0.68 });
+    expect(review.length).toBeGreaterThan(0);
+    expect(review.some(r => r.relation === 'overlapping')).toBe(true);
+  });
+
+  test('subject overlap separates real paraphrases from unrelated cases', () => {
+    const paraphraseA = { title: 'User logs in successfully', steps: ['Enter valid email', 'Click Login'],
+      expected_result: 'The dashboard is displayed' };
+    const paraphraseB = { title: 'Successful user login', steps: ['Enter valid email', 'Click Login'],
+      expected_result: 'The dashboard is displayed' };
+
+    const same = SemanticDuplicateDetector.subjectOverlap(paraphraseA, paraphraseB);
+    const different = SemanticDuplicateDetector.subjectOverlap(find(/hover/i), find(/paginates/i));
+    // The margin is what makes the threshold defensible rather than arbitrary.
+    expect(same).toBeGreaterThan(0.3);
+    expect(different).toBeLessThan(0.2);
+  });
+
+  test('the stemmer converges so morphology does not defeat the comparison', () => {
+    // A single pass turned "successfully" into "successful" and "successful"
+    // into "success", so the two never matched.
+    expect(SemanticDuplicateDetector.stem('successfully')).toBe(SemanticDuplicateDetector.stem('successful'));
+    expect(SemanticDuplicateDetector.stem('paginates')).toBe(SemanticDuplicateDetector.stem('paginate'));
+  });
+
+  test('a genuine paraphrase still collapses — the guard is not just "never merge"', () => {
+    const a = { title: 'User logs in successfully', steps: ['Enter valid email', 'Click Login'],
+      expected_result: 'The dashboard is displayed' };
+    const b = { title: 'Successful user login', steps: ['Enter valid email', 'Click Login'],
+      expected_result: 'The dashboard is displayed' };
+    expect(SemanticDuplicateDetector.classifyPair(a, b, { threshold: 0.68 }).merge).toBe(true);
+  });
+});
+
+describe('§7.1 — "good to have" is not a release obligation', () => {
+  const RMod = require('../requirement-model.js');
+
+  test('an explicit optionality marker beats a modal verb in the same sentence', () => {
+    // Found on RE-11256: "Good to have: ... the chat should move up the list"
+    // was classified mandatory, because `should` matched the mandatory pattern.
+    const r = RMod.buildRequirements(
+      ['Good to have: On editing, the chat should move up the list immediately'], { ticketKey: 'T' })[0];
+    expect(r.status).toBe('optional');
+    expect(r.modality).toBe('may');
+  });
+
+  test('it does not count toward mandatory completeness', () => {
+    const reqs = RMod.buildRequirements([
+      'The panel must list chat sessions',
+      'Good to have: the chat should move up the list immediately'
+    ], { ticketKey: 'T' });
+    expect(RMod.mandatoryRequirements(reqs)).toHaveLength(1);
+  });
+
+  test('an ordinary "should" is still mandatory', () => {
+    expect(RMod.buildRequirements(['The chat should move up the list'], { ticketKey: 'T' })[0].status)
+      .toBe('mandatory');
+  });
+
+  test('the harvester keeps the marker instead of stripping it', () => {
+    const CM = require('../coverage-mapper.js');
+    const items = CM.extractRequirementItems({
+      description: 'Good to have: On editing, the chat should move up the list immediately.'
+    });
+    // Dropping the label discarded the only evidence the item was optional.
+    expect(items.some(i => /good to have/i.test(i))).toBe(true);
+  });
+});
