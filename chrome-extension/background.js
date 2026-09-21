@@ -752,6 +752,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // Combine already-filtered graphs for one generation run, without storing a
+  // merged app. Generation needs the app AND the docs together; persisting a new
+  // merged graph every time a ticket is generated would be a side effect nobody
+  // asked for.
+  if (request.action === 'mergeGraphsInMemory') {
+    (async () => {
+      try {
+        const graphs = (request.data && request.data.graphs) || [];
+        if (graphs.length < 2) {
+          sendResponse({ success: true, knowledgeGraph: graphs[0] || null });
+          return;
+        }
+        if (typeof KnowledgeGraphMerger === 'undefined') {
+          sendResponse({ success: false, error: 'merger unavailable' });
+          return;
+        }
+        const merged = await new KnowledgeGraphMerger().mergeGraphs(graphs);
+        sendResponse({ success: true, knowledgeGraph: merged });
+      } catch (e) {
+        sendResponse({ success: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
   if (request.action === 'getMergeableApps') {
     handleGetMergeableApps()
       .then(sendResponse)

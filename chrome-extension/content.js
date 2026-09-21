@@ -4540,13 +4540,68 @@
       // Pass ticketData for smart keyword-based filtering
       console.log('[CRAWL DATA] 📡 Requesting knowledge graph with ticket context...');
 
-      const kgResponse = await chrome.runtime.sendMessage({
-        action: 'loadEmbeddings',
-        data: {
-          appUrl: matchedApp.url,
-          ticketData: ticketData // Pass ticket for smart filtering
+      // Query EVERY relevant crawl, not just the best one.
+      //
+      // Only the top-ranked app was loaded, so with a 257-page help-site crawl
+      // and a 70-page app crawl, one of them was silently ignored — and a rule
+      // documented only in the help centre, or a control present only in the app,
+      // was invisible to generation depending on which won.
+      //
+      // Each graph is filtered to the ticket's relevant pages first (the worker
+      // does that), so combining them stays bounded rather than shipping both
+      // crawls wholesale.
+      const ranked = (typeof rankMatchingApps === 'function')
+        ? rankMatchingApps(response.apps, ticketData)
+        : [matchedApp];
+      const toLoad = ranked.slice(0, 3); // bounded: primary + supporting evidence
+
+      const loaded = [];
+      for (const app of toLoad) {
+        const res = await chrome.runtime.sendMessage({
+          action: 'loadEmbeddings',
+          data: { appUrl: app.url, ticketData }
+        });
+        if (res && res.success && res.result && res.result.knowledgeGraph) {
+          const pageCount = Object.keys(res.result.knowledgeGraph.pages || {}).length;
+          // A crawl that contributes no ticket-relevant page adds nothing but noise.
+          if (pageCount > 0) {
+            loaded.push({ app, result: res.result, pageCount });
+            console.log(`   + ${app.url}: ${pageCount} relevant page(s)`);
+          } else {
+            console.log(`   - ${app.url}: no ticket-relevant pages, skipped`);
+          }
         }
-      });
+      }
+
+      let kgResponse;
+      if (loaded.length === 0) {
+        // Fall back to the primary so the "no relevant pages" path still reports.
+        kgResponse = await chrome.runtime.sendMessage({
+          action: 'loadEmbeddings',
+          data: { appUrl: matchedApp.url, ticketData }
+        });
+      } else if (loaded.length === 1) {
+        kgResponse = { success: true, result: loaded[0].result };
+      } else {
+        // Combine the filtered graphs so grounding sees the app AND the docs.
+        const merged = await chrome.runtime.sendMessage({
+          action: 'mergeGraphsInMemory',
+          data: { graphs: loaded.map(l => l.result.knowledgeGraph) }
+        });
+        if (merged && merged.success && merged.knowledgeGraph) {
+          const primary = loaded[0].result;
+          kgResponse = { success: true, result: {
+            ...primary,
+            knowledgeGraph: merged.knowledgeGraph,
+            appUrl: primary.appUrl,
+            combinedFrom: loaded.map(l => l.app.url),
+            transferPageCount: Object.keys(merged.knowledgeGraph.pages || {}).length
+          } };
+          console.log(`🔀 Combined ${loaded.length} crawls for grounding: ${loaded.map(l => l.app.url).join(', ')}`);
+        } else {
+          kgResponse = { success: true, result: loaded[0].result };
+        }
+      }
 
       console.log('[CRAWL DATA] 📨 loadEmbeddings response:', kgResponse ? 'received' : 'null');
 
