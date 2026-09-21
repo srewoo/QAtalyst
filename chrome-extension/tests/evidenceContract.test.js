@@ -507,3 +507,73 @@ describe('F06 / §10 row 8 — a new feature is not an invented one', () => {
     expect(['specification', 'grounded']).toContain(g.verdict);
   });
 });
+
+describe('a crawl that does not cover the ticket must not reject everything', () => {
+  // Observed on RE-11256: a real 70-page crawl of a different area rejected all
+  // 20 candidates, and the UI told the user to "try crawling the app first" —
+  // when they had already crawled. An unrelated crawl was WORSE than no crawl,
+  // because with no crawl the tests are admitted unverified.
+  const unrelatedCrawl = normalizeGenerationContext({
+    pages: Array.from({ length: 70 }, (_, i) => ({
+      url: `https://app/admin/${i}`, title: `Admin ${i}`,
+      features: [{ type: 'button', text: `Save settings ${i}` }],
+      apis: [{ method: 'GET', endpoint: `/api/admin/${i}` }]
+    }))
+  });
+  const ticket = {
+    key: 'RE-11256',
+    summary: 'Multi-Chat: View List of Chat Sessions',
+    description: 'A persistent sidebar should display a chronological list of chat sessions. The left-hand navigation panel is visible by default.'
+  };
+  const candidates = Array.from({ length: 20 }, (_, i) => ({
+    title: `Chat sidebar scenario ${i}`,
+    steps: ['Open the Copilot interface', 'Click the sidebar toggle'],
+    expected_result: 'The chat session list is shown'
+  }));
+
+  const gate = () => new AcceptanceGate({
+    knowledgeGraph: unrelatedCrawl, ticketData: ticket,
+    deps: { GroundedVerifier, SemanticDuplicateDetector }, relevanceThreshold: 0
+  });
+
+  test('a full batch of grounding rejections yields tests, not nothing', () => {
+    const r = gate().admit(candidates);
+    expect(r.accepted).toHaveLength(20);
+    expect(r.rejected).toHaveLength(0);
+  });
+
+  test('they are labelled unverified, never verified', () => {
+    const r = gate().admit(candidates);
+    for (const t of r.accepted) expect(t._grounding).toBe('unverified');
+  });
+
+  test('the mismatch is flagged so the UI can explain it', () => {
+    expect(gate().admit(candidates).crawlMismatch).toBe(true);
+  });
+
+  test('a single bad test is still rejected — the net is not "never reject"', () => {
+    const r = gate().admit([{
+      title: 'Click the Teleport button', steps: ['Click the "Teleport" button'],
+      expected_result: 'Teleported'
+    }]);
+    // One rejection is ordinary; only a whole batch signals a mismatch.
+    expect(r.accepted).toHaveLength(0);
+    expect(r.crawlMismatch).toBe(false);
+  });
+
+  test('the ticket vocabulary covers the UI nouns tickets actually use', () => {
+    const v = new GroundedVerifier(unrelatedCrawl, { ticketData: ticket });
+    // Previously only button/link/field were recognised, so a ticket about a
+    // "panel" or "sidebar" produced an EMPTY vocabulary and every test for the
+    // unbuilt feature was rejected as invented.
+    expect(v.requirementVocab.size).toBeGreaterThan(0);
+    expect(v.requiredByTicket('sidebar')).toBe(true);
+    expect(v.requiredByTicket('navigation panel')).toBe(true);
+    expect(v.requiredByTicket('teleport')).toBe(false);
+  });
+
+  test('a crawl with no ticket-relevant pages makes grounding not applicable', () => {
+    const flagged = { ...unrelatedCrawl, noRelevantPages: true };
+    expect(new GroundedVerifier(flagged, { ticketData: ticket }).isApplicable()).toBe(false);
+  });
+});

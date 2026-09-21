@@ -2523,6 +2523,7 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
   }
 
   // ── Build the grounding + relevance + dedup gate ──
+  // (crawl-mismatch reporting happens after the run — see `gate.crawlMismatch`)
   const verifier = new GroundedVerifier(knowledgeGraph, { ticketData: enrichedTicketData });
   const coverageMapper = knowledgeGraph ? new CoverageMapper(knowledgeGraph) : null;
   const adaptive = deriveAdaptiveThresholds(enrichedTicketData, knowledgeGraph, settings);
@@ -2696,8 +2697,16 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
       let reason;
       if (aiErr) {
         reason = `Test generation failed: the AI provider returned an error (${aiErr}). Check that your selected model ("${settings.llmModel}") is valid for your ${settings.llmProvider} API key.`;
+      } else if (rejectedCount > 0 && rb.grounding === rejectedCount) {
+        // Telling someone to "crawl the app first" when they already have a
+        // 70-page crawl is worse than useless. All-grounding rejection means the
+        // crawl does not cover THIS ticket — commonly because the feature is not
+        // built yet, or the crawl is of a different area.
+        reason = `Generated ${rejectedCount} candidate test(s), but none could be matched against the crawled app. ` +
+          `This usually means the crawl does not cover this feature — either it is not built yet, or a different part of the app was crawled. ` +
+          `Re-crawl the screens this ticket is about, or turn off "Use Crawled Data in Test Generation" in Settings to generate specification-level tests from the ticket alone.`;
       } else if (rejectedCount > 0) {
-        reason = `Generated ${rejectedCount} candidate test(s), but all were filtered out by the quality gate (${JSON.stringify(rb)}). Try crawling the app first, lowering the relevance/dedup thresholds, or adding more detail to the ticket.`;
+        reason = `Generated ${rejectedCount} candidate test(s), but all were filtered out by the quality gate (${JSON.stringify(rb)}). Try lowering the relevance/dedup thresholds, or adding more detail to the ticket.`;
       } else {
         reason = 'No test cases were generated. The AI returned no parseable test cases — check the service-worker console (chrome://extensions → QAtalyst → service worker) for details.';
       }
@@ -2744,6 +2753,12 @@ async function handleGenerateTestCasesAgentic(data, tabId) {
     });
     if (!result.testCases.length) {
       return { error: 'All generated test cases were removed by the assertion critic (their expected results could not be supported by the ticket). No suite was produced.' };
+    }
+
+    // A crawl that covers none of this ticket must be reported, or the user is
+    // left wondering why every case says "unverified".
+    if (gate.crawlMismatch) {
+      degradations.push('None of the generated tests could be matched against the crawled app — the crawl does not appear to cover this feature (it may not be built yet, or a different area was crawled). These tests are specification-level and were NOT verified against the real UI.');
     }
 
     // §15.3: label each case honestly — specification_only / manual_ready /

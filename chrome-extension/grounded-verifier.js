@@ -127,14 +127,35 @@ class GroundedVerifier {
 
     const add = (v) => { const t = norm(v); if (t && t.length > 1) vocab.add(t); };
 
+    // The UI nouns a ticket actually uses. The original list stopped at
+    // button/link/field, so a ticket about a "navigation panel", a "sidebar", a
+    // "history pane" or a "hamburger icon" produced an EMPTY vocabulary — and
+    // every test for that unbuilt feature was then rejected as invented.
+    const UI_NOUN = '(?:button|link|action|tab|menu|toggle|checkbox|field|input|panel|pane|sidebar|' +
+      'side ?bar|nav(?:igation)?|list|icon|tooltip|dropdown|modal|dialog|screen|view|page|state|' +
+      'banner|badge|chip|card|row|column|header|footer|section|drawer|popover|indicator|control|widget|component)';
+
     // "Publish", 'Save draft' — quoted labels are the strongest signal.
     for (const m of text.matchAll(/["'“”‘’]([^"'“”‘’\n]{2,40})["'“”‘’]/g)) add(m[1]);
-    // the Publish button / a Save link / the Export action
-    for (const m of text.matchAll(/\b(?:the|a|an)\s+([A-Za-z][\w \-]{1,30}?)\s+(?:button|link|action|tab|menu|toggle|checkbox|field|input)\b/gi)) add(m[1]);
-    // "Add a Publish button" / "add an Archive action"
-    for (const m of text.matchAll(/\b(?:add|introduce|create|implement|new)\s+(?:a|an|the)?\s*([A-Za-z][\w \-]{1,30}?)\s+(?:button|link|action|tab|menu|toggle|field|endpoint|screen|page)\b/gi)) add(m[1]);
+    // `open.sidebar`, `onRename` — backticked identifiers name real contracts.
+    for (const m of text.matchAll(/`([^`\n]{2,40})`/g)) add(m[1]);
+    // the Publish button / a left-hand navigation panel / the history pane
+    for (const m of text.matchAll(new RegExp(`\\b(?:the|a|an)\\s+([A-Za-z][\\w \\-]{1,30}?)\\s+${UI_NOUN}\\b`, 'gi'))) add(m[1]);
+    // No article: "On click of hamburger icon", "show sidebar listing".
+    for (const m of text.matchAll(new RegExp(`\\b([A-Za-z][\\w\\-]{2,20})\\s+${UI_NOUN}\\b`, 'gi'))) {
+      add(`${m[1]} ${m[0].split(/\s+/).pop()}`);
+    }
+    // …and the noun itself: "the sidebar" must license a reference to "sidebar".
+    for (const m of text.matchAll(new RegExp(`\\b(?:the|a|an)\\s+((?:[A-Za-z][\\w\\-]*\\s+){0,3}${UI_NOUN})\\b`, 'gi'))) add(m[1]);
+    // "Add a Publish button" / "implement empty state" / "show sidebar listing"
+    for (const m of text.matchAll(new RegExp(`\\b(?:add|introduce|create|implement|new|show|display|open|collapse)\\s+(?:a|an|the)?\\s*([A-Za-z][\\w \\-]{1,30}?)\\s+${UI_NOUN}\\b`, 'gi'))) add(m[1]);
     // API endpoints named in the ticket.
     for (const m of text.matchAll(/(\/(?:api|rest|v\d)\/[\w\-/{}]+)/gi)) add(m[1]);
+    // Capitalised feature names — "New chat", "Seller Copilot".
+    for (const m of text.matchAll(/\b([A-Z][a-z]+(?:\s+[A-Za-z][a-z]+){0,2})\b/g)) {
+      const t = m[1];
+      if (t.split(/\s+/).length > 1) add(t);
+    }
 
     return vocab;
   }
@@ -234,9 +255,21 @@ class GroundedVerifier {
     return index;
   }
 
-  /** Is grounding even possible? (false when no crawl data). */
+  /**
+   * Is grounding even possible?
+   *
+   * False when there is no crawl data — and ALSO when the crawl contains nothing
+   * relevant to this ticket. A crawl of 70 pages of a different area is not
+   * evidence about this feature: judging against it rejected every candidate,
+   * which made an unrelated crawl WORSE than no crawl at all (with no crawl,
+   * tests are admitted unverified). F01 already computes `noRelevantPages`;
+   * this is where it has to be honoured.
+   */
   isApplicable() {
-    return !this.index.empty;
+    if (this.index.empty) return false;
+    const kg = this.knowledgeGraph;
+    if (kg && kg.noRelevantPages) return false;
+    return true;
   }
 
   /**
@@ -245,7 +278,7 @@ class GroundedVerifier {
    *            score:number, references:object, issues:string[], repairs:object}}
    */
   verify(testCase) {
-    if (this.index.empty) {
+    if (!this.isApplicable()) {
       // v13.2: no crawl data → grounding is impossible. Do NOT report score 1
       // (which reads as "fully grounded"); report a null score and surface the
       // fact that this test was never verified against a real app, so the test

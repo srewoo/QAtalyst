@@ -713,10 +713,15 @@ async function handleDeleteAllEmbeddings() {
  */
 async function handleGetAllApps() {
   try {
-    const stats = await storageManager.getStats();
+    // Lightweight listing: the old path loaded and stringified every stored
+    // graph to render a few rows, which on a large crawl was slow enough to look
+    // like the list had simply failed.
+    const apps = typeof storageManager.listApps === 'function'
+      ? await storageManager.listApps()
+      : (await storageManager.getStats()).apps;
     return {
       success: true,
-      apps: stats.apps
+      apps
     };
   } catch (error) {
     return {
@@ -915,7 +920,11 @@ async function handleMergeKnowledgeGraphs(data) {
  */
 async function handleGetMergeableApps() {
   try {
-    const stats = await storageManager.getStats();
+    // Same lightweight listing as handleGetAllApps — the merge dialog only needs
+    // summary counts, not every graph deserialized.
+    const stats = { apps: typeof storageManager.listApps === 'function'
+      ? await storageManager.listApps()
+      : (await storageManager.getStats()).apps };
 
     // Filter to only apps that have knowledge graphs.
     // Use the real page/feature counts from the knowledge graph — NOT

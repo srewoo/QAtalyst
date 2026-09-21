@@ -196,9 +196,35 @@ class AcceptanceGate {
       this.stats.accepted++;
       newlyAccepted.push(test);
     }
+    // Safety net: rejecting EVERY candidate on grounding is far more likely to
+    // mean the crawl does not cover this ticket than that the model hallucinated
+    // every single test. Returning nothing — with "try crawling the app first"
+    // when the user has already crawled — is the worst possible answer. Re-admit
+    // them as explicitly unverified so the user gets a reviewable suite and a
+    // truthful explanation.
+    // Needs a meaningful batch: one or two rejections are ordinary, and treating
+    // them as a crawl mismatch would wave through exactly the hallucinated tests
+    // grounding exists to catch. Twenty in a row is a different claim.
+    const MIN_BATCH_FOR_MISMATCH = 3;
+    if (newlyAccepted.length === 0 && candidates && candidates.length >= MIN_BATCH_FOR_MISMATCH) {
+      const groundingRejects = this.rejected.filter(r => r.stage === 'grounding');
+      if (groundingRejects.length === candidates.length) {
+        console.warn(`[Gate] All ${candidates.length} candidates failed grounding — treating the crawl as not covering this ticket.`);
+        this.crawlMismatch = true;
+        for (const r of groundingRejects) {
+          const test = { ...r.test, _grounding: 'unverified', _groundingIssues: [r.reason] };
+          this.stats.grounding = Math.max(0, (this.stats.grounding || 1) - 1);
+          this.stats.accepted++;
+          newlyAccepted.push(test);
+        }
+        this.rejected = this.rejected.filter(r => r.stage !== 'grounding');
+      }
+    }
+
     this.accepted.push(...newlyAccepted);
     return {
       accepted: newlyAccepted, rejected: this.rejected,
+      crawlMismatch: !!this.crawlMismatch,
       preservedDistinctions: this.preservedDistinctions,
       stats: { ...this.stats, preservedDistinctions: this.preservedDistinctions.length }
     };
