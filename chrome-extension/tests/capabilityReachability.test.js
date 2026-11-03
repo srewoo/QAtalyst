@@ -17,7 +17,7 @@ const path = require('path');
 const EXT = path.resolve(__dirname, '..');
 const read = (f) => fs.readFileSync(path.join(EXT, f), 'utf8');
 
-const background = read('background.js');
+const background = ['background.js', 'bg-connections.js', 'bg-context.js', 'bg-generation.js', 'bg-agentic.js', 'bg-export.js'].map(read).join('\n');
 const content = read('content.js');
 const agentTools = read('agent-tools.js');
 const optionsHtml = read('options.html');
@@ -60,7 +60,7 @@ describe('capabilities have real call sites, not just definitions', () => {
     ['§14 imported evidence', background, 'buildImportedEvidence'],
     ['§14 evidence in the prompt', agentTools, 'importedEvidenceContext'],
     ['F24 document extraction', background, 'extractDocument'],
-    ['F14 export ledger', read('integrations.js'), 'ExportLedger'],
+    ['F14 export ledger', read('integrations-testrail.js'), 'ExportLedger'],
     ['provider tuning', background, 'providerTuning']
   ];
 

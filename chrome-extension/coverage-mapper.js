@@ -224,7 +224,81 @@ class CoverageMapper {
     // 2. Requirement-bearing sections embedded in the description.
     if (t.description) this._harvestDescriptionRequirements(String(t.description)).forEach(add);
 
+    // 3. Bugs state what must be TRUE after the fix, not acceptance criteria:
+    //    the expected result, and that the actual (wrong) result no longer happens.
+    this._bugObligations(t).forEach(add);
+
+    // 4. Every ticket type gets obligations. A task, spike or story with no
+    //    "Acceptance Criteria" section used to yield none, so the loop had nothing
+    //    to cover and "complete" meant nothing. Fall back to its requirement-like
+    //    sentences; for a sub-task with none, to the parent story's criteria.
+    if (!out.length && t.description) this._claimSentences(String(t.description)).forEach(add);
+    // A sub-task delivers part of its parent story: the story's criteria that the
+    // sub-task touches are its obligations too (its own text is often only an
+    // implementation note such as "Implement the UI part").
+    if (t.parent && this._isSubtask(t)) this._parentObligations(t).forEach(add);
+
     return out.slice(0, 40); // hard cap so a huge description can't explode the item list
+  }
+
+  static _isSubtask(t) {
+    return /^(sub-?task|subtask)$/i.test(String(t.issueType || t.issuetype || '').trim());
+  }
+
+  /** Expected / actual result of a bug report, phrased as post-fix obligations. */
+  static _bugObligations(t) {
+    const desc = String(t.description || '');
+    const isBug = /^(bug|defect|incident|problem)$/i.test(String(t.issueType || '').trim()) ||
+      /\b(steps to reproduce|actual (result|behaviou?r))\b/i.test(desc);
+    if (!isBug) return [];
+    const section = (label) => {
+      const re = new RegExp(`^\\s*[*#\\s]*${label}\\s*(?:result|behaviou?r|outcome)?\\s*[*]*\\s*:?\\s*(.*)$`, 'i');
+      const lines = desc.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(re);
+        if (!m) continue;
+        const body = [m[1].trim()];
+        // Continuation lines until the next "Label:" heading or blank line.
+        for (let j = i + 1; j < lines.length && lines[j].trim() && !/^\s*[*#]*\s*[A-Za-z][\w /]{1,30}:\s*/.test(lines[j]); j++) {
+          body.push(lines[j].replace(/^\s*[-*•]\s*/, '').trim());
+        }
+        const text = body.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+        if (text) return text.slice(0, 300);
+      }
+      return '';
+    };
+    const expected = section('expected');
+    const actual = section('actual');
+    const out = [];
+    if (expected) out.push(`Following the steps to reproduce, ${expected.replace(/^[A-Z]/, c => c.toLowerCase())}`);
+    if (actual) out.push(`"${actual.replace(/["“”]/g, '')}" must not happen when following the steps to reproduce`);
+    return out;
+  }
+
+  /** Requirement-like sentences: modal verbs or imperative build verbs. */
+  static _claimSentences(desc) {
+    const MODAL = /\b(must|should|shall|will|needs? to|has to|have to|can(?:not)?|can't|may not|is able to|are able to|allows?|prevents?|is (?:required|not allowed))\b/i;
+    // Build instructions ("Implement the UI part", "Refactor the service") are not
+    // observable behaviour: no test can satisfy them, so they would hold the loop open.
+    const BUILD_NOTE = /^(implement|refactor|build|develop|code|wire(?: up)?|hook up|migrate|set up|setup|create (?:a |the )?(?:component|service|class|module|endpoint|table|migration))\b/i;
+    const IMPERATIVE = /^(add|show|display|return|allow|prevent|validate|support|enable|disable|limit|send|store|save|remove|delete|update|create|block|reject|redirect|log|notify|hide|sort|filter|export|import)\b/i;
+    const sentences = String(desc)
+      .split(/\r?\n|(?<=[.!])\s+(?=[A-Z])/)
+      .map(x => x.replace(/^\s*[-*•]\s+|^\s*\d+[.)]\s+/, '').replace(/\*\*/g, '').trim())
+      .filter(x => x.length >= 12 && x.length <= 300 && !/\?$/.test(x) && !/:$/.test(x));
+    return sentences
+      .filter(x => !(BUILD_NOTE.test(x) && !/\b(must|should|shall)\b/i.test(x)))
+      .filter(x => MODAL.test(x) || IMPERATIVE.test(x)).slice(0, 15);
+  }
+
+  /** Parent-story criteria that this sub-task touches (all of them if none clearly do). */
+  static _parentObligations(t) {
+    const p = t.parent || {};
+    const parentItems = this.extractRequirementItems({ ...p, parent: null, issueType: p.issueType || 'Story' });
+    if (!parentItems.length) return [];
+    const mine = new Set(acTokens(`${t.summary || ''} ${t.description || ''}`));
+    const relevant = parentItems.filter(item => acTokens(item).some(tok => acHas(mine, tok)));
+    return relevant.length ? relevant : parentItems;
   }
 
   /**
@@ -312,9 +386,7 @@ class CoverageMapper {
    * @returns {object} { applicable, total, covered, percentage, details, contradictions, uncovered }
    */
   static mapRequirementPredicates(testCases, requirements, opts = {}) {
-    const RM = opts.requirementModel
-      || (typeof self !== 'undefined' && self.mandatoryRequirements ? self : null)
-      || (typeof require === 'function' ? require('./requirement-model.js') : null);
+    const RM = loadRequirementModel(opts);
     const reqs = (requirements || []).filter(Boolean);
     if (!reqs.length) {
       return { applicable: false, total: 0, covered: 0, percentage: 100, details: [], uncovered: [], contradictions: [] };
@@ -399,7 +471,11 @@ class CoverageMapper {
     if (!actorPresent) return { covers: false, contradicts: false, score: 0 };
 
     // Modality must agree with what the test ASSERTS (title + expected result).
-    const testNegative = /\b(cannot|can't|must not|should not|is not|are not|does not|doesn't|never|unable|denied|deny|denies|forbidden|prohibited|rejected|blocked|prevented|unauthoriz(?:ed)?|403|401|fails?|error)\b/i.test(assertion);
+    // Both sides are judged by requirement-model's modality so the vocabulary
+    // cannot drift: "shows an error state" used to read as negative here while
+    // the requirement "implement error state" read as positive — a false
+    // contradiction against the very behaviour the test asserts.
+    const testNegative = acPolarity(assertion) === 'negative';
     const reqNegative = req.modality === 'must_not';
 
     // Token overlap gives the score; the gates above decide covers/contradicts.
@@ -421,7 +497,13 @@ class CoverageMapper {
     // injected via opts.embeddings, at which point it starts catching
     // differently-worded coverage. Token recall remains the primary signal.
     const embThreshold = opts.embThreshold ?? 0.62;
-    const items = (acItems || []).filter(Boolean);
+    // Build instructions ("use relay") and scenario labels ("Case: …") are kept
+    // by the harvester for context but are not criteria a test can satisfy.
+    // Counting them inflated RE-11256 to 30 obligations and kept the loop open
+    // for things no test can observe.
+    const RM = loadRequirementModel(opts);
+    const countable = RM && typeof RM.isCountableObligation === 'function' ? RM.isCountableObligation : () => true;
+    const items = (acItems || []).filter(Boolean).filter(countable);
     if (!items.length) return { applicable: false, total: 0, covered: 0, uncovered: [], percentage: 100, details: [] };
 
     const tests = testCases || [];
@@ -434,13 +516,24 @@ class CoverageMapper {
     const canEmbed = EMB && typeof EMB.embed === 'function' && typeof EMB.cosine === 'function';
     const testVecs = canEmbed ? tests.map(tc => EMB.embed(testText(tc))) : null;
 
+    // Words each criterion uses that no other criterion does. Sharing only the
+    // ticket's common vocabulary ("invite", "admin") is not evidence a test checks
+    // THIS criterion ("...choose a role"): require a third of its distinctive words.
+    const itemTokenLists = items.map(acTokens);
+    const distinct = itemTokenLists.map((toks, i) => {
+      const others = new Set(itemTokenLists.flatMap((o, j) => (j === i ? [] : o)));
+      return toks.filter(t => !others.has(t));
+    });
+
     const details = items.map((text, index) => {
-      const itemTokens = acTokens(text);
+      const itemTokens = itemTokenLists[index];
       if (!itemTokens.length) return { index, text, covered: true, score: 1, coveredBy: null, matchType: 'trivial' };
 
       let bestTok = 0, bestTokTc = null;
+      const mine = distinct[index];
       testTokenSets.forEach((set, i) => {
-        const hit = itemTokens.filter(t => set.has(t)).length / itemTokens.length;
+        if (mine.length && mine.filter(t => acHas(set, t)).length / mine.length < 1 / 3) return;
+        const hit = itemTokens.filter(t => acHas(set, t)).length / itemTokens.length;
         if (hit > bestTok) { bestTok = hit; bestTokTc = tests[i]; }
       });
 
@@ -991,15 +1084,50 @@ const AC_STOPWORDS = new Set(['the','a','an','and','or','but','if','then','when'
  * contradiction), never grants it. Upgrade path is the requirement-predicate
  * model in fix2.md §7.1.
  */
-const NEGATIVE_CUES = /\b(?:cannot|can't|cant|may not|must not|should not|shouldn't|shall not|will not|won't|does not|doesn't|do not|don't|is not|isn't|are not|aren't|not be|never|no longer|unable|denied|deny|denies|forbidden|prohibit(?:ed|s)?|disallow(?:ed|s)?|reject(?:ed|s)?|block(?:ed|s)?|prevent(?:ed|s)?|restrict(?:ed|s)?|unauthoriz(?:ed)?|unauthoris(?:ed)?|without permission|403|hidden|disabled|greyed out|grayed out|read[- ]only)\b/i;
+function loadRequirementModel(opts = {}) {
+  return opts.requirementModel
+    || (typeof self !== 'undefined' && self.detectModality ? self : null)
+    || (typeof require === 'function' ? require('./requirement-model.js') : null);
+}
 
+/**
+ * Polarity is MODAL negation of the behaviour (cannot / must not / never /
+ * blocked from), as requirement-model defines it. State words — hidden,
+ * disabled, read-only, error — are outcomes a requirement may demand, so they
+ * are not negation: "hide the sidebar on hide.sidebar" and a test asserting
+ * "the sidebar is hidden" agree. One vocabulary on both sides, by construction.
+ */
 function acPolarity(text) {
-  return NEGATIVE_CUES.test(String(text || '')) ? 'negative' : 'positive';
+  const RM = loadRequirementModel();
+  if (RM && typeof RM.detectModality === 'function') {
+    return RM.detectModality(String(text || '')) === 'must_not' ? 'negative' : 'positive';
+  }
+  return /\b(?:cannot|can't|must not|should not|shall not|will not|does not|do not|is not|are not|never)\b/i.test(String(text || '')) ? 'negative' : 'positive';
+}
+
+// Shared stemmer when loaded (worker / tests); identity otherwise.
+const AC_TS = (typeof TextSimilarity !== 'undefined' && TextSimilarity)
+  || (typeof self !== 'undefined' && self.TextSimilarity)
+  || (typeof require === 'function' ? (() => { try { return require('./text-similarity.js'); } catch (_) { return null; } })() : null);
+
+/** One form per word: invite / invites / invited / inviting all match. */
+function acNormalize(w) {
+  const s = AC_TS && typeof AC_TS.stem === 'function' ? AC_TS.stem(w) : w;
+  return s.length > 3 && s.endsWith('e') ? s.slice(0, -1) : s;
+}
+
+/** Token present in a set, allowing stems that share a 5-letter prefix (pagin / paginat). */
+function acHas(set, t) {
+  if (set.has(t)) return true;
+  if (t.length < 5) return false;
+  const p = t.slice(0, 5);
+  for (const s of set) if (s.length >= 5 && s.slice(0, 5) === p) return true;
+  return false;
 }
 
 function acTokens(text) {
   const words = String(text || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [];
-  return [...new Set(words.filter(w => !AC_STOPWORDS.has(w)))];
+  return [...new Set(words.filter(w => !AC_STOPWORDS.has(w)).map(acNormalize))];
 }
 
 // Export for use in other modules

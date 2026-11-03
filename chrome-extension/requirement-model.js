@@ -79,9 +79,24 @@ function isImplementationNote(text) {
   return IMPLEMENTATION_NOTE_RE.test(String(text || ''));
 }
 
+/**
+ * A scenario label the harvester keeps for context ("Case: User already has an
+ * active chat"). Its bullets are the obligations; the label itself is not one.
+ */
+const SCENARIO_HEADER_RE = /^\s*(?:case|scenario|example|flow)\s*\d*\s*:/i;
+function isScenarioHeader(text) {
+  return SCENARIO_HEADER_RE.test(String(text || ''));
+}
+
+/** Does this line count toward completeness? Only a mandatory obligation does. */
+function isCountableObligation(text) {
+  return detectStatus(text) === 'mandatory';
+}
+
 function detectStatus(text) {
   // Checked first: a build instruction is not an obligation whatever verb it uses.
   if (isImplementationNote(text)) return 'implementation_note';
+  if (isScenarioHeader(text)) return 'scenario_header';
   if (/\b(tbd|tbc|to be (?:decided|confirmed)|\?\?|unclear|open question|needs? clarification)\b/i.test(text)) {
     return 'ambiguous';
   }
@@ -128,8 +143,19 @@ function splitCompound(text) {
   const parts = t.split(new RegExp(SPLIT_RE.source, 'gi'))
     .map(p => String(p || '').trim())
     .filter(p => p.replace(/[^a-z0-9]/gi, '').length >= 5);
+  // A piece with no modal verb and no operation is a dangling clause, not a
+  // claim: "On interaction with a chat, it should move up" split into
+  // "On interaction with a chat" + "it should move up", and the fragment became
+  // an obligation nothing could satisfy. Glue it back onto its neighbour.
+  const isClaim = (p) => MANDATORY_RE.test(p) || OPTIONAL_RE.test(p) || NEGATIVE_RE.test(p) || OPERATION_RE.test(p);
+  const merged = [];
+  for (const p of parts) {
+    if (merged.length && !isClaim(merged[merged.length - 1])) merged[merged.length - 1] += `, ${p}`;
+    else if (merged.length && !isClaim(p)) merged[merged.length - 1] += `, ${p}`;
+    else merged.push(p);
+  }
   // Only treat it as compound when the split produced genuinely separate claims.
-  return parts.length > 1 ? parts : [t];
+  return merged.length > 1 ? merged : [t];
 }
 
 /**
@@ -205,6 +231,7 @@ function groupCompound(reqs) {
 }
 
 const api = { buildRequirements, mandatoryRequirements, groupCompound, splitCompound, OPTIONAL_MARKER_RE, isImplementationNote,
+              isScenarioHeader, isCountableObligation,
               detectModality, detectStatus, detectOperation };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 if (typeof self !== 'undefined') Object.assign(self, api);

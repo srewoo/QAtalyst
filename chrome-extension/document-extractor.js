@@ -110,12 +110,19 @@ function findPdfStreams(latin1) {
   let m;
   while ((m = re.exec(latin1)) !== null) {
     const start = m.index + m[0].length;
-    const end = latin1.indexOf('endstream', start);
-    if (end < 0) continue;
+    const endKw = latin1.indexOf('endstream', start);
+    if (endKw < 0) continue;
     // The object dictionary sits immediately before the `stream` keyword.
     const dict = latin1.slice(Math.max(0, m.index - 600), m.index);
+    // The payload is exactly /Length bytes; the EOL before `endstream` is not
+    // part of it. Strict inflaters (DecompressionStream) reject trailing bytes,
+    // so honour a direct /Length, else trim the EOL.
+    const len = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(dict);
+    let end = endKw;
+    if (len && start + Number(len[1]) <= endKw) end = start + Number(len[1]);
+    else while (end > start && (latin1[end - 1] === '\n' || latin1[end - 1] === '\r')) end--;
     out.push({ dict, start, end });
-    re.lastIndex = end;
+    re.lastIndex = endKw;
   }
   return out;
 }

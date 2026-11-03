@@ -72,6 +72,12 @@ class PlannerAgent {
     // F12: 'complete' | 'budget_exhausted' | 'no_novel_scenarios' | 'cancelled' |
     // 'missing_evidence' | 'steps_exhausted' — never left implicit.
     this.stopReason = null;
+    // Optional meaning-based coverage check (coverage-judge.js): asked before a
+    // "complete" stop is accepted. Bounded so it cannot loop forever.
+    this.coverageJudge = typeof cfg.coverageJudge === 'function' ? cfg.coverageJudge : null;
+    this.judgeRuns = 0;
+    this.maxJudgeRuns = cfg.maxJudgeRuns ?? 2;
+    this.lastJudgement = null;
   }
 
   /** Run the loop to completion. Returns the final, gated test suite + diagnostics. */
@@ -80,7 +86,10 @@ class PlannerAgent {
 
     for (let step = 1; step <= this.budget.maxSteps; step++) {
       if (this.isCancelled()) { this.stopReason = 'cancelled'; this.emit({ phase: 'cancelled', step }); break; }
-      if (this.shouldStop()) break;
+      if (this.shouldStop()) {
+        if (await this.judgeVetoesStop(step)) continue;
+        break;
+      }
 
       const decision = await this.decide(step);
       this.transcript.push({ step, ...decision });
@@ -108,6 +117,7 @@ class PlannerAgent {
           continue;
         }
         this.stopReason = 'complete';
+        if (await this.judgeVetoesStop(step)) continue;
         this.emit({ phase: 'finish', step, reason: decision.input?.reason });
         break;
       }
@@ -184,9 +194,13 @@ class PlannerAgent {
     // Close the coverage feedback loop even without a cooperative LLM: re-measure
     // coverage once we have some tests, and again every few accepted tests, so the
     // next propose_tests can be aimed at the biggest real gap.
+    // Re-measure whenever the accepted set has changed. It is a local computation
+    // (no model call). Refreshing only every 5 accepted tests left the controller
+    // aiming at a criterion it had already covered: the model rewrote the same
+    // test, the gate rejected it as a duplicate, nothing new was accepted, so the
+    // snapshot never refreshed, and the run stalled with criteria left uncovered.
     const accepted = this.gate.getAccepted().length;
-    const sinceCheck = accepted - (this._coverageCheckedAt ?? -Infinity);
-    if (accepted > 0 && (this.lastCoverage == null || sinceCheck >= 5)) {
+    if (accepted > 0 && (this.lastCoverage == null || accepted !== this._coverageCheckedAt)) {
       this._coverageCheckedAt = accepted;
       return { tool: 'run_coverage_check', input: {}, thought: 'refresh coverage to target the biggest gap' };
     }
@@ -198,8 +212,13 @@ class PlannerAgent {
     const ac = this.lastCoverage?.acCoverage;
     const room = this.remainingBudget();
     if (ac && ac.applicable && room > 0) {
-      const gap = (Array.isArray(ac.uncovered) && ac.uncovered[0] && ac.uncovered[0].text) || '';
+      // Rotate through open criteria: one that two focused proposals could not
+      // cover is reported as open rather than retried until the run stalls.
+      this._acAttempts = this._acAttempts || new Map();
+      const open = (Array.isArray(ac.uncovered) ? ac.uncovered : []).map(u => u.text).filter(Boolean);
+      const gap = open.find(t => (this._acAttempts.get(t) || 0) < 2) || '';
       if (gap) {
+        this._acAttempts.set(gap, (this._acAttempts.get(gap) || 0) + 1);
         return {
           tool: 'propose_tests',
           input: { category: this.categoryForObligation(), count: Math.min(this.budget.batchSize, ac.total - ac.covered, room),
@@ -305,6 +324,48 @@ class PlannerAgent {
     // F07: a CONTRADICTED criterion is outstanding too — worse than uncovered.
     const contradicted = Array.isArray(ac.contradictions) ? ac.contradictions.map(c => c.text) : [];
     return [...contradicted, ...uncovered].filter(Boolean);
+  }
+
+  /**
+   * Before a "complete" stop, ask the coverage judge whether every criterion is
+   * really covered. Word overlap can credit a test that only shares vocabulary.
+   * If the judge finds uncovered or contradicted criteria and budget remains, the
+   * stop is vetoed and the next proposal targets the first of them.
+   * @returns {Promise<boolean>} true when the loop should continue
+   */
+  async judgeVetoesStop(step) {
+    if (this.stopReason !== 'complete' || !this.coverageJudge) return false;
+    if (this.judgeRuns >= this.maxJudgeRuns || this.remainingBudget() <= 0) return false;
+    const ac = (await this.measureCoverage())?.acCoverage || this.lastCoverage?.acCoverage;
+    const criteria = ac && ac.applicable ? (ac.details || []).map(d => d.text) : [];
+    if (!criteria.length) return false;
+    this.judgeRuns++;
+    let judgement;
+    try {
+      judgement = await this.coverageJudge(this.gate.getAccepted(), criteria);
+    } catch (e) {
+      judgement = { ran: false, unavailableReason: e.message };
+    }
+    this.lastJudgement = judgement;
+    if (!judgement || !judgement.ran) return false;
+    const open = criteria.filter((_, i) => {
+      const v = judgement.verdicts.get(i);
+      return v && v.verdict !== 'covered';
+    });
+    if (!open.length) return false;
+    this.stopReason = null;
+    this.emit({ phase: 'step', step, tool: 'finish-rejected',
+      thought: `coverage judge: ${open.length} criterion(s) not genuinely covered` });
+    const observation = await this.act({
+      tool: 'propose_tests',
+      input: {
+        category: this.categoryForObligation(),
+        count: Math.min(this.budget.batchSize, this.remainingBudget()),
+        focus: `Acceptance criterion: ${open[0]}`
+      }
+    });
+    this.lastObservation = { tool: 'propose_tests', observation };
+    return true;
   }
 
   /** Remaining room under the hard test ceiling. */

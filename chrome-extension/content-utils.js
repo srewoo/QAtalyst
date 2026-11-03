@@ -687,6 +687,9 @@
       if (!settings.bedrockRegion || settings.bedrockRegion.trim() === '') {
         errors.push('⚠️ AWS Region is missing');
       }
+    } else if (settings.llmProvider === 'ollama') {
+      // Local models need no key (matches validateSettings in the worker). Requiring
+      // one here blocked every Ollama user at the panel with "API Key is missing".
     } else {
       // For other providers (OpenAI, Claude, Gemini), check for API key
       if (!settings.apiKey || settings.apiKey.trim() === '') {

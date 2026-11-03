@@ -17,6 +17,28 @@ class NetworkMonitor {
     this.pageCursor = 0;
     this.currentPageUrl = null;
     this.boundHandlers = null;
+    // Parallel crawling drives several tabs at once. Track every crawler tab and
+    // keep one capture window per tab, so concurrent pages neither miss each
+    // other's requests nor claim them.
+    this.tabIds = new Set();
+    this.pageCursors = new Map();
+  }
+
+  /** Include a crawler tab (e.g. a parallel worker tab) in the capture. */
+  addTab(tabId) {
+    if (tabId != null) this.tabIds.add(tabId);
+  }
+
+  removeTab(tabId) {
+    this.tabIds.delete(tabId);
+    this.pageCursors.delete(tabId);
+  }
+
+  /** Is this webRequest event from one of the crawler's tabs? */
+  isTrackedTab(tabId) {
+    // No tab id (unit tests, synthetic events) → accept, as before.
+    if (tabId === undefined || this.tabIds.size === 0) return true;
+    return this.tabIds.has(tabId);
   }
 
   /**
@@ -29,6 +51,8 @@ class NetworkMonitor {
     if (this.boundHandlers) this.stop();
 
     this.tabId = tabId;
+    this.tabIds = new Set(tabId != null ? [tabId] : []);
+    this.pageCursors = new Map();
     this.isMonitoring = true;
     this.requests = [];
     this.pageCursor = 0;
@@ -49,13 +73,16 @@ class NetworkMonitor {
 
       chrome.webRequest.onBeforeRequest.addListener(
         this.boundHandlers.request,
-        { urls: ["<all_urls>"], tabId: this.tabId },
+        // No tabId filter: it takes one tab, and parallel crawling uses several.
+        // isTrackedTab() narrows to the crawler's tabs; host permissions already
+        // limit events to the sites the user granted.
+        { urls: ["<all_urls>"] },
         ["requestBody"]
       );
 
       chrome.webRequest.onCompleted.addListener(
         this.boundHandlers.response,
-        { urls: ["<all_urls>"], tabId: this.tabId },
+        { urls: ["<all_urls>"] },
         ["responseHeaders"]
       );
     }
@@ -84,7 +111,7 @@ class NetworkMonitor {
    * Handle network request
    */
   handleRequest(details) {
-    if (!this.isMonitoring) return;
+    if (!this.isMonitoring || !this.isTrackedTab(details.tabId)) return;
 
     // Only capture API-like requests
     if (this.isApiRequest(details.url)) {
@@ -93,6 +120,7 @@ class NetworkMonitor {
         url: details.url,
         method: details.method,
         type: details.type,
+        tabId: details.tabId,
         timestamp: details.timeStamp,
         requestBody: this.extractRequestBody(details.requestBody)
       };
@@ -244,7 +272,8 @@ class NetworkMonitor {
    * claimed every API call pages 1-19 had made. Endpoint coverage looked
    * excellent and the attribution was wrong everywhere but the first page.
    */
-  beginPage(url) {
+  beginPage(url, tabId) {
+    if (tabId != null) { this.pageCursors.set(tabId, this.requests.length); return; }
     this.pageCursor = this.requests.length;
     this.currentPageUrl = url || null;
   }
@@ -254,7 +283,15 @@ class NetworkMonitor {
    * Falls back to everything when no page boundary was ever marked, so callers
    * that never call beginPage() keep the old behaviour.
    */
-  takeApiCallsForPage() {
+  takeApiCallsForPage(tabId) {
+    if (tabId != null) {
+      // Per-tab window: this tab's requests since its own beginPage(). Other
+      // tabs' requests interleave in the same list and are filtered out.
+      const start = this.pageCursors.get(tabId) || 0;
+      const mine = this.requests.slice(start).filter(r => r.tabId === tabId);
+      this.pageCursors.set(tabId, this.requests.length);
+      return this.mapApiCalls(mine);
+    }
     const from = Number.isInteger(this.pageCursor) ? this.pageCursor : 0;
     const slice = this.requests.slice(from);
     this.pageCursor = this.requests.length;
@@ -313,7 +350,7 @@ class NetworkMonitor {
    * webRequest didn't surface.
    * @param {{url:string, method?:string, status?:number, body?:any, requestBody?:any}} cap
    */
-  ingestResponseBody(cap) {
+  ingestResponseBody(cap, tabId) {
     if (!cap || !cap.url || !this.isApiRequest(cap.url)) return;
 
     let endpoint;
@@ -326,7 +363,8 @@ class NetworkMonitor {
     let req = null;
     for (let i = this.requests.length - 1; i >= 0; i--) {
       const r = this.requests[i];
-      if (r.url === cap.url && (r.method || 'GET').toUpperCase() === method) {
+      if (r.url === cap.url && (r.method || 'GET').toUpperCase() === method &&
+          (tabId == null || r.tabId == null || r.tabId === tabId)) {
         req = r;
         if (!r.responseBody) break;
       }
@@ -343,6 +381,7 @@ class NetworkMonitor {
         statusCode: cap.status,
         requestBody: cap.requestBody ? { type: 'json', data: cap.requestBody } : null,
         responseBody: truncated,
+        tabId,
         source: 'interceptor'
       });
     }

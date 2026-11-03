@@ -352,3 +352,14 @@ describe('Jira comment / clipboard formatters', () => {
     expect(out).toContain('---');
   });
 });
+
+describe('validateSettingsUI: local Ollama needs no API key', () => {
+  const { validateSettingsUI } = require('../content-utils.js');
+  test('ollama without a key is valid; openai without a key is not', () => {
+    const ok = validateSettingsUI({ llmProvider: 'ollama', llmModel: 'llama3' });
+    const bad = validateSettingsUI({ llmProvider: 'openai', llmModel: 'gpt' });
+    const errs = (r) => (Array.isArray(r) ? r : (r && r.errors) || []);
+    expect(errs(ok).join(' ')).not.toMatch(/API Key/);
+    expect(errs(bad).join(' ')).toMatch(/API Key/);
+  });
+});

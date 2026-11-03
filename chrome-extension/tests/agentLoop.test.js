@@ -312,7 +312,7 @@ describe('Coverage Target is honoured, and says how', () => {
     p.shouldStop(true);
     expect(p.coverageBasis).toBeNull();
     const src = require('fs').readFileSync(
-      require('path').join(__dirname, '..', 'background.js'), 'utf8');
+      require('path').join(__dirname, '..', 'bg-agentic.js'), 'utf8'); // the agentic handler moved here
     expect(src).toMatch(/could not be applied/);
   });
 });
