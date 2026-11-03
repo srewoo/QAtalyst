@@ -76,13 +76,17 @@
    * description. Reuses the existing prompt builder (which reads ticketData
    * summary/description) — no background changes needed.
    */
-  function prepareChildTicketData(child, epicHeader) {
-    const childDesc = truncateKeepingLinks((child && child.description) || '', CHILD_DESC_MAX_CHARS);
-    return {
-      ...child,
-      description: `${epicHeader}\n\n--- Story ---\n${childDesc}`,
-      _epicChild: true
-    };
+  function prepareChildTicketData(child, epicHeader, epic = {}) {
+    // Parity with a single story: the child's own description is kept whole and
+    // the epic goes into `parent` (shown to the generator as background). Folding
+    // the epic into the description let the criteria harvester take the EPIC's
+    // acceptance criteria as the story's own, and clipping at 6,000 characters cut
+    // criteria a single-story run would have seen.
+    const own = (child && child.parent && child.parent.key) ? child.parent : null;
+    const parent = own
+      ? { ...own, description: own.description || epicHeader }
+      : { key: (epic && epic.key) || '', summary: (epic && epic.summary) || '', issueType: 'Epic', description: epicHeader };
+    return { ...child, parent, _epicChild: true };
   }
 
   /**
@@ -312,7 +316,7 @@
     let done = 0;
 
     const settled = await runWithConcurrency(children, deps.concurrency, async (child, i) => {
-      const childData = prepareChildTicketData(child, header);
+      const childData = prepareChildTicketData(child, header, epic);
       const res = await deps.generateForChild(childData, i);
       done++;
       if (deps.onProgress) { try { deps.onProgress(done, children.length, child); } catch (_) {} }

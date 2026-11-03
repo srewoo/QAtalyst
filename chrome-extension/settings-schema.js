@@ -34,6 +34,8 @@ const SCHEMA = {
 
   // ── quality gates ──
   enableAssertionCritic: { type: 'boolean', default: true, consumedBy: 'assertion-critic' },
+  strictGrounding: { type: 'boolean', default: true, consumedBy: 'acceptance-gate:grounding' },
+  enableCoverageJudge: { type: 'boolean', default: true, consumedBy: 'coverage-judge' },
   assertionCriticStrict: { type: 'boolean', default: false, consumedBy: 'assertion-critic' },
   dedupeAgainstExistingSuite: { type: 'boolean', default: false, consumedBy: 'background:agentic + integrations' },
 

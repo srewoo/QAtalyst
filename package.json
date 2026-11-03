@@ -15,7 +15,9 @@
     "zip": "./build.sh",
     "eval:defects": "node chrome-extension/eval/defect-detection.js",
     "eval:compare": "node chrome-extension/eval/compare-heuristics.js",
-    "eval:all": "npm run eval && npm run eval:defects && npm run eval:compare"
+    "eval:all": "npm run eval && npm run eval:defects && npm run eval:compare && npm run eval:loop",
+    "eval:loop": "node chrome-extension/eval/loop-eval.js",
+    "test:export": "playwright test -c chrome-extension/e2e/export-check/playwright.config.js"
   },
   "repository": {
     "type": "git",

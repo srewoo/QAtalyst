@@ -177,13 +177,16 @@ async function deleteEmbeddings(appUrl) {
 }
 
 // Crawl button handler
+// Resolved at popup open so the crawl click can call chrome.permissions.request
+// as its first await — the prompt needs the click's user gesture.
+const activeTabPromise = chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => t);
+
 document.getElementById('crawlAppBtn').addEventListener('click', async () => {
   const crawlBtn = document.getElementById('crawlAppBtn');
   const statusDiv = document.getElementById('crawlStatus');
 
   try {
-    // Get current tab
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await activeTabPromise;
 
     if (!tab || !tab.url) {
       showCrawlStatus('❌ No active tab found', 'error');
@@ -193,6 +196,14 @@ document.getElementById('crawlAppBtn').addEventListener('click', async () => {
     // Check if it's a valid URL
     if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
       showCrawlStatus('❌ Please navigate to a web page first', 'error');
+      return;
+    }
+
+    // The app under test is an optional host permission. Ask for the whole site
+    // (*.example.com) so API calls to sibling subdomains are captured too.
+    const { granted } = await HostPermissions.requestHostAccess([tab.url], { siblings: true });
+    if (!granted) {
+      showCrawlStatus('❌ Site access is required to crawl this app', 'error');
       return;
     }
 

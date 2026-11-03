@@ -86,14 +86,15 @@
     },
     "retry": {
       "enabled": true,
-      "maxRetries": 2,
+      "maxRetries": 3,
       "retryDelay": 3000,
       "retryableErrors": [
         "timeout",
         "net::",
         "ERR_",
         "Failed to fetch",
-        "Page load timeout"
+        "Page load timeout",
+        "Script injection failed"
       ],
       "description": "Automatically retry failed pages due to transient errors (timeouts, network issues). Non-retryable errors (404, 403, etc.) are logged immediately."
     },

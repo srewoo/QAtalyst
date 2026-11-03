@@ -6,6 +6,7 @@ const { defineConfig } = require('@playwright/test');
 module.exports = defineConfig({
   testDir: __dirname,
   testMatch: '**/*.spec.js',
+  testIgnore: ['export-check/**'], // run separately: npm run test:export
   timeout: 120000,
   retries: 0,
   use: {

@@ -840,7 +840,9 @@ class SemanticDuplicateDetector {
       },
       {
         w: 0.2, v: this.compareActions(features1.actions, features2.actions),
-        known: features1.actions.length > 0 && features2.actions.length > 0
+        // "navigate" comes from the "Open <app>" step every test starts with; a
+        // pair whose only action is that shared one has said nothing comparable.
+        known: features1.actions.some(a => a !== 'navigate') && features2.actions.some(a => a !== 'navigate')
       },
       {
         w: 0.1, v: this.compareOutcomes(features1.outcome, features2.outcome),
@@ -849,6 +851,11 @@ class SemanticDuplicateDetector {
     ];
     const known = dims.filter(d => d.known);
     if (!known.length) return 0; // nothing observable — assume nothing
+    // Intent is only the category label plus a polarity word. On its own it is
+    // not evidence that two tests exercise the same behaviour: "portrait" vs
+    // "landscape" in the same category scored 1.0 this way and one was dropped.
+    // Require at least one content dimension (entities, actions, outcome).
+    if (known.length === 1 && known[0] === dims[0]) return 0;
     const totalW = known.reduce((sum, d) => sum + d.w, 0);
     return known.reduce((sum, d) => sum + d.v * d.w, 0) / totalW;
   }

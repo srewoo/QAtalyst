@@ -4,6 +4,12 @@
 // Prevent redeclaration errors if script is injected multiple times
 if (typeof SecurityManager === 'undefined') {
   class SecurityManager {
+    // Passphrase-sealed values. OWASP (2023) recommends 600k PBKDF2-SHA256
+    // iterations for user-chosen secrets.
+    static PASS_PREFIX = 'encp:';
+    static PASSPHRASE_ITERATIONS = 600000;
+    static LOCKED_MESSAGE = 'QAtalyst is locked: your API keys are protected by a passphrase. Open Advanced Settings and unlock to continue.';
+
     constructor() {
       this.encoder = new TextEncoder();
       this.decoder = new TextDecoder();
@@ -19,7 +25,7 @@ if (typeof SecurityManager === 'undefined') {
   /**
    * Derive encryption key from password using PBKDF2
    */
-  async deriveKey(password, salt) {
+  async deriveKey(password, salt, iterations = APP_CONFIG.SECURITY.PBKDF2_ITERATIONS) {
     const passwordKey = await crypto.subtle.importKey(
       'raw',
       this.encoder.encode(password),
@@ -32,7 +38,7 @@ if (typeof SecurityManager === 'undefined') {
       {
         name: 'PBKDF2',
         salt: salt,
-        iterations: APP_CONFIG.SECURITY.PBKDF2_ITERATIONS,
+        iterations,
         hash: 'SHA-256'
       },
       passwordKey,
@@ -51,7 +57,7 @@ if (typeof SecurityManager === 'undefined') {
    * @param {string} password - User password (optional, uses device ID if not provided)
    * @returns {Promise<{encrypted: string, salt: string, iv: string}>}
    */
-  async encryptApiKey(apiKey, password = null) {
+  async encryptApiKey(apiKey, password = null, iterations = undefined) {
     try {
       // Use device-specific identifier if no password provided
       const encryptionPassword = password || await this.getDeviceIdentifier();
@@ -61,7 +67,7 @@ if (typeof SecurityManager === 'undefined') {
       const iv = crypto.getRandomValues(new Uint8Array(APP_CONFIG.SECURITY.IV_LENGTH));
 
       // Derive encryption key
-      const key = await this.deriveKey(encryptionPassword, salt);
+      const key = await this.deriveKey(encryptionPassword, salt, iterations);
 
       // Encrypt the API key
       const encryptedBuffer = await crypto.subtle.encrypt(
@@ -93,7 +99,7 @@ if (typeof SecurityManager === 'undefined') {
    * @param {string} password - User password (optional)
    * @returns {Promise<string>} Decrypted API key
    */
-  async decryptApiKey(encryptedData, saltBase64, ivBase64, password = null) {
+  async decryptApiKey(encryptedData, saltBase64, ivBase64, password = null, iterations = undefined) {
     try {
       // Use device-specific identifier if no password provided
       const encryptionPassword = password || await this.getDeviceIdentifier();
@@ -104,7 +110,7 @@ if (typeof SecurityManager === 'undefined') {
       const iv = this.base64ToArrayBuffer(ivBase64);
 
       // Derive decryption key
-      const key = await this.deriveKey(encryptionPassword, salt);
+      const key = await this.deriveKey(encryptionPassword, salt, iterations);
 
       // Decrypt
       const decryptedBuffer = await crypto.subtle.decrypt(
@@ -179,6 +185,16 @@ if (typeof SecurityManager === 'undefined') {
     if (!apiKey || typeof apiKey !== 'string') {
       return apiKey; // Return as-is if invalid
     }
+    if (apiKey.startsWith('enc:') || apiKey.startsWith(SecurityManager.PASS_PREFIX)) return apiKey; // already sealed
+
+    // Passphrase protection: seal with the user's passphrase, never fall back to the
+    // weaker device key silently.
+    if (!password && await this.getProtectionMode() === 'passphrase') {
+      const pass = await this.getSessionPassphrase();
+      if (!pass) throw new Error(SecurityManager.LOCKED_MESSAGE);
+      const sealed = await this.encryptApiKey(apiKey, pass, SecurityManager.PASSPHRASE_ITERATIONS);
+      return SecurityManager.PASS_PREFIX + JSON.stringify(sealed);
+    }
 
     try {
       const encrypted = await this.encryptApiKey(apiKey, password);
@@ -200,6 +216,10 @@ if (typeof SecurityManager === 'undefined') {
   async decryptApiKeyFromStorage(storedValue, password = null) {
     if (!storedValue || typeof storedValue !== 'string') {
       return storedValue; // Return as-is if invalid
+    }
+
+    if (storedValue.startsWith(SecurityManager.PASS_PREFIX)) {
+      return this.decryptPassphraseValue(storedValue);
     }
 
     // Check if value is encrypted (has our prefix)
@@ -232,7 +252,46 @@ if (typeof SecurityManager === 'undefined') {
    * @returns {boolean} True if encrypted
    */
   isEncrypted(storedValue) {
-    return storedValue && typeof storedValue === 'string' && storedValue.startsWith('enc:');
+    return !!storedValue && typeof storedValue === 'string' &&
+      (storedValue.startsWith('enc:') || storedValue.startsWith(SecurityManager.PASS_PREFIX));
+  }
+
+  // ───────────── optional passphrase protection (see key-vault.js) ─────────────
+
+  /** 'passphrase' when the user set one, else 'device'. */
+  async getProtectionMode() {
+    try {
+      const r = await chrome.storage.local.get('_qatalyst_key_protection');
+      return r._qatalyst_key_protection === 'passphrase' ? 'passphrase' : 'device';
+    } catch (_) { return 'device'; }
+  }
+
+  /**
+   * The passphrase lives only in chrome.storage.session: in memory, cleared when the
+   * browser closes, and not readable by content scripts. null when locked or when
+   * called from a context without access.
+   */
+  async getSessionPassphrase() {
+    try {
+      if (!chrome.storage || !chrome.storage.session) return null;
+      const r = await chrome.storage.session.get('_qatalyst_passphrase');
+      return r._qatalyst_passphrase || null;
+    } catch (_) { return null; }
+  }
+
+  async decryptPassphraseValue(storedValue) {
+    const pass = await this.getSessionPassphrase();
+    if (!pass) {
+      // A content script cannot read session storage: ask the service worker.
+      const inWorker = typeof ServiceWorkerGlobalScope !== 'undefined' && self instanceof ServiceWorkerGlobalScope;
+      if (!inWorker && typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        const res = await chrome.runtime.sendMessage({ action: 'decryptSecret', value: storedValue });
+        if (res && typeof res.value === 'string') return res.value;
+      }
+      throw new Error(SecurityManager.LOCKED_MESSAGE);
+    }
+    const { encrypted, salt, iv } = JSON.parse(storedValue.substring(SecurityManager.PASS_PREFIX.length));
+    return this.decryptApiKey(encrypted, salt, iv, pass, SecurityManager.PASSPHRASE_ITERATIONS);
   }
 
   /**

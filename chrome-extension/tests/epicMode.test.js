@@ -32,14 +32,23 @@ describe('buildEpicHeader + prepareChildTicketData (context management)', () => 
     expect(header).toMatch(/truncated/);
   });
 
-  test('child description folds in the epic header and clips its own body', () => {
+  test('child keeps its whole description; the epic becomes its parent context (parity with a single story)', () => {
     const header = EpicMode.buildEpicHeader({ key: 'EP-1', summary: 'Billing', description: 'pay' });
-    const child = EpicMode.prepareChildTicketData({ key: 'EP-2', summary: 'Add card', description: 'y'.repeat(9000) }, header);
-    expect(child.description).toContain('Parent Epic [EP-1] Billing');
-    expect(child.description).toContain('--- Story ---');
-    expect(child.description).toMatch(/truncated/);
+    const child = EpicMode.prepareChildTicketData({ key: 'EP-2', summary: 'Add card', description: 'y'.repeat(9000) },
+      header, { key: 'EP-1', summary: 'Billing' });
+    expect(child.description).toBe('y'.repeat(9000));          // not clipped, not mixed with epic text
+    expect(child.parent).toMatchObject({ key: 'EP-1', summary: 'Billing', issueType: 'Epic' });
+    expect(child.parent.description).toContain('Parent Epic [EP-1] Billing');
     expect(child._epicChild).toBe(true);
-    expect(child.key).toBe('EP-2'); // child identity preserved
+    expect(child.key).toBe('EP-2');
+  });
+
+  test("the epic's acceptance criteria are not taken as the story's own", () => {
+    const CM = require('../coverage-mapper.js');
+    const header = EpicMode.buildEpicHeader({ key: 'EP-1', summary: 'Billing', description: 'Acceptance Criteria:\n- Invoices are emailed monthly' });
+    const child = EpicMode.prepareChildTicketData({ key: 'EP-2', summary: 'Add card',
+      description: 'Acceptance Criteria:\n- Users can add a card' }, header, { key: 'EP-1' });
+    expect(CM.extractRequirementItems(child)).toEqual(['Users can add a card']);
   });
 });
 
@@ -185,11 +194,13 @@ describe('generateEpicTestCases (orchestration)', () => {
       { key: 'EP-3', summary: 'Pay', description: 'pay' },
     ];
     const seenDescs = [];
+    const seenParents = [];
     const out = await EpicMode.generateEpicTestCases(epic, {
       fetchEpicChildren: async () => children,
       concurrency: 2,
       generateForChild: async (childData) => {
         seenDescs.push(childData.description);
+        seenParents.push(childData.parent);
         return { testCases: [{ id: 't1' }, { id: 't2' }] };
       },
     });
@@ -197,7 +208,9 @@ describe('generateEpicTestCases (orchestration)', () => {
     expect(out.results).toHaveLength(2);
     expect(out.summary).toMatchObject({ stories: 2, failed: 0, totalTests: 4 });
     // Each child call received the epic header in its description.
-    expect(seenDescs.every((d) => d.includes('Parent Epic [EP-1] Checkout'))).toBe(true);
+    // The epic travels as parent context; each story's description is its own.
+    expect(seenParents.every((p) => p && p.key === 'EP-1' && p.description.includes('Parent Epic [EP-1] Checkout'))).toBe(true);
+    expect(seenDescs.some((d) => d.includes('Parent Epic'))).toBe(false);
   });
 
   test('reports per-child failures without failing the whole run', async () => {

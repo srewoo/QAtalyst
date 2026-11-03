@@ -273,6 +273,40 @@ describe('F05 — proven distinctions are never merged away', () => {
     // Pre-fix: empty steps scored actions 1.0 and all-false outcomes scored 1.0.
     expect(d.calculateSemanticSimilarity(sparseA, sparseB)).toBeLessThan(0.68);
   });
+
+  test('a shared category label alone is not a duplicate', () => {
+    const d = new SemanticDuplicateDetector();
+    // Same category, same polarity word ("usable"), no extractable fields/APIs,
+    // no recognised action verbs on one side: intent was the only known
+    // dimension and scored 1.0, so landscape was dropped as a copy of portrait.
+    const portrait = { title: 'Chat list is usable on a narrow mobile web-view in portrait', category: 'Edge',
+      steps: ['Open the app in portrait', 'Tap the hamburger icon', 'Scroll the chat list'],
+      expected_result: 'The list fits the viewport and every row is tappable' };
+    const landscape = { title: 'Chat list stays usable after rotating to landscape', category: 'Edge',
+      steps: ['Rotate the device to landscape', 'Observe the sidebar'],
+      expected_result: 'The sidebar reflows and the list remains scrollable' };
+    expect(d.calculateSemanticSimilarity(portrait, landscape)).toBeLessThan(0.68);
+  });
+
+  test('a shared "Open the app" step is not evidence of duplication', () => {
+    const d = new SemanticDuplicateDetector();
+    const rows = { title: 'Each chat session row shows its name and a last-activity indicator', category: 'Positive',
+      steps: ['Open Seller Copilot', 'Read the rows in the panel'],
+      expected_result: 'Each row shows the session name and a last-activity indicator' };
+    const migration = { title: 'Existing single chat is migrated with a name derived from its first question', category: 'Positive',
+      steps: ['Open Seller Copilot', 'Open the panel', 'Read the single session row'],
+      expected_result: 'Exactly one session is listed and its name is the trimmed first question' };
+    expect(d.calculateSemanticSimilarity(rows, migration)).toBeLessThan(0.68);
+  });
+
+  test('a verbatim resubmission is still a duplicate when semantic evidence is absent', () => {
+    const tc = { title: 'Chat list stays usable after rotating to landscape', category: 'Edge',
+      steps: ['Rotate the device to landscape', 'Observe the sidebar'],
+      expected_result: 'The sidebar reflows and the list remains scrollable' };
+    const r = gateFor({ summary: 'Chat list' }).admit([tc, { ...tc }]);
+    expect(r.accepted).toHaveLength(1);
+    expect(r.rejected[0].stage).toBe('duplicate');
+  });
 });
 
 describe('F08 — ticket-only coverage feedback survives', () => {
@@ -575,5 +609,89 @@ describe('a crawl that does not cover the ticket must not reject everything', ()
   test('a crawl with no ticket-relevant pages makes grounding not applicable', () => {
     const flagged = { ...unrelatedCrawl, noRelevantPages: true };
     expect(new GroundedVerifier(flagged, { ticketData: ticket }).isApplicable()).toBe(false);
+  });
+});
+
+describe('polarity — a required state is not a negation', () => {
+  test('"hide X on event" is covered by a test asserting X is hidden', () => {
+    const r = CoverageMapper.mapAcceptanceCriteria([{
+      title: 'hide.sidebar event hides the session list',
+      steps: ['Trigger the hide.sidebar event from the mobile shell'],
+      expected_result: 'The sidebar listing is hidden and the chat area is shown full width'
+    }], ['hide sidebar listing on hide.sidebar event received.']);
+    expect(r.covered).toBe(1);
+    expect(r.contradictions).toHaveLength(0);
+  });
+
+  test('"error state" and "disabled" are outcomes, not contradictions', () => {
+    const RM = require('../requirement-model.js');
+    const reqs = RM.buildRequirements([
+      'The panel shows an error state when the sessions request fails',
+      'The Save button is disabled until the form is valid'
+    ], { ticketKey: 'T' });
+    const r = CoverageMapper.mapRequirementPredicates([
+      { title: 'Session list shows an error state when the request fails',
+        steps: ['Block the sessions request', 'Open the panel'],
+        expected_result: 'The panel shows an error state' },
+      { title: 'Save button is disabled while the form is invalid',
+        steps: ['Open the form', 'Leave the name empty'],
+        expected_result: 'The Save button is disabled' }
+    ], reqs, { requirementModel: RM });
+    expect(r.contradictions).toHaveLength(0);
+    expect(r.covered).toBe(2);
+  });
+
+  test('a genuine inversion is still a contradiction', () => {
+    const r = CoverageMapper.mapAcceptanceCriteria([{
+      title: 'Viewer can delete invoices',
+      steps: ['Log in as Viewer', 'Delete an invoice'],
+      expected_result: 'The invoice is deleted'
+    }], ['Viewer cannot delete invoices']);
+    expect(r.contradictions).toHaveLength(1);
+  });
+});
+
+describe('grooming notes and scenario labels do not count as acceptance criteria', () => {
+  const RM = require('../requirement-model.js');
+  const ITEMS = [
+    'Case: User already has an active chat prior to this feature',
+    'The panel displays a list of chat sessions',
+    'props -> (list of sessions, active session id, onRename)',
+    'use listing component (infinite loader).',
+    'implement pagination for session listing. use relay.'
+  ];
+
+  test('the AC denominator holds only testable obligations', () => {
+    const r = CoverageMapper.mapAcceptanceCriteria([], ITEMS);
+    expect(r.total).toBe(1);
+    expect(r.uncovered.map(u => u.text)).toEqual(['The panel displays a list of chat sessions']);
+  });
+
+  test('a scenario label is kept but is not mandatory', () => {
+    const reqs = RM.buildRequirements(ITEMS, { ticketKey: 'T' });
+    expect(reqs.find(q => /^Case:/.test(q.text)).status).toBe('scenario_header');
+    expect(RM.mandatoryRequirements(reqs)).toHaveLength(1);
+  });
+
+  test('an optional "Good to have" line is visible but does not block finish', () => {
+    const r = CoverageMapper.mapAcceptanceCriteria([], [
+      'The panel displays a list of chat sessions',
+      'Good to have: On posting a follow-up question, the chat should move up the list immediately.'
+    ]);
+    expect(r.total).toBe(1);
+  });
+
+  test('a dangling clause is glued back onto its claim, not made an obligation', () => {
+    const atoms = RM.splitCompound('On interaction with a chat, it should move up the list when the chat list is accessed.');
+    expect(atoms).toHaveLength(1);
+    // Real compounds still split.
+    expect(RM.splitCompound('An owner can delete an invoice, but a viewer cannot')).toHaveLength(2);
+  });
+
+  test('the harvester still surfaces the scenario label for context', () => {
+    const items = CoverageMapper.extractRequirementItems({
+      description: '**Case 1:** User already has an active chat\n* Chat name is derived from the first question'
+    });
+    expect(items.some(i => /^Case:/.test(i))).toBe(true);
   });
 });

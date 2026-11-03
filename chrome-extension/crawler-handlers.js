@@ -27,6 +27,13 @@ async function handleStartCrawl(data) {
       throw new Error('No active tab found');
     }
 
+    // Host access to the app under test is optional and granted from the popup.
+    // Without it every injection fails one page at a time; fail once, clearly.
+    const startUrl = data?.startUrl || tab.url;
+    if (self.HostPermissions && !(await self.HostPermissions.hasHostAccess(startUrl, { siblings: true }))) {
+      throw new Error(`QAtalyst does not have access to ${new URL(startUrl).hostname}. Start the crawl from the extension popup and allow site access.`);
+    }
+
     // Get crawler settings from chrome.storage (UI settings) to override config.json
     const userSettings = await chrome.storage.sync.get([
       'enableDuplicateDetection',

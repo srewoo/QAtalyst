@@ -232,6 +232,7 @@ class AgentToolRegistry {
       'You are a meticulous QA engineer generating GROUNDED, executable test cases.',
       'RULES:',
       '- Reference ONLY UI elements, fields, buttons, routes and APIs that appear in the "REAL APP ENTITIES" list. Never invent selectors or fields.',
+      '- "preconditions" must name the role, the starting state and the page the test starts on, as a full URL when the app entities list routes (e.g. "A signed-in admin on https://app.example.com/settings"), so the test can be executed as written.',
       '- Each test must be specific and independently executable. No vague verbs ("verify it works").',
       '- Steps must be concrete actions; expected_result must be observable.',
       `- "category" must be exactly "${category}" — do NOT invent a different label. "description" is a 1-2 sentence "Verify that…" summary. "test_data" must be a plain string (not an object).`,
@@ -417,6 +418,11 @@ class AgentToolRegistry {
     if (Array.isArray(t.components) && t.components.length) parts.push(`COMPONENTS: ${t.components.join(', ')}`);
     if (t.parent && (t.parent.summary || t.parent.key)) {
       parts.push(`PARENT/EPIC: ${t.parent.key || ''} ${t.parent.summary ? '— ' + t.parent.summary : ''}`.trim());
+      // The parent's intent and criteria: context for this ticket. Obligations are
+      // derived separately (coverage-mapper.js), so this cannot inflate them.
+      const pctx = [t.parent.description, t.parent.acceptanceCriteria ? `Parent acceptance criteria:\n${t.parent.acceptanceCriteria}` : '']
+        .filter(Boolean).join('\n');
+      if (pctx) parts.push(`PARENT CONTEXT (background for this ticket):\n${String(pctx).slice(0, 1500)}`);
     }
     if (t.description) parts.push(`DESCRIPTION:\n${String(t.description).slice(0, 2500)}`);
 

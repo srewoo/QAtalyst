@@ -200,6 +200,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'testCount',
     'enableHistoricalMining',
     'dedupeAgainstExistingSuite',
+    'strictGrounding',
+    'enableCoverageJudge',
     'historicalMaxResults',
     'historicalJqlFilters',
     'jiraBaseUrl',
@@ -250,31 +252,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     'epicFetchWebLinks'
   ]);
 
-  // Decrypt sensitive tokens when loading
-  if (settings.apiKey) {
-    settings.apiKey = await securityManager.decryptApiKeyFromStorage(settings.apiKey);
+  // Decrypt sensitive tokens when loading. With a passphrase set and not yet
+  // unlocked, the keys cannot be read: leave the fields empty and say so, and
+  // saving is refused (see the save handler) so the stored keys are not erased.
+  const vaultStatus = typeof KeyVault !== 'undefined' ? await KeyVault.status() : { mode: 'device', unlocked: true };
+  for (const k of ['apiKey', 'jiraApiToken', 'figmaToken', 'googleApiKey', 'googleClientSecret', 'testrailApiKey',
+    'bedrockSecretKey', 'bedrockSessionToken']) {
+    if (!settings[k]) continue;
+    try {
+      settings[k] = await securityManager.decryptApiKeyFromStorage(settings[k]);
+    } catch (_) {
+      settings[k] = '';
+    }
   }
-  if (settings.jiraApiToken) {
-    settings.jiraApiToken = await securityManager.decryptApiKeyFromStorage(settings.jiraApiToken);
-  }
-  if (settings.figmaToken) {
-    settings.figmaToken = await securityManager.decryptApiKeyFromStorage(settings.figmaToken);
-  }
-  if (settings.googleApiKey) {
-    settings.googleApiKey = await securityManager.decryptApiKeyFromStorage(settings.googleApiKey);
-  }
-  if (settings.googleClientSecret) {
-    settings.googleClientSecret = await securityManager.decryptApiKeyFromStorage(settings.googleClientSecret);
-  }
-  if (settings.testrailApiKey) {
-    settings.testrailApiKey = await securityManager.decryptApiKeyFromStorage(settings.testrailApiKey);
-  }
-  if (settings.bedrockSecretKey) {
-    settings.bedrockSecretKey = await securityManager.decryptApiKeyFromStorage(settings.bedrockSecretKey);
-  }
-  if (settings.bedrockSessionToken) {
-    settings.bedrockSessionToken = await securityManager.decryptApiKeyFromStorage(settings.bedrockSessionToken);
-  }
+  renderVaultStatus(vaultStatus);
 
   // API Settings
   if (settings.llmProvider) {
@@ -350,6 +341,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // F14: this setting existed in the worker but had no control and was never
   // loaded, so existing-suite deduplication could never actually run.
   document.getElementById('dedupeAgainstExistingSuite').checked = settings.dedupeAgainstExistingSuite || false;
+  document.getElementById('strictGrounding').checked = settings.strictGrounding !== false;
+  document.getElementById('enableCoverageJudge').checked = settings.enableCoverageJudge !== false;
   document.getElementById('historicalMaxResults').value = settings.historicalMaxResults || 20;
   document.getElementById('historicalJqlFilters').value = settings.historicalJqlFilters || '';
   document.getElementById('jiraBaseUrl').value = settings.jiraBaseUrl || '';
@@ -483,7 +476,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('scrollTriggerEnabled').checked = settings.scrollTriggerEnabled !== false;
 
   // Epic Mode web-links fetch — default OFF (opt-in)
-  document.getElementById('epicFetchWebLinks').checked = settings.epicFetchWebLinks === true;
+  document.getElementById('epicFetchWebLinks').checked = settings.epicFetchWebLinks !== false; // on by default
 
 });
 
@@ -721,7 +714,31 @@ function updateKeyLink(provider) {
 }
 
 // Test Connection
+/**
+ * Self-hosted / per-tenant integration URLs are optional host permissions (see
+ * host-permissions.js). Ask for all of them in one prompt from a button click.
+ * A refusal is not fatal: the request that needs the host fails with its own
+ * error, and the status line below says why.
+ */
+const USER_URL_FIELDS = ['jiraBaseUrl', 'testrailUrl', 'zephyrSquadJiraUrl', 'xrayJiraUrl', 'qmetryApiUrl', 'ollamaBaseUrl'];
+async function requestUserHostAccess() {
+  const urls = USER_URL_FIELDS.map(id => document.getElementById(id)?.value?.trim()).filter(Boolean);
+  try {
+    const { granted, origins } = await HostPermissions.requestHostAccess(urls);
+    if (!granted) {
+      const status = document.getElementById('status');
+      if (status) {
+        status.className = 'status error';
+        status.textContent = `Site access was declined for ${origins.join(', ')} — calls to those hosts will fail until it is granted.`;
+      }
+    }
+  } catch (e) {
+    console.warn('Host access request failed:', e);
+  }
+}
+
 document.getElementById('testConnectionBtn').addEventListener('click', async () => {
+  await requestUserHostAccess(); // must be first await: needs the click's user gesture
   const btn = document.getElementById('testConnectionBtn');
   const icon = document.getElementById('testConnectionIcon');
   const result = document.getElementById('testConnectionResult');
@@ -796,6 +813,13 @@ function showTestResult(el, success, message) {
 
 // Save settings
 document.getElementById('saveBtn').addEventListener('click', async () => {
+  await requestUserHostAccess(); // must be first await: needs the click's user gesture
+  if (typeof KeyVault !== 'undefined' && !(await KeyVault.status()).unlocked) {
+    const statusDiv = document.getElementById('status');
+    statusDiv.className = 'status error';
+    statusDiv.textContent = '🔒 Your API keys are passphrase-protected and locked. Unlock them above before saving, so they are not overwritten.';
+    return;
+  }
   const settings = {
     // API Settings
     llmProvider: document.getElementById('llmProvider').value,
@@ -816,6 +840,8 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
     // Historical Mining
     enableHistoricalMining: document.getElementById('enableHistoricalMining').checked,
     dedupeAgainstExistingSuite: document.getElementById('dedupeAgainstExistingSuite').checked,
+    strictGrounding: document.getElementById('strictGrounding').checked,
+    enableCoverageJudge: document.getElementById('enableCoverageJudge').checked,
     historicalMaxResults: parseInt(document.getElementById('historicalMaxResults').value),
     historicalJqlFilters: document.getElementById('historicalJqlFilters').value.trim(),
     jiraBaseUrl: document.getElementById('jiraBaseUrl').value.trim(),
@@ -1025,6 +1051,7 @@ document.getElementById('resetBtn').addEventListener('click', async () => {
 
 // Test Jira Authentication
 document.getElementById('testJiraAuth').addEventListener('click', async () => {
+  await requestUserHostAccess(); // must be first await: needs the click's user gesture
   const jiraBaseUrl = document.getElementById('jiraBaseUrl').value.trim();
   const jiraEmail = document.getElementById('jiraEmail').value.trim();
   let jiraApiToken = document.getElementById('jiraApiToken').value.trim();
@@ -1583,6 +1610,7 @@ document.querySelectorAll('input[name="googleAuthMode"]').forEach(radio => {
 
 // TestRail
 document.getElementById('testTestrail')?.addEventListener('click', async () => {
+  await requestUserHostAccess(); // must be first await: needs the click's user gesture
   const statusEl = document.getElementById('testrailStatus');
   statusEl.textContent = 'Testing connection...';
   statusEl.style.color = '#0ea5e9';
@@ -1644,6 +1672,7 @@ document.getElementById('testZephyrScale')?.addEventListener('click', async () =
 
 // Zephyr Squad
 document.getElementById('testZephyrSquad')?.addEventListener('click', async () => {
+  await requestUserHostAccess(); // must be first await: needs the click's user gesture
   const statusEl = document.getElementById('zephyrSquadStatus');
   statusEl.textContent = 'Testing connection...';
   statusEl.style.color = '#0ea5e9';
@@ -1674,6 +1703,7 @@ document.getElementById('testZephyrSquad')?.addEventListener('click', async () =
 
 // Xray
 document.getElementById('testXray')?.addEventListener('click', async () => {
+  await requestUserHostAccess(); // must be first await: needs the click's user gesture
   const statusEl = document.getElementById('xrayStatus');
   statusEl.textContent = 'Testing connection...';
   statusEl.style.color = '#0ea5e9';
@@ -1713,6 +1743,7 @@ document.getElementById('testXray')?.addEventListener('click', async () => {
 
 // qMetry
 document.getElementById('testQmetry')?.addEventListener('click', async () => {
+  await requestUserHostAccess(); // must be first await: needs the click's user gesture
   const statusEl = document.getElementById('qmetryStatus');
   statusEl.textContent = 'Testing connection...';
   statusEl.style.color = '#0ea5e9';
@@ -1754,6 +1785,7 @@ let fetchedCustomFields = [];
 
 // Fetch Custom Fields button
 document.getElementById('fetchCustomFields')?.addEventListener('click', async () => {
+  await requestUserHostAccess(); // must be first await: needs the click's user gesture
   const statusEl = document.getElementById('fetchFieldsStatus');
   statusEl.textContent = 'Fetching custom fields...';
   statusEl.style.color = '#0ea5e9';
@@ -2068,3 +2100,44 @@ function showEmptyFieldMappingsState() {
     </tr>
   `;
 }
+
+
+// ───────────── passphrase protection (key-vault.js) ─────────────
+
+function renderVaultStatus(st) {
+  const el = document.getElementById('vaultStatus');
+  if (!el) return;
+  const locked = st.mode === 'passphrase' && !st.unlocked;
+  el.textContent = st.mode !== 'passphrase'
+    ? 'Off: keys are encrypted with a key stored in this browser profile.'
+    : (locked ? '🔒 Locked: enter your passphrase to use QAtalyst this browser session.' : '🔓 On and unlocked for this browser session.');
+  document.getElementById('vaultSetBtn').hidden = st.mode === 'passphrase';
+  document.getElementById('vaultUnlockBtn').hidden = !locked;
+  document.getElementById('vaultLockBtn').hidden = st.mode !== 'passphrase' || locked;
+  document.getElementById('vaultRemoveBtn').hidden = st.mode !== 'passphrase' || locked;
+}
+
+async function vaultAction(fn, success) {
+  const input = document.getElementById('vaultPassphrase');
+  const msg = document.getElementById('vaultMessage');
+  try {
+    const res = await fn(input.value);
+    input.value = '';
+    msg.style.color = '#28a745';
+    msg.textContent = success(res || {});
+    if (fn === KeyVault.unlock || fn === KeyVault.removePassphrase) setTimeout(() => window.location.reload(), 600);
+  } catch (e) {
+    msg.style.color = '#dc3545';
+    msg.textContent = e.message;
+  }
+  renderVaultStatus(await KeyVault.status());
+}
+
+document.getElementById('vaultSetBtn')?.addEventListener('click', () =>
+  vaultAction(KeyVault.setPassphrase, r => `Passphrase set. ${r.resealed} key(s) re-encrypted with it. You will unlock once per browser session.`));
+document.getElementById('vaultUnlockBtn')?.addEventListener('click', () =>
+  vaultAction(KeyVault.unlock, () => 'Unlocked for this browser session.'));
+document.getElementById('vaultLockBtn')?.addEventListener('click', () =>
+  vaultAction(() => KeyVault.lock(), () => 'Locked.'));
+document.getElementById('vaultRemoveBtn')?.addEventListener('click', () =>
+  vaultAction(() => KeyVault.removePassphrase(), r => `Passphrase removed. ${r.resealed} key(s) re-encrypted with the browser key.`));

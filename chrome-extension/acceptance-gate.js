@@ -57,6 +57,11 @@ class AcceptanceGate {
     // an incidental token ("user", "page") with the ticket. Both still overridable
     // per-call via settings / adaptive thresholds.
     this.dedupThreshold = cfg.dedupThreshold ?? 0.68;
+    // A test that names an element neither the app/design nor the ticket has is
+    // rejected (the reason goes back to the planner, which rewrites it with real
+    // labels). Off: such tests are admitted and flagged 'unresolved' for review,
+    // for teams whose crawls are known to be partial.
+    this.strictGrounding = cfg.strictGrounding !== false;
     this.relevanceThreshold = cfg.relevanceThreshold ?? 0.25;
 
     // F06: the verifier needs the TICKET as well as the crawl, so a control the
@@ -152,6 +157,10 @@ class AcceptanceGate {
           test._pendingImplementation = g.pendingImplementation;
           this.stats.specification = (this.stats.specification || 0) + 1;
         } else if (verdict === 'unresolved' || (issues && issues.length)) {
+          if (this.strictGrounding) {
+            this.reject(candidate, 'grounding', (issues && issues.join('; ')) || 'names app elements that exist nowhere in the crawl or the ticket');
+            continue;
+          }
           test._grounding = 'unresolved';
           test._groundingIssues = issues;
           this.stats.unresolved = (this.stats.unresolved || 0) + 1;
@@ -442,7 +451,11 @@ class AcceptanceGate {
       // Combine the detector's semantic + lexical signals (same blend it uses internally).
       const sem = safe(() => this.dedup.calculateSemanticSimilarity(a, b), 0);
       const lex = safe(() => this.dedup.calculateLexicalSimilarity(a, b), 0);
-      return Math.max(sem, 0.5 * sem + 0.5 * lex);
+      // Either signal alone may RETRIEVE a pair for classification; blending
+      // halved a near-verbatim resubmission to ~0.5 whenever its semantic
+      // evidence was thin, and it sailed through the 0.68 gate. classifyPair /
+      // distinctionReason still veto any merge the text alone cannot justify.
+      return Math.max(sem, lex);
     }
     // Fallback: Jaccard over content tokens.
     return jaccard(tokenize(textOf(a)), tokenize(textOf(b)));

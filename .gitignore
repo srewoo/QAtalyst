@@ -81,3 +81,5 @@ agenthub/agents/youtube/db
 # Mobile development
 android-sdk/ 
 *.md
+chrome-extension/e2e/export-check/generated.spec.js
+test-results/

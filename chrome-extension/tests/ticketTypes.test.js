@@ -104,3 +104,49 @@ describe('Epic Mode gets the same protections as a single ticket', () => {
     expect(fn).toContain('GenerationStatus.isActive()');
   });
 });
+
+describe('every ticket type has obligations to cover', () => {
+  const CM = require('../coverage-mapper.js');
+  const items = (t) => CM.extractRequirementItems(t);
+
+  test('bug: the fixed behaviour and the defect no longer happening', () => {
+    expect(items({ issueType: 'Bug', summary: 'Export crashes', description:
+      'Steps to reproduce:\n1. Open Reports\n2. Click Export\n\nExpected result: The CSV downloads\nActual result: A 500 error page is shown' }))
+      .toEqual(['Following the steps to reproduce, the CSV downloads',
+                '"A 500 error page is shown" must not happen when following the steps to reproduce']);
+  });
+
+  test('task with no AC section: its requirement sentences, not background', () => {
+    expect(items({ issueType: 'Task', summary: 'Rate limit', description:
+      'Background: we saw abuse. Add a limit of 5 requests per minute on POST /api/login. Return 429 when exceeded.' }))
+      .toEqual(['Add a limit of 5 requests per minute on POST /api/login.', 'Return 429 when exceeded.']);
+  });
+
+  test('build instructions are not obligations (no test can observe them)', () => {
+    expect(items({ issueType: 'Task', description: 'Implement caching. Refactor the service.' })).toEqual([]);
+  });
+
+  test("sub-task: the parent story's criteria it touches", () => {
+    expect(items({ issueType: 'Sub-task', summary: 'Show lockout message', description: 'Implement the UI part.',
+      parent: { acceptanceCriteria: '- The account is locked after 5 failed attempts\n- A lockout message is shown\n- Admins can unlock' } }))
+      .toEqual(['A lockout message is shown']);
+  });
+
+  test('a story with an AC section is unchanged', () => {
+    expect(items({ issueType: 'Story', description: 'Acceptance Criteria:\n- Users can sign in\n- A wrong password shows an error' }))
+      .toEqual(['Users can sign in', 'A wrong password shows an error']);
+  });
+});
+
+describe('the live loop works on a bug ticket', () => {
+  test('a bug reaches complete coverage of its post-fix obligations', async () => {
+    const { runLoop } = require('../eval/loop-harness.js');
+    const fx = require('../eval/fixtures/re-11256.json');
+    const bug = { key: 'BUG-1', issueType: 'Bug', summary: 'New Chat button does nothing on second click',
+      description: 'Steps to reproduce:\n1. Open the copilot\n2. Click New Chat twice\n\nExpected result: A second new chat session is created\nActual result: Nothing happens' };
+    const r = await runLoop({ ticket: bug, knowledgeGraph: fx.knowledgeGraph }, { batchSize: 1 });
+    expect(r.acTotal).toBe(2);
+    expect(r.uncovered).toEqual([]);
+    expect(r.stopReason).toBe('complete');
+  });
+});
